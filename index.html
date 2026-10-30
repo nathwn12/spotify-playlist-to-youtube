@@ -50,7 +50,7 @@ button:disabled{filter:grayscale(.6) brightness(.7);cursor:wait}
 <div style="flex:0 0 64px"><label>Cover</label><img id="cover" alt="" style="width:56px;height:56px;border-radius:8px;object-fit:cover;display:none;border:1px solid #3a3a44"></div>
 <div style="flex:0 0 170px"><label>Privacy</label><select id="privacy"><option>PRIVATE</option><option>PUBLIC</option><option>UNLISTED</option></select></div></div>
 </div>
-<div class="btns"><button id="go">1-CLICK TRANSFER →</button><button id="step1" type="button">1) load spotify only</button></div>
+<div class="btns"><button id="go">1-CLICK TRANSFER →</button><button id="step1" type="button">1) load spotify only</button><button id="copylog" type="button" style="flex:0 0 120px">copy log</button></div>
 <div class="card"><div id="progrow"><span id="spin"></span><span id="prog">idle.</span></div><div id="bar"><div id="fill"></div></div><div id="log">ready. 1-click = fetch spotify → search ytm → create playlist. No dev keys. Cookies stay localhost-only.</div></div>
 <script>
 const logEl=document.getElementById('log'),progEl=document.getElementById('prog'),spinEl=document.getElementById('spin'),barEl=document.getElementById('bar'),fillEl=document.getElementById('fill');
@@ -92,6 +92,9 @@ async function autoDetectTitle(){
  }catch(e){/* silent; the button run reports errors */}
 }
 async function post(p,b,ms=25000){const c=new AbortController();const t=setTimeout(()=>c.abort(),ms);try{const r=await fetch(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b),signal:c.signal});return r.json();}finally{clearTimeout(t);}}
+document.getElementById('copylog').onclick=async()=>{const t=document.getElementById('log').textContent;
+ try{await navigator.clipboard.writeText(t);prog('log copied ('+t.length+' chars).');}
+ catch(e){const ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();try{document.execCommand('copy');prog('log copied ('+t.length+' chars).');}catch(_){prog('copy failed — select the log manually.');}ta.remove();}};
 document.getElementById('step1').onclick=async()=>{
  document.getElementById('log').textContent=''; workOn('loading spotify…'); setBar(0,1);
  const r=await post('/api/spotify',{url:sp_url.value,spotify_cookie:sp_cookie.value});

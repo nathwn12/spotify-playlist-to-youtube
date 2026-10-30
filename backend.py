@@ -298,9 +298,11 @@ def yt_create_playlist(yt_cookie: str, title: str, description: str, video_ids: 
     base_h = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0",
               "Origin": YT_ORIGIN, "Referer": YT_ORIGIN + "/", "Cookie": yt_cookie,
               "Authorization": auth, "X-Origin": YT_ORIGIN}
-    # 1. create
+    # 1. create WITH the first chunk of videos inline (upstream-blessed path)
+    first, rest = video_ids[:50], video_ids[50:]
     body = json.dumps({"context": {"client": CLIENT}, "title": title,
-                       "description": description or "", "privacyStatus": privacy}).encode()
+                       "description": description or "", "privacyStatus": privacy,
+                       "videoIds": first}).encode()
     req = urllib.request.Request(
         f"https://music.youtube.com/youtubei/v1/playlist/create?key={YT_KEY}&prettyPrint=false",
         data=body, headers=base_h)
@@ -309,26 +311,19 @@ def yt_create_playlist(yt_cookie: str, title: str, description: str, video_ids: 
     plid = j.get("playlistId") or j.get("playlistID")
     if not plid:
         raise RuntimeError("create failed: " + r[:400])
-    # 2. add videos in chunks of 50, demanding STATUS_SUCCEEDED from the edit call
-    edit_paths = ["browse/edit_playlist", "playlist/edit"]
-    for i in range(0, len(video_ids), 50):
-        chunk = video_ids[i:i+50]
+    # 2. remainder via browse/edit_playlist (upstream endpoint), demanding success
+    for i in range(0, len(rest), 50):
+        chunk = rest[i:i+50]
         actions = [{"action": "ACTION_ADD_VIDEO", "addedVideoId": v} for v in chunk]
         b2 = json.dumps({"context": {"client": CLIENT}, "playlistId": plid, "actions": actions}).encode()
-        last_err = ""
-        for path in edit_paths:
-            try:
-                er = urllib.request.urlopen(urllib.request.Request(
-                    f"https://music.youtube.com/youtubei/v1/{path}?key={YT_KEY}&prettyPrint=false",
-                    data=b2, headers=base_h), timeout=25).read().decode("utf-8", "ignore")
-                if '"STATUS_SUCCEEDED"' in er or '"status":"STATUS_SUCCEEDED"' in er.replace(" ", ""):
-                    last_err = ""
-                    break
-                last_err = er[:200]
-            except Exception as e:
-                last_err = f"{type(e).__name__} {getattr(e, 'code', '')}"
-        if last_err:
-            raise RuntimeError(f"add failed on chunk {i // 50 + 1}: {last_err}")
+        try:
+            er = urllib.request.urlopen(urllib.request.Request(
+                f"https://music.youtube.com/youtubei/v1/browse/edit_playlist?key={YT_KEY}&prettyPrint=false",
+                data=b2, headers=base_h), timeout=25).read().decode("utf-8", "ignore")
+        except Exception as e:
+            raise RuntimeError(f"add failed on chunk {i // 50 + 1}: {type(e).__name__} {getattr(e, 'code', '')}")
+        if "SUCCEEDED" not in er:
+            raise RuntimeError(f"add rejected on chunk {i // 50 + 1}: " + er[:200])
     # 3. verify: browse it back with the user's auth and count real items
     confirmed = yt_playlist_count(plid, base_h)
     if video_ids and not confirmed:
