@@ -1,227 +1,66 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>sp2yt — keyless spotify→ytmusic (personal use)</title>
 <style>
-/* direction C — composite, dark concrete. tokens only:
-   #131311 field · #ece8dd ink · #8f8a7c dim · #d15a2a rust · #1d1c19 URL plate.
-   2px rules solid ink, inputs 2px dim, radius 0, flat fills only, no shadows.
-   rust = run button, live status, progress fill. --on-rust is the one label value that
-   clears 4.5:1 on the rust plate (4.91:1); ink on rust is only 3.29:1. */
-:root{--field:#131311;--ink:#ece8dd;--dim:#8f8a7c;--rust:#d15a2a;--plate:#1d1c19;--on-rust:#0a0a0a}
-*,*::before,*::after{box-sizing:border-box;border-radius:0}
-html{-webkit-text-size-adjust:100%}
-body{margin:0;min-height:100vh;background:var(--field);color:var(--ink);color-scheme:dark;
-  font:14.5px/1.55 ui-monospace,"Cascadia Mono",Consolas,"Courier New",monospace;font-variant-numeric:tabular-nums}
-.wrap{max-width:800px;margin:0 auto;padding:0 30px 104px}
-.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-h1,h2,p{margin:0}
-:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
-
-/* mast */
-.mast{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;padding:30px 0 18px;border-bottom:2px solid var(--ink)}
-h1{font-size:15px;letter-spacing:.28em;text-transform:uppercase;font-weight:700}
-.tag{font-size:12px;color:var(--dim)}
-
-/* signal band: source / login / transfer */
-.band{display:flex;flex-wrap:wrap;border-bottom:2px solid var(--ink)}
-.cell{flex:1 1 200px;min-width:0;padding:12px 16px}
-.cell+.cell{border-left:2px solid var(--ink)}
-.cell:first-child{padding-left:0}
-.cell .k{display:block;margin-bottom:4px;font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;font-weight:700;color:var(--dim)}
-.cell.live .k,.cell.done .k{color:var(--ink)}
-.cell.live .k{color:var(--rust)}
-.cell.live .k::before,.cell.done .k::before{content:"";display:inline-block;width:8px;height:8px;margin-right:6px;vertical-align:1px;background:var(--ink)}
-.cell.live .k::before{background:var(--rust)}
-.cell .val{font-size:12.5px;overflow-wrap:anywhere}
-.pill{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;padding:2px 7px;
-  border:1px solid var(--dim);background:transparent;color:var(--dim);vertical-align:1px}
-.pill.ok{background:var(--ink);border-color:var(--ink);color:var(--field)}
-.pill.bad{background:var(--rust);border-color:var(--rust);color:var(--on-rust)}
-
-/* sections: one 2px rule above, numbered label */
-main{counter-reset:sec}
-main>section{margin:34px 0 0;border-top:2px solid var(--ink);counter-increment:sec}
-.lbl{font-size:13.5px;font-weight:700;padding:15px 0 0}
-.lbl .n{color:var(--dim);font-weight:400;margin-right:.7em}
-.lbl .n::after{content:counter(sec,decimal-leading-zero)}
-
-/* command bar: plate, rust run button */
-.urlline{display:flex;margin:18px 0 0;border:2px solid var(--ink);background:var(--plate)}
-.urlline input{flex:1 1 auto;min-width:0;height:52px;padding:0 14px;border:0;border-right:2px solid var(--dim);
-  background:transparent;color:inherit;font:inherit;appearance:none}
-.urlline input::placeholder{color:var(--dim);opacity:1}
-/* resting control is rust, always: no state repaints the plate */
-#go{flex:0 0 auto;padding:0 30px;border:0;font:inherit;font-size:11.5px;font-weight:700;letter-spacing:.22em;
-  text-transform:uppercase;background:var(--rust);background-image:none;appearance:none;color:var(--on-rust);cursor:pointer}
-#go:hover,#go:active,#go:focus{background:var(--rust);background-image:none;color:var(--on-rust)}
-#go:hover{outline:2px solid var(--ink);outline-offset:-6px}
-#go:active{transform:translateY(1px)}
-#go:disabled,#go:disabled:hover{background:var(--dim);color:var(--field);cursor:wait;outline:0}
-.cmdrow{display:flex;flex-wrap:wrap;gap:10px;margin:12px 0 0}
-.ghost{flex:0 0 auto;padding:9px 14px;border:2px solid var(--ink);background:transparent;color:var(--ink);
-  font:inherit;font-size:11.5px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;appearance:none;cursor:pointer}
-.ghost:hover{background:var(--ink);color:var(--field)}
-.ghost:active{transform:translateY(1px)}
-.ghost:disabled,.ghost:disabled:hover{border-color:var(--dim);background:transparent;color:var(--dim);cursor:wait}
-
-/* fields: transparent plate, 2px ink frame */
-label{display:block;margin:18px 0 0;font-size:12.5px;font-weight:700}
-label .hint{display:block;margin-top:2px;font-size:12px;font-weight:400;color:var(--dim)}
-input[type=text],textarea,select{width:100%;max-width:100%;margin:8px 0 0;padding:9px 12px;border:2px solid var(--dim);
-  background:transparent;color:var(--ink);font:inherit;font-size:13.5px;appearance:none}
+*{box-sizing:border-box}
+body{font-family:"Segoe UI",system-ui,-apple-system,Roboto,sans-serif;max-width:720px;margin:32px auto;padding:0 20px;background:radial-gradient(1200px 400px at 50% -80px,#1f5133 0%,#141417 60%);color:#e8e8ea;line-height:1.45;min-height:100vh}
+h2{margin:0 0 4px;font-size:22px;letter-spacing:.2px}
+h2 .dot{color:#1db954}
+p.sub{color:#a9a9b2;margin:0 0 20px;font-size:14px}
+.card{background:rgba(29,29,34,.96);border:1px solid #2c2c34;border-radius:12px;padding:16px;margin:0 0 14px;box-shadow:0 6px 24px rgba(0,0,0,.35)}
+h2{margin:0 0 4px;font-size:22px}
+p.sub{color:#a9a9b2;margin:0 0 20px;font-size:14px}
+.card{background:#1d1d22;border:1px solid #2c2c34;border-radius:10px;padding:16px;margin:0 0 14px}
+label{display:block;font-size:13px;font-weight:600;color:#cfcfd8;margin:12px 0 6px}
+label:first-child{margin-top:0}
+.hint{font-weight:400;color:#8e8e98;font-size:12px}
+input[type=text],input:not([type]),textarea,select{width:100%;max-width:100%;padding:9px 10px;margin:0;background:#101014;color:#e8e8ea;border:1px solid #3a3a44;border-radius:7px;font-size:13px}
 textarea{display:block;resize:vertical;min-height:56px;overflow:auto}
-select{background:var(--field)}
-input[type=file]{width:100%;margin:8px 0 0;font:inherit;font-size:12px;color:var(--dim)}
-.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0 0}
-.row input[type=text]{flex:1 1 220px;min-width:0;margin:0}
-#latchstat,#watchlist{font-size:12px;color:var(--dim);overflow-wrap:anywhere}
-#watchlist{margin:8px 0 0}
-.trio{display:grid;grid-template-columns:1fr 64px 180px;gap:14px;align-items:start;margin:14px 0 0}
-.trio label{margin-top:0}
-#cover{display:none;width:56px;height:56px;object-fit:cover;border:2px solid var(--ink)}
-
-/* ledger: live status, 3px progress rule, log, verdict table */
-.proghead{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:14px;margin:20px 0 10px;
-  font-size:12.5px;color:var(--dim)}
-#progrow{display:flex;align-items:center;gap:8px;min-width:0}
-#prog{color:var(--ink);font-weight:700;overflow-wrap:anywhere}
-#stR{white-space:nowrap}
-#spin{display:none;width:10px;height:10px;flex:0 0 10px;border:2px solid var(--dim);border-top-color:var(--rust)}
-#spin.on{display:inline-block;animation:rot .8s linear infinite}
+input[type=file]{width:100%;max-width:100%;margin:8px 0 0;padding:0;font-size:12px;color:#a9a9b2;overflow:hidden;text-overflow:ellipsis}
+.row{display:flex;gap:12px}
+.row>div{flex:1;min-width:0}
+.btns{display:flex;gap:10px;margin:14px 0}
+button{flex:1;padding:12px;font-size:15px;font-weight:700;border:0;border-radius:10px;cursor:pointer;transition:transform .06s,filter .15s}
+button:hover{filter:brightness(1.12)}
+button:active{transform:scale(.98)}
+button:disabled{filter:grayscale(.6) brightness(.7);cursor:wait}
+#go{background:linear-gradient(180deg,#23d664,#159a46);color:#fff;box-shadow:0 4px 16px rgba(29,185,84,.35)}
+#step1{background:#33333b;color:#fff;flex:0 0 190px}
+#log{background:#0c0f0c;color:#7dffa8;border:1px solid #2c2c34;border-radius:8px;padding:12px;font:12px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;max-height:300px;overflow-y:auto;overflow-x:hidden;margin:10px 0 0}
+#progrow{display:flex;gap:10px;align-items:center;font-size:13px;font-weight:700;color:#ffd866;margin:0}
+#spin{width:14px;height:14px;flex:0 0 14px;border:2px solid #3a3a44;border-top-color:#1db954;border-radius:50%;display:none}
+#spin.on{display:inline-block;animation:rot .7s linear infinite}
 @keyframes rot{to{transform:rotate(360deg)}}
-/* 3px rule, not a slab: the verdict chips own the section */
-#bar{height:3px;background:var(--dim);overflow:hidden}
-#bar.live{background:var(--ink)}
-#fill{display:block;height:100%;width:0%;background:var(--rust);transition:width .3s linear}
-#log{max-height:190px;margin:14px 0 0;padding:12px;overflow-y:auto;border:2px solid var(--ink);
-  font:12px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}
-#verdict-wrap{max-height:300px;overflow-y:auto;margin:22px 0 0}
-.ledger{width:100%;border-collapse:collapse;table-layout:fixed}
-.ledger th{padding:0 16px 10px 0;border-bottom:2px solid var(--ink);font-size:10.5px;font-weight:700;letter-spacing:.16em;
-  text-transform:uppercase;text-align:left;color:var(--ink)}
-.ledger td{padding:14px 16px 14px 0;border-top:1px solid var(--ink);font-size:13.5px;vertical-align:middle;overflow-wrap:anywhere}
-.ledger tbody tr:first-child td{border-top:0}
-.ledger td:first-child{width:3.6em;color:var(--dim)}
-.ledger .vd{width:9.5em;padding-right:0}
-.ledger .st{white-space:nowrap}
-.ledger .st.wait{color:var(--dim);font-size:12.5px;white-space:normal}
-/* verdict chips: solid ink = landed, ink outline = alt, dim outline = skipped, rust = error */
-.v{display:inline-block;padding:4px 8px;border:1px solid var(--dim);background:transparent;color:var(--dim);
-  font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase}
-.st.ok .v{background:var(--ink);border-color:var(--ink);color:var(--field)}
-.st.alt .v{border-color:var(--ink);color:var(--ink)}
-.st.skip .v{color:var(--dim)}
-.st.err .v{background:var(--rust);border-color:var(--rust);color:var(--on-rust)}
-
-/* responsive: the app window is 800px */
-@media (max-width:800px){
-  .wrap{padding:0 22px 96px}
-  .mast{padding:26px 0 16px}
-  main>section{margin-top:28px}
-  .lbl{padding-top:13px;font-size:13px}
-  #go{padding:0 20px}
-  .trio{grid-template-columns:1fr 64px 150px}
-  .ledger td:first-child{width:3em}
-  .ledger .vd{width:8.6em}
-}
-@media (max-width:620px){
-  .cell{flex:1 1 100%;padding:10px 0}
-  .cell+.cell{border-left:0;border-top:1px solid var(--ink)}
-  .trio{grid-template-columns:1fr 64px}
-  .trio>div:last-child{grid-column:1/-1}
-  .urlline{flex-wrap:wrap}
-  .urlline input{flex:1 0 100%;height:auto;min-height:50px;border-right:0;border-bottom:2px solid var(--dim)}
-  #go{width:100%;height:46px}
-}
-@media (prefers-reduced-motion:reduce){
-  *,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
-  #fill{transition:none!important}
-  #go:active,.ghost:active{transform:none!important}
-}
+#bar{height:10px;background:#101014;border:1px solid #3a3a44;border-radius:6px;overflow:hidden;margin:8px 0 0}
+#fill{height:100%;width:0%;background:#1db954;transition:width .3s}
+#bar.live #fill{background-image:linear-gradient(45deg,rgba(255,255,255,.28) 25%,transparent 25%,transparent 50%,rgba(255,255,255,.28) 50%,rgba(255,255,255,.28) 75%,transparent 75%);background-size:16px 16px;animation:slide .6s linear infinite}
+@keyframes slide{to{background-position:16px 0}}
 </style></head><body>
-<div class="wrap">
-
-  <header class="mast">
-    <h1>sp2yt</h1>
-    <p class="tag">spotify → youtube music · keyless · cookies stay on this machine</p>
-  </header>
-
-  <div class="band">
-    <div class="cell" id="step-source"><span class="k">source</span><span class="val" id="sourcestat">no playlist yet</span></div>
-    <div class="cell" id="step-login"><span class="k">login</span><span class="val" id="loginstat">no cookie yet</span> <span class="pill" id="loginpill">none</span></div>
-    <div class="cell" id="step-transfer"><span class="k">transfer</span><span class="val" id="transferstat">idle</span></div>
-  </div>
-
-  <main>
-    <section aria-labelledby="l1">
-      <h2 class="lbl" id="l1"><span class="n" aria-hidden="true"></span>source</h2>
-      <div class="urlline">
-        <label class="sr" for="sp_url">Spotify playlist URL</label>
-        <input id="sp_url" type="text" spellcheck="false" value="" placeholder="paste spotify playlist link — title fills in">
-        <button id="go" type="button">transfer</button>
-      </div>
-      <div class="cmdrow">
-        <button id="step1" class="ghost" type="button">load playlist only</button>
-        <button id="bCheck" class="ghost" type="button">check login</button>
-        <button id="copylog" class="ghost" type="button">copy log</button>
-      </div>
-    </section>
-
-    <section aria-labelledby="l2">
-      <h2 class="lbl" id="l2"><span class="n" aria-hidden="true"></span>login</h2>
-      <label for="cookie_files">load cookie <span class="hint">one upload — your music.youtube.com .txt; a spotify cookie file is recognised and ignored</span></label>
-      <input type="file" id="cookie_files" accept=".txt,text/plain,*/*" multiple>
-      <div class="row"><button id="forget" class="ghost" type="button">forget saved</button><span id="latchstat"></span></div>
-      <label for="yt_cookie">YouTube Music cookie <span class="hint">the only login — auto-filled from the upload, or paste</span></label>
-      <textarea id="yt_cookie" rows="3" placeholder="__Secure-3PAPISID=...; SAPISID=...; ..."></textarea>
-      <div class="row"><input id="watchdir" type="text" placeholder="extra folder to watch (optional)"><button id="watchsave" class="ghost" type="button">watch</button></div>
-      <div id="watchlist"></div>
-    </section>
-
-    <section aria-labelledby="l3">
-      <h2 class="lbl" id="l3"><span class="n" aria-hidden="true"></span>playlist</h2>
-      <div class="trio">
-        <div><label for="pl_title">new YTM playlist title</label><input id="pl_title" type="text" value="" placeholder="auto from link"></div>
-        <div><label>cover</label><img id="cover" alt=""></div>
-        <div><label for="privacy">privacy</label><select id="privacy"><option>PRIVATE</option><option>PUBLIC</option><option>UNLISTED</option></select></div>
-      </div>
-    </section>
-
-    <section aria-labelledby="l4">
-      <h2 class="lbl" id="l4"><span class="n" aria-hidden="true"></span>ledger</h2>
-      <div class="proghead">
-        <div id="progrow"><span id="spin" aria-hidden="true"></span><span id="prog">idle.</span></div>
-        <span id="stR">0 / 0 confirmed</span>
-      </div>
-      <div id="bar"><div id="fill"></div></div>
-      <div id="log">ready. transfer = fetch spotify → search ytm → create playlist. No dev keys. Cookies stay localhost-only.&#10;</div>
-      <div id="verdict-wrap">
-        <table class="ledger">
-          <caption class="sr">Every track, its YouTube match and its verdict</caption>
-          <thead><tr><th scope="col">#</th><th scope="col">spotify track</th><th scope="col">youtube match</th><th class="vd" scope="col">verdict</th></tr></thead>
-          <tbody id="verdict-body"><tr><td colspan="4" class="st wait">no run yet — rows land here.</td></tr></tbody>
-        </table>
-      </div>
-    </section>
-  </main>
+<h2><span class="dot">●</span> sp2yt — 1-click, keyless, cookies are yours</h2>
+<p class="sub">Paste playlist + your cookies. Nothing leaves your machine except direct Spotify / YT Music calls.</p>
+<div class="card">
+<label>Spotify playlist URL</label>
+<input id="sp_url" value="" placeholder="paste playlist link — title fills in">
+<label>Load cookies <span class="hint">(one upload — select both .txt files, auto-sorts Spotify vs YouTube)</span></label>
+<input type="file" id="cookie_files" accept=".txt,text/plain,*/*" multiple>
+<div style="margin:6px 0 0"><button id="forget" type="button" style="flex:none;padding:4px 12px;font-size:12px;background:#33333b;color:#fff">forget saved cookies</button> <span id="latchstat" style="font-size:12px;color:#8e8e98"></span></div>
+<div style="margin:6px 0 0;display:flex;gap:8px"><input id="watchdir" placeholder="extra folder to watch (optional)" style="flex:1"><button id="watchsave" type="button" style="flex:none;padding:4px 12px;font-size:12px;background:#33333b;color:#fff">watch</button></div>
+<div id="watchlist" style="font-size:12px;color:#8e8e98"></div>
+<label>YouTube Music cookie <span class="hint">(the only login you need — auto-filled from upload, or type)</span></label>
+<textarea id="yt_cookie" rows="3" placeholder="__Secure-3PAPISID=...; SAPISID=...; ..."></textarea>
+<div class="row"><div><label>New YTM playlist title</label><input id="pl_title" value="" placeholder="auto from link"></div>
+<div style="flex:0 0 64px"><label>Cover</label><img id="cover" alt="" style="width:56px;height:56px;border-radius:8px;object-fit:cover;display:none;border:1px solid #3a3a44"></div>
+<div style="flex:0 0 170px"><label>Privacy</label><select id="privacy"><option>PRIVATE</option><option>PUBLIC</option><option>UNLISTED</option></select></div></div>
 </div>
+<div class="btns"><button id="go">1-CLICK TRANSFER →</button><button id="step1" type="button">1) load spotify only</button><button id="copylog" type="button" style="flex:0 0 120px">copy log</button></div>
+<div class="card"><div id="progrow"><span id="spin"></span><span id="prog">idle.</span></div><div id="bar"><div id="fill"></div></div><div id="log">ready. 1-click = fetch spotify → search ytm → create playlist. No dev keys. Cookies stay localhost-only.</div></div>
 <script>
-const logEl=document.getElementById('log'),progEl=document.getElementById('prog'),spinEl=document.getElementById('spin'),barEl=document.getElementById('bar'),fillEl=document.getElementById('fill'),stREl=document.getElementById('stR');
+const logEl=document.getElementById('log'),progEl=document.getElementById('prog'),spinEl=document.getElementById('spin'),barEl=document.getElementById('bar'),fillEl=document.getElementById('fill');
 const follow=()=>{logEl.scrollTop=logEl.scrollHeight;};
 const log=(m)=>{logEl.textContent+=m+"\n";requestAnimationFrame(follow);follow();};
 const workOn=(label)=>{spinEl.classList.add('on');barEl.classList.add('live');window._busy=true;document.getElementById('go').disabled=true;document.getElementById('step1').disabled=true;if(label)progEl.textContent=label;};
 const workOff=(label)=>{spinEl.classList.remove('on');barEl.classList.remove('live');window._busy=false;document.getElementById('go').disabled=false;document.getElementById('step1').disabled=false;if(label)progEl.textContent=label;};
 const prog=(m)=>{progEl.textContent=m;};
 const setBar=(done,total)=>{fillEl.style.width=(total?Math.round(100*done/total):0)+'%';};
-const setCount=(done,total)=>{stREl.textContent=`${done} / ${total} confirmed`;};
-function setStep(id,state){const el=document.getElementById(id);el.classList.remove('done','live');if(state)el.classList.add(state);}
-function setLoginPill(kind,text){const p=document.getElementById('loginpill');p.classList.remove('ok','bad');if(kind)p.classList.add(kind);p.textContent=text;}
-function verdictRow(i,track,match,cls,text){const tb=document.getElementById('verdict-body');
- if(tb.querySelector('td[colspan]'))tb.innerHTML='';
- const tr=document.createElement('tr');
- tr.innerHTML=`<td>${i}</td><td></td><td></td><td class="st ${cls}"><span class="v"></span></td>`;
- tr.children[1].textContent=track;tr.children[2].textContent=match;tr.children[3].firstChild.textContent=text;
- tb.appendChild(tr);tr.scrollIntoView({block:'nearest'});}
-function clearVerdicts() {document.getElementById('verdict-body').innerHTML='<tr><td colspan="4" class="st wait">matching… rows land here.</td></tr>';}
 const setAutoTitle=(name,cover)=>{const auto=String(name||'').trim();const el=document.getElementById('pl_title');
  if(!el.value.trim()||el.value===window._autoTitle||/ \(from spotify\)$/.test(el.value))el.value=auto;window._autoTitle=auto;
  const im=document.getElementById('cover'); if(cover){im.src=cover;im.style.display='block';}};
@@ -237,22 +76,12 @@ document.getElementById('cookie_files').onchange=()=>{const files=[...document.g
   if(g==='sp'){log(`loaded ${f.name} — spotify cookies not needed for public links, ignored.`);return;}
   yt_cookie.value=text;
   log(`loaded ${f.name} (${text.length} chars) → YouTube`);
-  post('/api/check',{spotify_cookie:'',yt_cookie:text},30000).then(k=>{if(k.ok){reflectCheck(k);}else log('cookie check failed.');}).catch(()=>{});
+  post('/api/check',{spotify_cookie:'',yt_cookie:text},30000).then(k=>{if(k.ok)log(`cookie check: ytm ${k.ytm.ok?'OK':'STALE — re-export!'}`);}).catch(()=>{});
   post('/api/latch',{spotify_cookie:'',yt_cookie:text}).catch(()=>{});
  };r.readAsText(f);});};
-function reflectCheck(k){const ok=k.ytm.ok;
- log(`cookie check: ytm ${ok?'OK':'STALE — re-export!'}`);
- setLoginPill(ok?'ok':'bad',ok?'fresh':'stale');
- document.getElementById('loginstat').textContent=ok?'cookie latched':'cookie stale';
- setStep('step-login',ok?'done':'live');}
-document.getElementById('bCheck').onclick=async()=>{prog('checking login…');
- try{const k=await post('/api/check',{spotify_cookie:'',yt_cookie:yt_cookie.value},30000);
-  if(k.ok)reflectCheck(k); else {log('check failed.');prog('check failed.');}
- }catch(e){log('check skipped ('+e+').');prog('check failed.');}};
 document.getElementById('forget').onclick=async()=>{await post('/api/forget',{}).catch(()=>{});
  yt_cookie.value='';document.getElementById('watchdir').value='';document.getElementById('watchlist').textContent='';
  document.getElementById('latchstat').textContent='vault cleared.';
- document.getElementById('loginstat').textContent='no cookie yet';setLoginPill('','none');setStep('step-login','');
  log('saved cookies + watch folder forgotten.');};
 async function showWatch(){try{const w=await post('/api/watch',{},15000);
  if(w.ok)document.getElementById('watchlist').textContent='watching: '+w.dirs.join(' · ');}catch(e){}}
@@ -266,9 +95,7 @@ async function lastSession(){
  try{const v=await post('/api/vault',{},15000);
   if(v.has_yt)yt_cookie.value=v.yt_cookie;
   document.getElementById('latchstat').textContent=v.has_yt?'cookies latched from last session.':'no saved cookies.';
-  if(v.has_yt){document.getElementById('loginstat').textContent='cookie latched'+(((v.refreshed||[]).some(x=>x.startsWith('yt')))?' (fresh file from disk)':' (vault)');
-   setLoginPill('ok','latched');setStep('step-login','done');
-   log('latched YouTube cookie'+((v.refreshed||[]).some(x=>x.startsWith('yt'))?' (fresh file from disk)':' from last session')+'.');}
+  if(v.has_yt)log('latched YouTube cookie'+((v.refreshed||[]).some(x=>x.startsWith('yt'))?' (fresh file from disk)':' from last session')+'.');
  }catch(e){document.getElementById('latchstat').textContent='';}
 }
 lastSession();
@@ -282,8 +109,6 @@ async function autoDetectTitle(){
  try{const r=await post('/api/spotify',{url:u,spotify_cookie:''},25000);
   if(my!==detectToken||!r.ok)return;
   setAutoTitle(r.playlist_name,r.cover_url);
-  document.getElementById('sourcestat').textContent=`${r.playlist_name} · ${r.tracks.length} tracks`;
-  setStep('step-source','done');
   prog(`detected: ${r.playlist_name} — ${r.tracks.length} tracks. Ready.`);
  }catch(e){/* silent; the button run reports errors */}
 }
@@ -292,61 +117,50 @@ document.getElementById('copylog').onclick=async()=>{const t=document.getElement
  try{await navigator.clipboard.writeText(t);prog('log copied ('+t.length+' chars).');}
  catch(e){const ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();try{document.execCommand('copy');prog('log copied ('+t.length+' chars).');}catch(_){prog('copy failed — select the log manually.');}ta.remove();}};
 document.getElementById('step1').onclick=async()=>{
- document.getElementById('log').textContent=''; workOn('loading spotify…'); setBar(0,1); setStep('step-source','live');
+ document.getElementById('log').textContent=''; workOn('loading spotify…'); setBar(0,1);
  const r=await post('/api/spotify',{url:sp_url.value,spotify_cookie:''});
- if(!r.ok){log('SPOTIFY FAIL: '+r.error);workOff('failed.');setStep('step-source','');return;} log(`SPOTIFY OK: ${r.playlist_name} — ${r.tracks.length} tracks`);
+ if(!r.ok){log('SPOTIFY FAIL: '+r.error);workOff('failed.');return;} log(`SPOTIFY OK: ${r.playlist_name} — ${r.tracks.length} tracks`);
  setAutoTitle(r.playlist_name,r.cover_url);
- document.getElementById('sourcestat').textContent=`${r.playlist_name} · ${r.tracks.length} tracks`;
- setStep('step-source','done');
  r.tracks.slice(0,5).forEach(t=>log(` - ${t.title} — ${t.artist}`)); setBar(1,1); workOff('spotify loaded.');
+ r.tracks.slice(0,5).forEach(t=>log(` - ${t.title} — ${t.artist}`));
  window._tracks=r.tracks; window._plname=r.playlist_name;
 };
 document.getElementById('go').onclick=async()=>{
- document.getElementById('log').textContent=''; clearVerdicts(); setCount(0,0);
- workOn('checking cookies…'); setBar(0,100); setStep('step-transfer','live');
- document.getElementById('transferstat').textContent='checking login…';
+ document.getElementById('log').textContent=''; workOn('checking cookies…'); setBar(0,100);
  post('/api/latch',{spotify_cookie:'',yt_cookie:yt_cookie.value}).catch(()=>{});
  try{const k=await post('/api/check',{spotify_cookie:'',yt_cookie:yt_cookie.value},30000);
-  reflectCheck(k);
-  if(!k.ytm.ok){log('STOPPED: YTM cookie '+k.ytm.msg);log('fix: music.youtube.com → DevTools → Network → copy Cookie → save .txt → upload again.');workOff('cookie expired.');setStep('step-transfer','');document.getElementById('transferstat').textContent='blocked: stale login';return;}
+  log(`cookies: ytm ${k.ytm.ok?'OK':'STALE'} (${k.ytm.msg})`);
+  if(!k.ytm.ok){log('STOPPED: YTM cookie '+k.ytm.msg);log('fix: music.youtube.com → DevTools → Network → copy Cookie → save .txt → upload again.');workOff('cookie expired.');return;}
  }catch(e){log('cookie check skipped ('+e+'), continuing…');}
  log('1/3 fetching spotify (keyless embed, + your cookie if given)…');
- document.getElementById('transferstat').textContent='fetching spotify…';
  let r=await post('/api/spotify',{url:sp_url.value,spotify_cookie:''});
- if(!r.ok){log('SPOTIFY FAIL: '+r.error); if(r.hint)log('DIAGNOSIS ['+(r.kind||'?')+']: '+r.hint); workOff('failed.');setStep('step-transfer','');document.getElementById('transferstat').textContent='spotify failed';return;}
+ if(!r.ok){log('SPOTIFY FAIL: '+r.error); if(r.hint)log('DIAGNOSIS ['+(r.kind||'?')+']: '+r.hint); workOff('failed.');return;}
  const tracks=r.tracks; log(`SPOTIFY OK: ${r.playlist_name} — ${tracks.length} tracks`); setAutoTitle(r.playlist_name,r.cover_url); setBar(2,100);
- document.getElementById('sourcestat').textContent=`${r.playlist_name} · ${tracks.length} tracks`;
- setStep('step-source','done');
  log('2/3 searching ytm (parallel batches of 10)…');
- document.getElementById('transferstat').textContent='matching…';
  const vids=[]; const CHUNK=10;
  for(let base=0;base<tracks.length;base+=CHUNK){const slice=tracks.slice(base,base+CHUNK);
   const done=Math.min(base+CHUNK,tracks.length);
   prog(`${done}/${tracks.length} searching: batch ${Math.floor(base/CHUNK)+1}/${Math.ceil(tracks.length/CHUNK)}…`); setBar(done,tracks.length);
   let b=null; const tq=slice.map(t=>({title:t.title,artist:t.artist,duration_ms:t.duration_ms}));
   try{b=await post('/api/search-batch',{tracks:tq,workers:8},90000);}
-  catch(e){log(` batch ${base/CHUNK+1} ERR: ${e.name==='AbortError'?'timeout 90s, skipped':e}`);slice.forEach((t,k)=>verdictRow(base+k+1,`${t.title} — ${t.artist}`,'—','err','batch skipped'));continue;}
+  catch(e){log(` batch ${base/CHUNK+1} ERR: ${e.name==='AbortError'?'timeout 90s, skipped':e}`);continue;}
   if(!b.ok&&(b.kind==='throttle'||b.kind==='transient')){log(` batch ${base/CHUNK+1} ${b.kind}: ${b.hint} retrying…`);await new Promise(r=>setTimeout(r,2500));
-   try{b=await post('/api/search-batch',{tracks:tq,workers:4},90000);}catch(e){log(` batch retry ERR: ${e}`);slice.forEach((t,k)=>verdictRow(base+k+1,`${t.title} — ${t.artist}`,'—','err','batch skipped'));continue;}}
-  if(!b.ok){if(b.kind==='auth'||b.kind==='parse'){log(` batch FATAL [${b.kind}]: ${b.hint}`);workOff(`stopped: ${b.kind}.`);setStep('step-transfer','');document.getElementById('transferstat').textContent='stopped: '+b.kind;return {fatal:true};}log(` batch ${base/CHUNK+1} FAIL: ${b.error}`);slice.forEach((t,k)=>verdictRow(base+k+1,`${t.title} — ${t.artist}`,'—','err','batch failed'));continue;}
+   try{b=await post('/api/search-batch',{tracks:tq,workers:4},90000);}catch(e){log(` batch retry ERR: ${e}`);continue;}}
+  if(!b.ok){if(b.kind==='auth'||b.kind==='parse'){log(` batch FATAL [${b.kind}]: ${b.hint}`);workOff(`stopped: ${b.kind}.`);return {fatal:true};}log(` batch ${base/CHUNK+1} FAIL: ${b.error}`);continue;}
   b.results.forEach((s,k)=>{const t=slice[k],i=base+k;
-   if(s.videoId){vids.push(s.videoId); log(` [${i+1}/${tracks.length}] ${t.title} → ${s.videoId}${s.alt?' (alt match)':''} (${s.title})`);
-    verdictRow(i+1,`${t.title} — ${t.artist}`,s.title||s.videoId,s.alt?'alt':'ok',s.alt?'alt, landed':'confirmed');}
-   else {log(` [${i+1}] SKIP ${t.title}: ${s.skipped||s.error||'no match'}`);
-    verdictRow(i+1,`${t.title} — ${t.artist}`,'—','skip','skipped, listed');}});
+   if(s.videoId){vids.push(s.videoId); log(` [${i+1}/${tracks.length}] ${t.title} → ${s.videoId}${s.alt?' (alt match)':''} (${s.title})`);}
+   else log(` [${i+1}] SKIP ${t.title}: ${s.skipped||s.error||'no match'}`);});
  }
- prog(`MATCHED ${vids.length}/${tracks.length}`); setBar(vids.length,tracks.length); setCount(vids.length,tracks.length);
+ prog(`MATCHED ${vids.length}/${tracks.length}`); setBar(vids.length,tracks.length);
  log(`MATCHED ${vids.length}/${tracks.length} (${tracks.length-vids.length} skipped — playlist continues regardless)`);
- if(!vids.length){log('STOPPED: zero matches, nothing to create.');workOff('zero matches.');document.getElementById('transferstat').textContent='zero matches';return;}
- if(!yt_cookie.value.trim()){log('3/3 SKIPPED create — no YTM cookie. Paste/type or load file, then click again.');window._vids=vids;workOff(`matched ${vids.length}/${tracks.length} — waiting for YTM cookie.`);document.getElementById('transferstat').textContent='waiting for login';return;}
+ if(!vids.length){log('STOPPED: zero matches, nothing to create.');workOff('zero matches.');return;}
+ if(!yt_cookie.value.trim()){log('3/3 SKIPPED create — no YTM cookie. Paste/type or load file, then click again.');window._vids=vids;workOff(`matched ${vids.length}/${tracks.length} — waiting for YTM cookie.`);return;}
  log('3/3 creating ytm playlist (auth = YOUR cookie only)…'); prog('3/3 creating playlist…');
- document.getElementById('transferstat').textContent='creating playlist…';
  const c=await post('/api/create-playlist',{spotify_id:(sp_url.value.match(/playlist\/([A-Za-z0-9]+)/)||[])[1]||'',yt_cookie:yt_cookie.value,title:pl_title.value||r.playlist_name,description:'',videoIds:vids,privacy:privacy.value});
- if(!c.ok){log('CREATE FAIL: '+c.error); if(c.hint)log('DIAGNOSIS ['+(c.kind||'?')+']: '+c.hint); workOff('create failed.');document.getElementById('transferstat').textContent='create failed';return;}
- setBar(tracks.length,tracks.length); setCount(c.added||vids.length,tracks.length);
- if(c.existing){workOff('already existed.');setStep('step-transfer','done');document.getElementById('transferstat').textContent='already existed';log(`EXISTS: ${c.url} — ${c.added} tracks already there, nothing created.`);return;}
- workOff('done.'); setStep('step-transfer','done');
- document.getElementById('transferstat').textContent=`done — ${c.added}/${c.sent} confirmed`;
+ if(!c.ok){log('CREATE FAIL: '+c.error); if(c.hint)log('DIAGNOSIS ['+(c.kind||'?')+']: '+c.hint); workOff('create failed.');return;}
+ setBar(tracks.length,tracks.length);
+ if(c.existing){workOff('already existed.');log(`EXISTS: ${c.url} — ${c.added} tracks already there, nothing created.`);return;}
+ workOff('done.');
  log(`DONE: ${c.url} — ${c.added}/${c.sent} tracks confirmed on YTM${c.rejected?` (${c.rejected} rejected at add, see log)`:''}`);
 };
 </script></body></html>
