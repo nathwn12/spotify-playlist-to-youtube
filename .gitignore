@@ -2,3 +2,7 @@ server.log
 __pycache__/
 *.pyc
 *.pyo
+build/
+dist/
+*.spec
+sp2yt.exe

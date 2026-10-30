@@ -3,11 +3,11 @@
 Spotify: scrapes public embed __NEXT_DATA__ (optional user Cookie forwarded).
 YTM: InnerTube WEB_REMIX + user-supplied Cookie (SAPISIDHASH derived server-side).
 """
-import json, re, time, hashlib, urllib.request, urllib.parse
+import json, re, sys, time, hashlib, threading, urllib.request, urllib.parse, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 LOGF = os.path.join(HERE, "server.log")
 HISTORY = []
 
@@ -284,4 +284,6 @@ class H(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8787"))
     print(f"sp2yt listening on http://127.0.0.1:{port}", flush=True)
+    if getattr(sys, "frozen", False):
+        threading.Timer(1.0, lambda: webbrowser.open(f"http://127.0.0.1:{port}")).start()
     ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
