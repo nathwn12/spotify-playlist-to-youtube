@@ -89,7 +89,7 @@ async function lastSession(){
   if(v.has_sp)sp_cookie.value=v.sp_cookie;
   if(v.has_yt)yt_cookie.value=v.yt_cookie;
   document.getElementById('latchstat').textContent=(v.has_sp||v.has_yt)?'cookies latched from last session.':'no saved cookies.';
-  if(v.has_yt)log('latched YouTube cookie from last session.'+(v.has_sp?' Spotify too.':''));
+  if(v.has_yt)log('latched YouTube cookie'+((v.refreshed||[]).includes('yt')?' (fresh file from Desktop)':' from last session')+'.'+(v.has_sp?' Spotify too.':''));
  }catch(e){document.getElementById('latchstat').textContent='';}
 }
 lastSession();

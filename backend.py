@@ -18,6 +18,18 @@ HERE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 LOGF = os.path.join(HERE, "server.log")
 HISTORY = []
 VAULTF = os.path.join(HERE, "cookie_vault.json")
+KNOWN_COOKIE_FILES = [
+    os.path.join(os.environ.get("USERPROFILE", ""), "Desktop", "music.youtube.com_cookies.txt"),
+    os.path.join(os.environ.get("USERPROFILE", ""), "Desktop", "open.spotify.com_cookies.txt"),
+]
+
+def detect_site(cookie: str) -> str:
+    c = cookie or ""
+    if "SAPISID" in c or "music.youtube" in c:
+        return "yt"
+    if "sp_dc" in c or "sp_key" in c or "open.spotify" in c or "spotify" in c.lower():
+        return "sp"
+    return ""
 
 class DATA_BLOB(ctypes.Structure):
     _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
@@ -61,14 +73,36 @@ def vault_load() -> dict:
         with open(VAULTF, encoding="utf-8") as f:
             v = json.load(f)
     except Exception:
-        return {"sp_cookie": "", "yt_cookie": ""}
-    out = {}
+        v = {}
+    out, refreshed = {}, []
     for k in ("sp", "yt"):
         try:
             out[k + "_cookie"] = _dpapi_blob(
                 ctypes.windll.crypt32.CryptUnprotectData, base64.b64decode(v[k])).decode() if v.get(k) else ""
         except Exception:
             out[k + "_cookie"] = ""
+    # re-latch: known Desktop files changed on disk -> adopt, by content markers
+    for path in KNOWN_COOKIE_FILES:
+        try:
+            with open(path, encoding="utf-8", errors="ignore") as f:
+                raw = f.read()
+        except Exception:
+            continue
+        site = detect_site(raw)
+        norm = normalize_cookie(raw)
+        if site and norm and norm != normalize_cookie(out.get(site + "_cookie", "")):
+            out[site + "_cookie"] = norm
+            v[site] = base64.b64encode(_dpapi_blob(
+                ctypes.windll.crypt32.CryptProtectData, norm.encode())).decode()
+            refreshed.append(site)
+    if refreshed:
+        try:
+            with open(VAULTF, "w", encoding="utf-8") as f:
+                json.dump(v, f)
+        except Exception:
+            pass
+        blog("relatch", "fresh disk files adopted: " + ",".join(refreshed))
+    out["refreshed"] = refreshed
     return out
 
 def vault_forget():
