@@ -39,9 +39,10 @@ button:disabled{filter:grayscale(.6) brightness(.7);cursor:wait}
 <p class="sub">Paste playlist + your cookies. Nothing leaves your machine except direct Spotify / YT Music calls.</p>
 <div class="card">
 <label>Spotify playlist URL</label>
-<input id="sp_url" value="https://open.spotify.com/playlist/3Tz2V0H4uEWtpA4YcBHNfo?si=6f65637dc4c04146">
+<input id="sp_url" value="" placeholder="paste playlist link — title fills in">
 <label>Load cookies <span class="hint">(one upload — select both .txt files, auto-sorts Spotify vs YouTube)</span></label>
 <input type="file" id="cookie_files" accept=".txt,text/plain,*/*" multiple>
+<div style="margin:6px 0 0"><button id="forget" type="button" style="flex:none;padding:4px 12px;font-size:12px;background:#33333b;color:#fff">forget saved cookies</button> <span id="latchstat" style="font-size:12px;color:#8e8e98"></span></div>
 <label>Spotify cookie <span class="hint">(optional — auto-filled from upload, or type)</span></label>
 <textarea id="sp_cookie" rows="2" placeholder="sp_dc=...; sp_key=... (optional)"></textarea>
 <label>YouTube Music cookie <span class="hint">(needed to create playlist — auto-filled from upload, or type)</span></label>
@@ -77,7 +78,21 @@ document.getElementById('cookie_files').onchange=()=>{const files=[...document.g
   log(`loaded ${f.name} (${text.length} chars) → ${field==='yt_cookie'?'YouTube':'Spotify'}`);
   const sp=document.getElementById('sp_cookie').value,yt=document.getElementById('yt_cookie').value;
   if(yt.trim()){post('/api/check',{spotify_cookie:sp,yt_cookie:yt},30000).then(k=>{if(k.ok)log(`cookie check: spotify ${k.spotify.ok?'OK':'STALE'} · ytm ${k.ytm.ok?'OK':'STALE — re-export!'}`);}).catch(()=>{});}
+  post('/api/latch',{spotify_cookie:sp,yt_cookie:yt}).catch(()=>{});
  };r.readAsText(f);});};
+document.getElementById('forget').onclick=async()=>{await post('/api/forget',{}).catch(()=>{});
+ sp_cookie.value='';yt_cookie.value='';document.getElementById('latchstat').textContent='vault cleared.';
+ log('saved cookies forgotten.');};
+async function lastSession(){
+ sp_url.value='';pl_title.value='';window._autoTitle='';
+ try{const v=await post('/api/vault',{},15000);
+  if(v.has_sp)sp_cookie.value=v.sp_cookie;
+  if(v.has_yt)yt_cookie.value=v.yt_cookie;
+  document.getElementById('latchstat').textContent=(v.has_sp||v.has_yt)?'cookies latched from last session.':'no saved cookies.';
+  if(v.has_yt)log('latched YouTube cookie from last session.'+(v.has_sp?' Spotify too.':''));
+ }catch(e){document.getElementById('latchstat').textContent='';}
+}
+lastSession();
 let detectToken=0,detectTimer=null;
 document.getElementById('sp_url').addEventListener('input',()=>{clearTimeout(detectTimer);detectTimer=setTimeout(autoDetectTitle,600);});
 async function autoDetectTitle(){

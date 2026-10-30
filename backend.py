@@ -17,6 +17,65 @@ except Exception:
 HERE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 LOGF = os.path.join(HERE, "server.log")
 HISTORY = []
+VAULTF = os.path.join(HERE, "cookie_vault.json")
+
+class DATA_BLOB(ctypes.Structure):
+    _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+def _dpapi_blob(fn, data: bytes) -> bytes:
+    lib = ctypes.windll.crypt32
+    fn.argtypes = [ctypes.POINTER(DATA_BLOB), ctypes.c_wchar_p, ctypes.POINTER(DATA_BLOB),
+                   ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(DATA_BLOB)]
+    fn.restype = wintypes.BOOL
+    bin_, bout = DATA_BLOB(), DATA_BLOB()
+    buf = ctypes.create_string_buffer(bytes(data))
+    bin_.cbData = len(data)
+    bin_.pbData = ctypes.cast(buf, ctypes.POINTER(ctypes.c_char))
+    if not fn(ctypes.byref(bin_), None, None, None, None, 0, ctypes.byref(bout)):
+        raise ctypes.WinError()
+    try:
+        return ctypes.string_at(bout.pbData, bout.cbData)
+    finally:
+        ctypes.windll.kernel32.LocalFree(bout.pbData)
+
+def vault_save(which: str, cookie: str):
+    """Latch a cookie vault-side, DPAPI-encrypted (this Windows user only). Plain values never touch disk."""
+    c = normalize_cookie(cookie)
+    if which not in ("sp", "yt") or not c:
+        return
+    try:
+        with open(VAULTF, encoding="utf-8") as f:
+            v = json.load(f)
+            v = v if isinstance(v, dict) else {}
+    except Exception:
+        v = {}
+    try:
+        v[which] = base64.b64encode(_dpapi_blob(ctypes.windll.crypt32.CryptProtectData, c.encode())).decode()
+        with open(VAULTF, "w", encoding="utf-8") as f:
+            json.dump(v, f)
+    except Exception:
+        pass
+
+def vault_load() -> dict:
+    try:
+        with open(VAULTF, encoding="utf-8") as f:
+            v = json.load(f)
+    except Exception:
+        return {"sp_cookie": "", "yt_cookie": ""}
+    out = {}
+    for k in ("sp", "yt"):
+        try:
+            out[k + "_cookie"] = _dpapi_blob(
+                ctypes.windll.crypt32.CryptUnprotectData, base64.b64decode(v[k])).decode() if v.get(k) else ""
+        except Exception:
+            out[k + "_cookie"] = ""
+    return out
+
+def vault_forget():
+    try:
+        os.remove(VAULTF)
+    except Exception:
+        pass
 
 def blog(event: str, detail: str = ""):
     """Audit log. Never writes cookie values — lengths only."""
@@ -300,13 +359,20 @@ def vl_id(plid: str) -> str:
     plid = (plid or "").strip()
     return plid if plid.startswith("VL") else ("VL" + plid if plid else "")
 
-def yt_playlist_count(plid: str, headers: dict) -> int:
+def yt_headers(yt_cookie: str) -> dict:
+    """Fresh auth headers per call — SAPISIDHASH goes stale within minutes."""
+    yt_cookie = normalize_cookie(yt_cookie)
+    return {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0",
+            "Origin": YT_ORIGIN, "Referer": YT_ORIGIN + "/", "Cookie": yt_cookie,
+            "Authorization": sapisid_hash(yt_cookie), "X-Origin": YT_ORIGIN}
+
+def yt_playlist_count(plid: str, yt_cookie: str) -> int:
     """Browse a playlist with the user's auth, count its video items. 0 on any failure."""
     try:
         body = json.dumps({"context": {"client": CLIENT}, "browseId": vl_id(plid)}).encode()
         req = urllib.request.Request(
             f"https://music.youtube.com/youtubei/v1/browse?key={YT_KEY}&prettyPrint=false",
-            data=body, headers=headers)
+            data=body, headers=yt_headers(yt_cookie))
         txt = urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "ignore")
         vids = set(re.findall(r'"videoId":\s*"([A-Za-z0-9_-]{11})"', txt))
         return len(vids)
@@ -315,10 +381,7 @@ def yt_playlist_count(plid: str, headers: dict) -> int:
 
 def yt_create_playlist(yt_cookie: str, title: str, description: str, video_ids: list, privacy: str = "PRIVATE"):
     yt_cookie = normalize_cookie(yt_cookie)
-    auth = sapisid_hash(yt_cookie)
-    base_h = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0",
-              "Origin": YT_ORIGIN, "Referer": YT_ORIGIN + "/", "Cookie": yt_cookie,
-              "Authorization": auth, "X-Origin": YT_ORIGIN}
+    base_h = yt_headers(yt_cookie)
     # 1. create WITH the songs inline (upstream-blessed path)
     body = json.dumps({"context": {"client": CLIENT}, "title": title,
                        "description": description or "", "privacyStatus": privacy,
@@ -354,41 +417,35 @@ def yt_create_playlist(yt_cookie: str, title: str, description: str, video_ids: 
                 edit_notes.append(f"chunk {i // 50 + 1}: {type(e).__name__} {getattr(e, 'code', '')}")
                 blog("edit", f"chunk {i // 50 + 1} raised {type(e).__name__} {getattr(e, 'code', '')}")
     # 3. verify: browse it back with the user's auth and count real items
-    confirmed = yt_playlist_count(plid, base_h)
+    confirmed = yt_playlist_count(plid, yt_cookie)
     if video_ids and not confirmed:
-        yt_delete_playlist(plid, base_h)
-        raise RuntimeError("songs did not land (playlist reads back empty, husk deleted). Edits said: "
-                           + "; ".join(edit_notes)[:250])
-    # 3. verify: browse it back with the user's auth and count real items
-    confirmed = yt_playlist_count(plid, base_h)
-    if video_ids and not confirmed:
-        yt_delete_playlist(plid, base_h)
-        raise RuntimeError("songs did not land (playlist reads back empty, husk deleted) — YTM rejected the adds; re-check cookie and retry")
+        cleaned = yt_delete_playlist(plid, yt_cookie)
+        raise RuntimeError("songs did not land (playlist reads back empty"
+                           + (", husk deleted" if cleaned else ", husk cleanup failed — delete it manually")
+                           + "). Edits said: " + "; ".join(edit_notes)[:250])
     return {"playlistId": plid, "url": f"https://music.youtube.com/playlist?list={plid}",
             "added": confirmed, "sent": len(video_ids)}
 
-def yt_delete_playlist(plid: str, headers: dict):
+def yt_delete_playlist(plid: str, yt_cookie: str) -> bool:
     try:
         body = json.dumps({"context": {"client": CLIENT}, "playlistId": plid}).encode()
         urllib.request.urlopen(urllib.request.Request(
             f"https://music.youtube.com/youtubei/v1/playlist/delete?key={YT_KEY}&prettyPrint=false",
-            data=body, headers=headers), timeout=20).read()
-    except Exception:
-        pass
+            data=body, headers=yt_headers(yt_cookie)), timeout=20).read()
+        return True
+    except Exception as e:
+        blog("delete", f"{plid} {type(e).__name__} {getattr(e, 'code', '')}")
+        return False
 
 def yt_create_checked(spotify_id: str, yt_cookie: str, title: str, description: str,
                       video_ids: list, privacy: str = "PRIVATE") -> dict:
     """Dupe-aware create: same spotify source transferred before and YTM copy
     still alive -> return it, create nothing. Empty results always deleted."""
     yt_cookie = normalize_cookie(yt_cookie)
-    auth = sapisid_hash(yt_cookie)
-    base_h = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0",
-              "Origin": YT_ORIGIN, "Referer": YT_ORIGIN + "/", "Cookie": yt_cookie,
-              "Authorization": auth, "X-Origin": YT_ORIGIN}
     if spotify_id:
         rec = load_created().get(spotify_id)
         if rec and rec.get("yt_id"):
-            n = yt_playlist_count(rec["yt_id"], base_h)
+            n = yt_playlist_count(rec["yt_id"], yt_cookie)
             if n:
                 blog("create", f"exists title={title} url={rec.get('url')} tracks={n}")
                 return {"playlistId": rec["yt_id"], "url": rec.get("url", ""),
@@ -475,6 +532,19 @@ class H(BaseHTTPRequestHandler):
                 yt = check_yt_cookie(payload.get("yt_cookie", ""))
                 blog("check", f"spotify={sp['ok']} ytm={yt['ok']}")
                 return self.send_json({"ok": True, "spotify": sp, "ytm": yt})
+            if self.path == "/api/vault":
+                v = vault_load()
+                return self.send_json({"ok": True, "has_sp": bool(v["sp_cookie"]),
+                                       "has_yt": bool(v["yt_cookie"]), **v})
+            if self.path == "/api/latch":
+                vault_save("sp", payload.get("spotify_cookie", ""))
+                vault_save("yt", payload.get("yt_cookie", ""))
+                blog("latch", "cookies latched to vault")
+                return self.send_json({"ok": True})
+            if self.path == "/api/forget":
+                vault_forget()
+                blog("forget", "vault cleared")
+                return self.send_json({"ok": True})
         except ValueError as e:
             blog("fail", f"{self.path} ValueError: {e}")
             return self.send_json({"ok": False, "error": str(e), **classify(str(e))}, 400)
