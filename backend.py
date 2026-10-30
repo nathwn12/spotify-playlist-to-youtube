@@ -3,9 +3,16 @@
 Spotify: scrapes public embed __NEXT_DATA__ (optional user Cookie forwarded).
 YTM: InnerTube WEB_REMIX + user-supplied Cookie (SAPISIDHASH derived server-side).
 """
-import json, re, sys, time, hashlib, threading, urllib.request, urllib.parse, webbrowser
+import json, re, sys, time, base64, hashlib, shutil, sqlite3, subprocess, tempfile, threading, urllib.request, urllib.parse, webbrowser
+import ctypes
+from ctypes import wintypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
+try:
+    from Crypto.Cipher import AES
+    HAVE_AES = True
+except Exception:
+    HAVE_AES = False
 
 HERE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 LOGF = os.path.join(HERE, "server.log")
@@ -153,6 +160,53 @@ def yt_search(query: str):
         return {"videoId": m.group(1), "title": "", "duration": "", "query": query}
     raise RuntimeError("no ytm result for: " + query)
 
+def parse_dur(s: str = ""):
+    """'3:45' -> 225. None when unknown."""
+    try:
+        p = [int(x) for x in str(s).strip().split(":")]
+        if len(p) == 2:
+            return p[0] * 60 + p[1]
+        if len(p) == 3:
+            return p[0] * 3600 + p[1] * 60 + p[2]
+    except Exception:
+        pass
+    return None
+
+def title_overlap(a: str, b: str) -> bool:
+    wa = set(re.findall(r"[a-z0-9]{3,}", (a or "").lower()))
+    wb = set(re.findall(r"[a-z0-9]{3,}", (b or "").lower()))
+    return bool(wa & wb)
+
+def yt_match(title: str, artist: str = "", duration_ms: int = 0) -> dict:
+    """One song, isolated. Tries query variants, prefers duration match.
+    Never raises: no match -> videoId None (skip), never a batch failure."""
+    title, artist = (title or "").strip(), (artist or "").strip()
+    want = (duration_ms or 0) // 1000
+    variants = [f"{title} {artist}".strip(), title, f"{artist} - {title}".strip()]
+    first = None
+    for q in variants:
+        if not q:
+            continue
+        try:
+            r = yt_search(q)
+        except Exception:
+            continue
+        want_q = f"{title} {artist}".strip()
+        if r.get("title") and not title_overlap(want_q, r["title"]):
+            continue  # parsed shelf title shares nothing with the song — wrong result, next variant
+        else:
+            if first is None:
+                first = {**r, "via": q}
+            got = parse_dur(r.get("duration", ""))
+            if want and got and abs(got - want) <= 12:
+                return {"ok": True, "query": f"{title} {artist}".strip(), **r, "via": q, "alt": q != variants[0]}
+            if not want or got is None:
+                return {"ok": True, "query": f"{title} {artist}".strip(), **r, "via": q, "alt": q != variants[0]}
+    if first:
+        return {"ok": True, "query": f"{title} {artist}".strip(), **first, "alt": first.get("via") != variants[0]}
+    return {"ok": True, "query": f"{title} {artist}".strip(), "videoId": None,
+            "title": "", "duration": "", "skipped": "no match on any variant"}
+
 def yt_search_safe(query: str):
     try:
         r = yt_search(query)
@@ -160,11 +214,23 @@ def yt_search_safe(query: str):
     except Exception as e:
         return {"ok": False, "query": query, "error": f"{type(e).__name__}: {e}"}
 
-def yt_search_batch(queries, workers: int = 8):
+def yt_search_batch(items, workers: int = 8):
+    """items: track dicts {title, artist, duration_ms} or plain query strings.
+    Every item resolves independently; item failure is a skip, never a batch failure."""
     from concurrent.futures import ThreadPoolExecutor
     workers = max(1, min(int(workers or 8), 10))
+
+    def one(it):
+        try:
+            if isinstance(it, dict):
+                return yt_match(it.get("title", ""), it.get("artist", ""), it.get("duration_ms", 0))
+            return yt_search_safe(str(it))
+        except Exception as e:
+            q = it.get("title", "?") if isinstance(it, dict) else str(it)
+            return {"ok": True, "query": q, "videoId": None, "title": "", "duration": "", "skipped": str(e)}
+
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        return list(ex.map(yt_search_safe, queries))
+        return list(ex.map(one, items))
 
 def check_spotify_cookie(cookie: str = "") -> dict:
     c = normalize_cookie(cookie)
@@ -291,15 +357,23 @@ class H(BaseHTTPRequestHandler):
                 r = yt_search(q)
                 return self.send_json({"ok": True, **r})
             if self.path == "/api/search-batch":
-                qs = payload.get("queries", [])
-                if not isinstance(qs, list) or not qs:
-                    return self.send_json({"ok": False, "error": "queries must be a non-empty list"}, 400)
-                if len(qs) > 25:
-                    return self.send_json({"ok": False, "error": "max 25 queries per batch"}, 400)
-                qs = [str(q)[:300] for q in qs]
-                results = yt_search_batch(qs, payload.get("workers", 8))
-                hit = sum(1 for x in results if x.get("ok"))
-                blog("batch", f"n={len(qs)} matched={hit} workers={payload.get('workers', 8)}")
+                items = payload.get("tracks") or payload.get("queries", [])
+                if not isinstance(items, list) or not items:
+                    return self.send_json({"ok": False, "error": "tracks/queries must be a non-empty list"}, 400)
+                if len(items) > 25:
+                    return self.send_json({"ok": False, "error": "max 25 items per batch"}, 400)
+                clean = []
+                for it in items:
+                    if isinstance(it, dict):
+                        clean.append({"title": str(it.get("title", ""))[:200],
+                                      "artist": str(it.get("artist", ""))[:200],
+                                      "duration_ms": int(it.get("duration_ms", 0) or 0)})
+                    else:
+                        clean.append(str(it)[:300])
+                results = yt_search_batch(clean, payload.get("workers", 8))
+                hit = sum(1 for x in results if x.get("videoId"))
+                skip = sum(1 for x in results if not x.get("videoId"))
+                blog("batch", f"n={len(clean)} matched={hit} skipped={skip} workers={payload.get('workers', 8)}")
                 return self.send_json({"ok": True, "results": results})
             if self.path == "/api/create-playlist":
                 r = yt_create_playlist(payload.get("yt_cookie", ""), payload.get("title", "Spotify import"),

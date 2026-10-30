@@ -115,21 +115,22 @@ document.getElementById('go').onclick=async()=>{
  for(let base=0;base<tracks.length;base+=CHUNK){const slice=tracks.slice(base,base+CHUNK);
   const done=Math.min(base+CHUNK,tracks.length);
   prog(`${done}/${tracks.length} searching: batch ${Math.floor(base/CHUNK)+1}/${Math.ceil(tracks.length/CHUNK)}…`); setBar(done,tracks.length);
-  let b=null;
-  try{b=await post('/api/search-batch',{queries:slice.map(t=>`${t.title} ${t.artist}`),workers:8},60000);}
-  catch(e){log(` batch ${base/CHUNK+1} ERR: ${e.name==='AbortError'?'timeout 60s, skipped':e}`);continue;}
+  let b=null; const tq=slice.map(t=>({title:t.title,artist:t.artist,duration_ms:t.duration_ms}));
+  try{b=await post('/api/search-batch',{tracks:tq,workers:8},90000);}
+  catch(e){log(` batch ${base/CHUNK+1} ERR: ${e.name==='AbortError'?'timeout 90s, skipped':e}`);continue;}
   if(!b.ok&&(b.kind==='throttle'||b.kind==='transient')){log(` batch ${base/CHUNK+1} ${b.kind}: ${b.hint} retrying…`);await new Promise(r=>setTimeout(r,2500));
-   try{b=await post('/api/search-batch',{queries:slice.map(t=>`${t.title} ${t.artist}`),workers:4},60000);}catch(e){log(` batch retry ERR: ${e}`);continue;}}
+   try{b=await post('/api/search-batch',{tracks:tq,workers:4},90000);}catch(e){log(` batch retry ERR: ${e}`);continue;}}
   if(!b.ok){if(b.kind==='auth'||b.kind==='parse'){log(` batch FATAL [${b.kind}]: ${b.hint}`);workOff(`stopped: ${b.kind}.`);return {fatal:true};}log(` batch ${base/CHUNK+1} FAIL: ${b.error}`);continue;}
   b.results.forEach((s,k)=>{const t=slice[k],i=base+k;
-   if(s.ok){vids.push(s.videoId); log(` [${i+1}/${tracks.length}] ${t.title} → ${s.videoId} (${s.title})`);}
-   else log(` [${i+1}] MISS ${t.title}: ${s.error}`);});
+   if(s.videoId){vids.push(s.videoId); log(` [${i+1}/${tracks.length}] ${t.title} → ${s.videoId}${s.alt?' (alt match)':''} (${s.title})`);}
+   else log(` [${i+1}] SKIP ${t.title}: ${s.skipped||s.error||'no match'}`);});
  }
  prog(`MATCHED ${vids.length}/${tracks.length}`); setBar(vids.length,tracks.length);
- log(`MATCHED ${vids.length}/${tracks.length}`);
+ log(`MATCHED ${vids.length}/${tracks.length} (${tracks.length-vids.length} skipped — playlist continues regardless)`);
+ if(!vids.length){log('STOPPED: zero matches, nothing to create.');workOff('zero matches.');return;}
  if(!yt_cookie.value.trim()){log('3/3 SKIPPED create — no YTM cookie. Paste/type or load file, then click again.');window._vids=vids;workOff(`matched ${vids.length}/${tracks.length} — waiting for YTM cookie.`);return;}
  log('3/3 creating ytm playlist (auth = YOUR cookie only)…'); prog('3/3 creating playlist…');
- const c=await post('/api/create-playlist',{yt_cookie:yt_cookie.value,title:pl_title.value||r.playlist_name,description:'imported from '+sp_url.value,videoIds:vids,privacy:privacy.value});
+ const c=await post('/api/create-playlist',{yt_cookie:yt_cookie.value,title:pl_title.value||r.playlist_name,description:'',videoIds:vids,privacy:privacy.value});
  if(!c.ok){log('CREATE FAIL: '+c.error); if(c.hint)log('DIAGNOSIS ['+(c.kind||'?')+']: '+c.hint); workOff('create failed.');return;}
  setBar(tracks.length,tracks.length); workOff('done.');
  log('DONE: '+c.url);
