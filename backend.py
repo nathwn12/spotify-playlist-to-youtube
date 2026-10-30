@@ -112,7 +112,9 @@ def fetch_spotify_tracks(playlist_url: str, cookie: str = ""):
             "artist": t.get("subtitle", ""),
             "duration_ms": t.get("duration", 0),
         })
-    return {"playlist_id": pid, "playlist_name": entity.get("title", ""), "tracks": out}
+    return {"playlist_id": pid, "playlist_name": entity.get("title", ""),
+            "cover_url": ((entity.get("coverArt", {}) or {}).get("sources", [{}])[0] or {}).get("url", ""),
+            "tracks": out}
 
 def yt_search(query: str):
     body = json.dumps({"context": {"client": CLIENT}, "query": query,

@@ -47,6 +47,7 @@ button:disabled{filter:grayscale(.6) brightness(.7);cursor:wait}
 <label>YouTube Music cookie <span class="hint">(needed to create playlist — auto-filled from upload, or type)</span></label>
 <textarea id="yt_cookie" rows="3" placeholder="__Secure-3PAPISID=...; SAPISID=...; ..."></textarea>
 <div class="row"><div><label>New YTM playlist title</label><input id="pl_title" value="black b1ll (from spotify)"></div>
+<div style="flex:0 0 64px"><label>Cover</label><img id="cover" alt="" style="width:56px;height:56px;border-radius:8px;object-fit:cover;display:none;border:1px solid #3a3a44"></div>
 <div style="flex:0 0 170px"><label>Privacy</label><select id="privacy"><option>PRIVATE</option><option>PUBLIC</option><option>UNLISTED</option></select></div></div>
 </div>
 <div class="btns"><button id="go">1-CLICK TRANSFER →</button><button id="step1" type="button">1) load spotify only</button></div>
@@ -59,8 +60,9 @@ const workOn=(label)=>{spinEl.classList.add('on');barEl.classList.add('live');wi
 const workOff=(label)=>{spinEl.classList.remove('on');barEl.classList.remove('live');window._busy=false;document.getElementById('go').disabled=false;document.getElementById('step1').disabled=false;if(label)progEl.textContent=label;};
 const prog=(m)=>{progEl.textContent=m;};
 const setBar=(done,total)=>{fillEl.style.width=(total?Math.round(100*done/total):0)+'%';};
-const setAutoTitle=(name)=>{const auto=`${name} (from spotify)`;const el=document.getElementById('pl_title');
- if(!el.value.trim()||el.value===window._autoTitle||el.value==='black b1ll (from spotify)')el.value=auto;window._autoTitle=auto;};
+const setAutoTitle=(name,cover)=>{const auto=`${name} (from spotify)`;const el=document.getElementById('pl_title');
+ if(!el.value.trim()||el.value===window._autoTitle||el.value==='black b1ll (from spotify)')el.value=auto;window._autoTitle=auto;
+ const im=document.getElementById('cover'); if(cover){im.src=cover;im.style.display='block';}};
 function guessTarget(fname,text){const n=(fname||'').toLowerCase(),t=String(text||'').slice(0,4000);
  let yt=0,sp=0;
  if(n.includes('youtube'))yt+=3; if(n.includes('music.youtube'))yt+=3; if(n.includes('ytm'))yt+=2;
@@ -85,7 +87,7 @@ async function autoDetectTitle(){
  const my=++detectToken; prog('detecting playlist title…');
  try{const r=await post('/api/spotify',{url:u,spotify_cookie:document.getElementById('sp_cookie').value},25000);
   if(my!==detectToken||!r.ok)return;
-  setAutoTitle(r.playlist_name);
+  setAutoTitle(r.playlist_name,r.cover_url);
   prog(`detected: ${r.playlist_name} — ${r.tracks.length} tracks. Ready.`);
  }catch(e){/* silent; the button run reports errors */}
 }
@@ -94,7 +96,7 @@ document.getElementById('step1').onclick=async()=>{
  document.getElementById('log').textContent=''; workOn('loading spotify…'); setBar(0,1);
  const r=await post('/api/spotify',{url:sp_url.value,spotify_cookie:sp_cookie.value});
  if(!r.ok){log('SPOTIFY FAIL: '+r.error);workOff('failed.');return;} log(`SPOTIFY OK: ${r.playlist_name} — ${r.tracks.length} tracks`);
- setAutoTitle(r.playlist_name);
+ setAutoTitle(r.playlist_name,r.cover_url);
  r.tracks.slice(0,5).forEach(t=>log(` - ${t.title} — ${t.artist}`)); setBar(1,1); workOff('spotify loaded.');
  r.tracks.slice(0,5).forEach(t=>log(` - ${t.title} — ${t.artist}`));
  window._tracks=r.tracks; window._plname=r.playlist_name;
@@ -109,7 +111,7 @@ document.getElementById('go').onclick=async()=>{
  log('1/3 fetching spotify (keyless embed, + your cookie if given)…');
  let r=await post('/api/spotify',{url:sp_url.value,spotify_cookie:sp_cookie.value});
  if(!r.ok){log('SPOTIFY FAIL: '+r.error); if(r.hint)log('DIAGNOSIS ['+(r.kind||'?')+']: '+r.hint); workOff('failed.');return;}
- const tracks=r.tracks; log(`SPOTIFY OK: ${r.playlist_name} — ${tracks.length} tracks`); setAutoTitle(r.playlist_name); setBar(2,100);
+ const tracks=r.tracks; log(`SPOTIFY OK: ${r.playlist_name} — ${tracks.length} tracks`); setAutoTitle(r.playlist_name,r.cover_url); setBar(2,100);
  log('2/3 searching ytm (parallel batches of 10)…');
  const vids=[]; const CHUNK=10;
  for(let base=0;base<tracks.length;base+=CHUNK){const slice=tracks.slice(base,base+CHUNK);
