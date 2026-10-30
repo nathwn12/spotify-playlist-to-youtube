@@ -24,9 +24,7 @@ then open `http://127.0.0.1:8787`. Requires Python 3.10+. No dependencies — st
 
 ## Usage
 
-1. Export cookies with a cookie-export extension (Netscape `.txt` format) or copy the `Cookie` header from DevTools:
-   - one file from `open.spotify.com` (optional)
-   - one file from `music.youtube.com` (needed to create the playlist)
+1. Export your `music.youtube.com` cookie to a `.txt` file (cookie-export extension or DevTools → Network → copy `Cookie`). Spotify needs no login — public links only.
 2. Click the single upload button, select both files — they're auto-sorted by filename and content markers. Typing/pasting works too.
 3. Paste the Spotify playlist URL, set title + privacy, click **1-CLICK TRANSFER**.
 4. Watch the spinner + progress bar. Ends with the new `music.youtube.com/playlist?list=…` link.

@@ -43,9 +43,7 @@ button:disabled{filter:grayscale(.6) brightness(.7);cursor:wait}
 <label>Load cookies <span class="hint">(one upload — select both .txt files, auto-sorts Spotify vs YouTube)</span></label>
 <input type="file" id="cookie_files" accept=".txt,text/plain,*/*" multiple>
 <div style="margin:6px 0 0"><button id="forget" type="button" style="flex:none;padding:4px 12px;font-size:12px;background:#33333b;color:#fff">forget saved cookies</button> <span id="latchstat" style="font-size:12px;color:#8e8e98"></span></div>
-<label>Spotify cookie <span class="hint">(optional — auto-filled from upload, or type)</span></label>
-<textarea id="sp_cookie" rows="2" placeholder="sp_dc=...; sp_key=... (optional)"></textarea>
-<label>YouTube Music cookie <span class="hint">(needed to create playlist — auto-filled from upload, or type)</span></label>
+<label>YouTube Music cookie <span class="hint">(the only login you need — auto-filled from upload, or type)</span></label>
 <textarea id="yt_cookie" rows="3" placeholder="__Secure-3PAPISID=...; SAPISID=...; ..."></textarea>
 <div class="row"><div><label>New YTM playlist title</label><input id="pl_title" value="" placeholder="auto from link"></div>
 <div style="flex:0 0 64px"><label>Cover</label><img id="cover" alt="" style="width:56px;height:56px;border-radius:8px;object-fit:cover;display:none;border:1px solid #3a3a44"></div>
@@ -73,23 +71,21 @@ function guessTarget(fname,text){const n=(fname||'').toLowerCase(),t=String(text
  if(yt>sp)return 'yt'; if(sp>yt)return 'sp'; return 'unknown';}
 document.getElementById('cookie_files').onchange=()=>{const files=[...document.getElementById('cookie_files').files];if(!files.length)return;
  files.forEach(f=>{const r=new FileReader();r.onload=()=>{const text=String(r.result||'').trim();const g=guessTarget(f.name,text);
-  let field=g==='yt'?'yt_cookie':g==='sp'?'sp_cookie':(!document.getElementById('sp_cookie').value?'sp_cookie':!document.getElementById('yt_cookie').value?'yt_cookie':'sp_cookie');
-  document.getElementById(field).value=text;
-  log(`loaded ${f.name} (${text.length} chars) → ${field==='yt_cookie'?'YouTube':'Spotify'}`);
-  const sp=document.getElementById('sp_cookie').value,yt=document.getElementById('yt_cookie').value;
-  if(yt.trim()){post('/api/check',{spotify_cookie:sp,yt_cookie:yt},30000).then(k=>{if(k.ok)log(`cookie check: spotify ${k.spotify.ok?'OK':'STALE'} · ytm ${k.ytm.ok?'OK':'STALE — re-export!'}`);}).catch(()=>{});}
-  post('/api/latch',{spotify_cookie:sp,yt_cookie:yt}).catch(()=>{});
+  if(g==='sp'){log(`loaded ${f.name} — spotify cookies not needed for public links, ignored.`);return;}
+  yt_cookie.value=text;
+  log(`loaded ${f.name} (${text.length} chars) → YouTube`);
+  post('/api/check',{spotify_cookie:'',yt_cookie:text},30000).then(k=>{if(k.ok)log(`cookie check: ytm ${k.ytm.ok?'OK':'STALE — re-export!'}`);}).catch(()=>{});
+  post('/api/latch',{spotify_cookie:'',yt_cookie:text}).catch(()=>{});
  };r.readAsText(f);});};
 document.getElementById('forget').onclick=async()=>{await post('/api/forget',{}).catch(()=>{});
- sp_cookie.value='';yt_cookie.value='';document.getElementById('latchstat').textContent='vault cleared.';
+ yt_cookie.value='';document.getElementById('latchstat').textContent='vault cleared.';
  log('saved cookies forgotten.');};
 async function lastSession(){
  sp_url.value='';pl_title.value='';window._autoTitle='';
  try{const v=await post('/api/vault',{},15000);
-  if(v.has_sp)sp_cookie.value=v.sp_cookie;
   if(v.has_yt)yt_cookie.value=v.yt_cookie;
-  document.getElementById('latchstat').textContent=(v.has_sp||v.has_yt)?'cookies latched from last session.':'no saved cookies.';
-  if(v.has_yt)log('latched YouTube cookie'+((v.refreshed||[]).includes('yt')?' (fresh file from Desktop)':' from last session')+'.'+(v.has_sp?' Spotify too.':''));
+  document.getElementById('latchstat').textContent=v.has_yt?'cookies latched from last session.':'no saved cookies.';
+  if(v.has_yt)log('latched YouTube cookie'+((v.refreshed||[]).includes('yt')?' (fresh file from Desktop)':' from last session')+'.');
  }catch(e){document.getElementById('latchstat').textContent='';}
 }
 lastSession();
@@ -100,7 +96,7 @@ async function autoDetectTitle(){
  const u=document.getElementById('sp_url').value.trim();
  if(!/open\.spotify\.com\/playlist\/[A-Za-z0-9]+/.test(u))return;
  const my=++detectToken; prog('detecting playlist title…');
- try{const r=await post('/api/spotify',{url:u,spotify_cookie:document.getElementById('sp_cookie').value},25000);
+ try{const r=await post('/api/spotify',{url:u,spotify_cookie:''},25000);
   if(my!==detectToken||!r.ok)return;
   setAutoTitle(r.playlist_name,r.cover_url);
   prog(`detected: ${r.playlist_name} — ${r.tracks.length} tracks. Ready.`);
@@ -112,7 +108,7 @@ document.getElementById('copylog').onclick=async()=>{const t=document.getElement
  catch(e){const ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();try{document.execCommand('copy');prog('log copied ('+t.length+' chars).');}catch(_){prog('copy failed — select the log manually.');}ta.remove();}};
 document.getElementById('step1').onclick=async()=>{
  document.getElementById('log').textContent=''; workOn('loading spotify…'); setBar(0,1);
- const r=await post('/api/spotify',{url:sp_url.value,spotify_cookie:sp_cookie.value});
+ const r=await post('/api/spotify',{url:sp_url.value,spotify_cookie:''});
  if(!r.ok){log('SPOTIFY FAIL: '+r.error);workOff('failed.');return;} log(`SPOTIFY OK: ${r.playlist_name} — ${r.tracks.length} tracks`);
  setAutoTitle(r.playlist_name,r.cover_url);
  r.tracks.slice(0,5).forEach(t=>log(` - ${t.title} — ${t.artist}`)); setBar(1,1); workOff('spotify loaded.');
@@ -121,14 +117,13 @@ document.getElementById('step1').onclick=async()=>{
 };
 document.getElementById('go').onclick=async()=>{
  document.getElementById('log').textContent=''; workOn('checking cookies…'); setBar(0,100);
- post('/api/latch',{spotify_cookie:sp_cookie.value,yt_cookie:yt_cookie.value}).catch(()=>{});
- try{const k=await post('/api/check',{spotify_cookie:sp_cookie.value,yt_cookie:yt_cookie.value},30000);
-  log(`cookies: spotify ${k.spotify.ok?'OK':'STALE'} (${k.spotify.msg}) · ytm ${k.ytm.ok?'OK':'STALE'} (${k.ytm.msg})`);
-  if(!k.spotify.ok)log('note: continuing without spotify login (public playlists need none).');
+ post('/api/latch',{spotify_cookie:'',yt_cookie:yt_cookie.value}).catch(()=>{});
+ try{const k=await post('/api/check',{spotify_cookie:'',yt_cookie:yt_cookie.value},30000);
+  log(`cookies: ytm ${k.ytm.ok?'OK':'STALE'} (${k.ytm.msg})`);
   if(!k.ytm.ok){log('STOPPED: YTM cookie '+k.ytm.msg);log('fix: music.youtube.com → DevTools → Network → copy Cookie → save .txt → upload again.');workOff('cookie expired.');return;}
  }catch(e){log('cookie check skipped ('+e+'), continuing…');}
  log('1/3 fetching spotify (keyless embed, + your cookie if given)…');
- let r=await post('/api/spotify',{url:sp_url.value,spotify_cookie:sp_cookie.value});
+ let r=await post('/api/spotify',{url:sp_url.value,spotify_cookie:''});
  if(!r.ok){log('SPOTIFY FAIL: '+r.error); if(r.hint)log('DIAGNOSIS ['+(r.kind||'?')+']: '+r.hint); workOff('failed.');return;}
  const tracks=r.tracks; log(`SPOTIFY OK: ${r.playlist_name} — ${tracks.length} tracks`); setAutoTitle(r.playlist_name,r.cover_url); setBar(2,100);
  log('2/3 searching ytm (parallel batches of 10)…');

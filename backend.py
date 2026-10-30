@@ -20,7 +20,6 @@ HISTORY = []
 VAULTF = os.path.join(HERE, "cookie_vault.json")
 KNOWN_COOKIE_FILES = [
     os.path.join(os.environ.get("USERPROFILE", ""), "Desktop", "music.youtube.com_cookies.txt"),
-    os.path.join(os.environ.get("USERPROFILE", ""), "Desktop", "open.spotify.com_cookies.txt"),
 ]
 
 def detect_site(cookie: str) -> str:
@@ -328,19 +327,7 @@ def yt_search_batch(items, workers: int = 8):
         return list(ex.map(one, items))
 
 def check_spotify_cookie(cookie: str = "") -> dict:
-    c = normalize_cookie(cookie)
-    if not c:
-        return {"ok": True, "msg": "not provided (optional for public playlists)"}
-    try:
-        req = urllib.request.Request(
-            "https://open.spotify.com/get_access_token?reason=transport&productType=web-player",
-            headers={"User-Agent": "Mozilla/5.0", "Cookie": c})
-        r = json.loads(urllib.request.urlopen(req, timeout=15).read().decode())
-        if r.get("accessToken"):
-            return {"ok": True, "msg": "valid"}
-        return {"ok": False, "msg": "expired — export a fresh cookie file from open.spotify.com"}
-    except Exception as e:
-        return {"ok": False, "msg": f"expired or rejected (HTTP {getattr(e, 'code', '?')}) — export a fresh cookie file from open.spotify.com"}
+    return {"ok": True, "msg": "not needed — public links need no login"}
 
 def check_yt_cookie(cookie: str = "") -> dict:
     c = normalize_cookie(cookie)
