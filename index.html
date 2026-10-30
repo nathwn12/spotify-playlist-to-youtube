@@ -135,9 +135,11 @@ document.getElementById('go').onclick=async()=>{
  if(!vids.length){log('STOPPED: zero matches, nothing to create.');workOff('zero matches.');return;}
  if(!yt_cookie.value.trim()){log('3/3 SKIPPED create — no YTM cookie. Paste/type or load file, then click again.');window._vids=vids;workOff(`matched ${vids.length}/${tracks.length} — waiting for YTM cookie.`);return;}
  log('3/3 creating ytm playlist (auth = YOUR cookie only)…'); prog('3/3 creating playlist…');
- const c=await post('/api/create-playlist',{yt_cookie:yt_cookie.value,title:pl_title.value||r.playlist_name,description:'',videoIds:vids,privacy:privacy.value});
+ const c=await post('/api/create-playlist',{spotify_id:(sp_url.value.match(/playlist\/([A-Za-z0-9]+)/)||[])[1]||'',yt_cookie:yt_cookie.value,title:pl_title.value||r.playlist_name,description:'',videoIds:vids,privacy:privacy.value});
  if(!c.ok){log('CREATE FAIL: '+c.error); if(c.hint)log('DIAGNOSIS ['+(c.kind||'?')+']: '+c.hint); workOff('create failed.');return;}
- setBar(tracks.length,tracks.length); workOff('done.');
+ setBar(tracks.length,tracks.length);
+ if(c.existing){workOff('already existed.');log(`EXISTS: ${c.url} — ${c.added} tracks already there, nothing created.`);return;}
+ workOff('done.');
  log(`DONE: ${c.url} — ${c.added}/${c.sent} tracks confirmed on YTM`);
 };
 </script></body></html>

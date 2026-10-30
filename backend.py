@@ -38,6 +38,8 @@ def classify(msg: str) -> dict:
     m = (msg or "").lower()
     if "not a spotify" in m:
         return {"kind": "user", "hint": "That is not a Spotify playlist link — paste an open.spotify.com/playlist/… URL."}
+    if "did not land" in m or "add failed" in m or "add rejected" in m:
+        return {"kind": "write", "hint": "YTM took the empty playlist but refused the songs — cookie may lack write scope; re-export a fresh full Cookie and retry."}
     if "401" in m or "unauthorized" in m or "sapisid" in m or "login" in m:
         return {"kind": "auth", "hint": "YTM/Spotify login rejected it — cookie expired or wrong site. Re-export fresh cookie file and re-upload."}
     if "429" in m or "rate" in m or "quota" in m or "too many" in m:
@@ -116,6 +118,34 @@ def fetch_spotify_tracks(playlist_url: str, cookie: str = ""):
             "cover_url": ((entity.get("coverArt", {}) or {}).get("sources", [{}])[0] or {}).get("url", ""),
             "tracks": out}
 
+def mrl_video_id(mrl: dict) -> str:
+    """videoId from every known nesting (markup drifts; order = most reliable first)."""
+    pid = (mrl.get("playlistItemData", {}) or {}).get("videoId")
+    if pid:
+        return pid
+    try:
+        return mrl["overlay"]["musicItemThumbnailOverlayRenderer"]["content"]["musicPlayButtonRenderer"]["playNavigationEndpoint"]["watchEndpoint"]["videoId"]
+    except Exception:
+        pass
+    try:
+        return mrl["navigationEndpoint"]["watchEndpoint"]["videoId"]
+    except Exception:
+        pass
+    mm = re.search(r'"videoId":\s*"([A-Za-z0-9_-]{11})"', json.dumps(mrl))
+    return mm.group(1) if mm else ""
+
+def mrl_texts(mrl: dict):
+    """flexColumns today: [title, type, plays]. Returns (title, type). No durations in search."""
+    flex = mrl.get("flexColumns", [])
+
+    def col(i):
+        try:
+            return flex[i]["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"][0]["text"]
+        except Exception:
+            return ""
+
+    return col(0), col(1)
+
 def yt_search(query: str):
     body = json.dumps({"context": {"client": CLIENT}, "query": query,
                        "params": "EgWKAQIIAWoQEAMQBBAJEAkQBRAK"}).encode()
@@ -125,54 +155,34 @@ def yt_search(query: str):
                             "Origin": YT_ORIGIN, "Referer": YT_ORIGIN + "/"})
     r = urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "ignore")
     j = json.loads(r)
-    # walk to first song result: contents -> tabbedSearchResultsRenderer -> ...
     try:
         sections = j["contents"]["tabbedSearchResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"]
+        cands = []
         for sec in sections:
-            ms = sec.get("musicShelfRenderer", {}).get("contents", [])
-            for item in ms:
+            items = sec.get("musicShelfRenderer", {}).get("contents", [])
+            if not items and "itemSectionRenderer" in sec:
+                items = sec["itemSectionRenderer"].get("contents", [])
+            for item in items:
                 mrl = item.get("musicResponsiveListItemRenderer", {})
-                pid = (mrl.get("playlistItemData", {}) or {}).get("videoId")
-                # fallback: overlay / navigation endpoints
+                if not mrl:
+                    continue
+                pid = mrl_video_id(mrl)
                 if not pid:
-                    ov = json.dumps(mrl)
-                    mm = re.search(r'"videoId":"([A-Za-z0-9_-]{11})"', ov)
-                    if mm:
-                        pid = mm.group(1)
-                if pid:
-                    # title = first text run
-                    flex = mrl.get("flexColumns", [])
-                    title = ""
-                    try:
-                        title = flex[0]["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"][0]["text"]
-                    except Exception:
-                        pass
-                    # duration from fixedColumns
-                    dur = ""
-                    try:
-                        dur = mrl["fixedColumns"][0]["musicResponsiveListItemFixedColumnRenderer"]["text"]["runs"][0]["text"]
-                    except Exception:
-                        pass
-                    return {"videoId": pid, "title": title, "duration": dur, "query": query}
-    except Exception as e:
-        pass
-    # regex fallback (proven to work keyless)
-    m = re.search(r'"videoId":"([A-Za-z0-9_-]{11})"', r)
-    if m:
-        return {"videoId": m.group(1), "title": "", "duration": "", "query": query}
-    raise RuntimeError("no ytm result for: " + query)
-
-def parse_dur(s: str = ""):
-    """'3:45' -> 225. None when unknown."""
-    try:
-        p = [int(x) for x in str(s).strip().split(":")]
-        if len(p) == 2:
-            return p[0] * 60 + p[1]
-        if len(p) == 3:
-            return p[0] * 3600 + p[1] * 60 + p[2]
+                    continue
+                title, typ = mrl_texts(mrl)
+                cands.append({"videoId": pid, "title": title, "type": typ})
+        want_q = query
+        for c in cands:  # Song rows whose title overlaps the query
+            if c["type"] == "Song" and c["title"] and title_overlap(want_q, c["title"]):
+                c.update({"artist": "", "duration": "", "query": query})
+                return c
+        for c in cands:  # any titled overlap (video etc.)
+            if c["title"] and title_overlap(want_q, c["title"]):
+                c.update({"artist": "", "duration": "", "query": query})
+                return c
     except Exception:
         pass
-    return None
+    raise RuntimeError("no ytm result for: " + query)
 
 def title_overlap(a: str, b: str) -> bool:
     wa = set(re.findall(r"[a-z0-9]{3,}", (a or "").lower()))
@@ -180,33 +190,23 @@ def title_overlap(a: str, b: str) -> bool:
     return bool(wa & wb)
 
 def yt_match(title: str, artist: str = "", duration_ms: int = 0) -> dict:
-    """One song, isolated. Tries query variants, prefers duration match.
+    """One song, isolated. Query variants in order; search ranks Song+overlap first.
     Never raises: no match -> videoId None (skip), never a batch failure."""
     title, artist = (title or "").strip(), (artist or "").strip()
-    want = (duration_ms or 0) // 1000
-    variants = [f"{title} {artist}".strip(), title, f"{artist} - {title}".strip()]
-    first = None
-    for q in variants:
+    want_q = f"{title} {artist}".strip()
+    for qi, q in enumerate([want_q, title, f"{artist} - {title}".strip()]):
         if not q:
             continue
         try:
             r = yt_search(q)
         except Exception:
             continue
-        want_q = f"{title} {artist}".strip()
-        if r.get("title") and not title_overlap(want_q, r["title"]):
-            continue  # parsed shelf title shares nothing with the song — wrong result, next variant
-        else:
-            if first is None:
-                first = {**r, "via": q}
-            got = parse_dur(r.get("duration", ""))
-            if want and got and abs(got - want) <= 12:
-                return {"ok": True, "query": f"{title} {artist}".strip(), **r, "via": q, "alt": q != variants[0]}
-            if not want or got is None:
-                return {"ok": True, "query": f"{title} {artist}".strip(), **r, "via": q, "alt": q != variants[0]}
-    if first:
-        return {"ok": True, "query": f"{title} {artist}".strip(), **first, "alt": first.get("via") != variants[0]}
-    return {"ok": True, "query": f"{title} {artist}".strip(), "videoId": None,
+        if r.get("videoId"):
+            r["query"] = want_q
+            r["via"] = q
+            r["alt"] = qi > 0
+            return {**{"ok": True}, **r}
+    return {"ok": True, "query": want_q, "videoId": None,
             "title": "", "duration": "", "skipped": "no match on any variant"}
 
 def yt_search_safe(query: str):
@@ -279,15 +279,36 @@ def sapisid_hash(cookie: str, origin: str = YT_ORIGIN) -> str:
     h = hashlib.sha1(f"{ts} {sid} {origin}".encode()).hexdigest()
     return f"SAPISIDHASH {ts}_{h}"
 
+CREATEDF = os.path.join(HERE, "created.json")
+
+def load_created() -> dict:
+    try:
+        with open(CREATEDF, encoding="utf-8") as f:
+            d = json.load(f)
+            return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+def save_created(d: dict):
+    try:
+        with open(CREATEDF, "w", encoding="utf-8") as f:
+            json.dump(d, f)
+    except Exception:
+        pass
+
+def vl_id(plid: str) -> str:
+    plid = (plid or "").strip()
+    return plid if plid.startswith("VL") else ("VL" + plid if plid else "")
+
 def yt_playlist_count(plid: str, headers: dict) -> int:
     """Browse a playlist with the user's auth, count its video items. 0 on any failure."""
     try:
-        body = json.dumps({"context": {"client": CLIENT}, "browseId": plid}).encode()
+        body = json.dumps({"context": {"client": CLIENT}, "browseId": vl_id(plid)}).encode()
         req = urllib.request.Request(
             f"https://music.youtube.com/youtubei/v1/browse?key={YT_KEY}&prettyPrint=false",
             data=body, headers=headers)
         txt = urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "ignore")
-        vids = set(re.findall(r'"videoId":"([A-Za-z0-9_-]{11})"', txt))
+        vids = set(re.findall(r'"videoId":\s*"([A-Za-z0-9_-]{11})"', txt))
         return len(vids)
     except Exception:
         return 0
@@ -298,11 +319,10 @@ def yt_create_playlist(yt_cookie: str, title: str, description: str, video_ids: 
     base_h = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0",
               "Origin": YT_ORIGIN, "Referer": YT_ORIGIN + "/", "Cookie": yt_cookie,
               "Authorization": auth, "X-Origin": YT_ORIGIN}
-    # 1. create WITH the first chunk of videos inline (upstream-blessed path)
-    first, rest = video_ids[:50], video_ids[50:]
+    # 1. create WITH the songs inline (upstream-blessed path)
     body = json.dumps({"context": {"client": CLIENT}, "title": title,
                        "description": description or "", "privacyStatus": privacy,
-                       "videoIds": first}).encode()
+                       "videoIds": video_ids[:50]}).encode()
     req = urllib.request.Request(
         f"https://music.youtube.com/youtubei/v1/playlist/create?key={YT_KEY}&prettyPrint=false",
         data=body, headers=base_h)
@@ -311,25 +331,64 @@ def yt_create_playlist(yt_cookie: str, title: str, description: str, video_ids: 
     plid = j.get("playlistId") or j.get("playlistID")
     if not plid:
         raise RuntimeError("create failed: " + r[:400])
-    # 2. remainder via browse/edit_playlist (upstream endpoint), demanding success
-    for i in range(0, len(rest), 50):
-        chunk = rest[i:i+50]
-        actions = [{"action": "ACTION_ADD_VIDEO", "addedVideoId": v} for v in chunk]
-        b2 = json.dumps({"context": {"client": CLIENT}, "playlistId": plid, "actions": actions}).encode()
-        try:
-            er = urllib.request.urlopen(urllib.request.Request(
-                f"https://music.youtube.com/youtubei/v1/browse/edit_playlist?key={YT_KEY}&prettyPrint=false",
-                data=b2, headers=base_h), timeout=25).read().decode("utf-8", "ignore")
-        except Exception as e:
-            raise RuntimeError(f"add failed on chunk {i // 50 + 1}: {type(e).__name__} {getattr(e, 'code', '')}")
-        if "SUCCEEDED" not in er:
-            raise RuntimeError(f"add rejected on chunk {i // 50 + 1}: " + er[:200])
+    blog("create", f"id={plid} reply={r[:200]}")
+    # 2. belt and suspenders: also add everything via browse/edit_playlist,
+    # then verify. Full edit response goes to the audit log for diagnosis.
+    if video_ids:
+        for i in range(0, len(video_ids), 50):
+            chunk = video_ids[i:i+50]
+            actions = [{"action": "ACTION_ADD_VIDEO", "addedVideoId": v} for v in chunk]
+            b2 = json.dumps({"context": {"client": CLIENT}, "playlistId": plid, "actions": actions}).encode()
+            try:
+                er = urllib.request.urlopen(urllib.request.Request(
+                    f"https://music.youtube.com/youtubei/v1/browse/edit_playlist?key={YT_KEY}&prettyPrint=false",
+                    data=b2, headers=base_h), timeout=25).read().decode("utf-8", "ignore")
+            except Exception as e:
+                blog("edit", f"chunk {i // 50 + 1} raised {type(e).__name__} {getattr(e, 'code', '')}")
+                raise RuntimeError(f"add failed on chunk {i // 50 + 1}: {type(e).__name__} {getattr(e, 'code', '')}")
+            blog("edit", f"chunk {i // 50 + 1} reply: {er[:300]}")
+            if "SUCCEEDED" not in er:
+                raise RuntimeError(f"add rejected on chunk {i // 50 + 1}: " + er[:300])
     # 3. verify: browse it back with the user's auth and count real items
     confirmed = yt_playlist_count(plid, base_h)
     if video_ids and not confirmed:
-        raise RuntimeError("songs did not land (playlist reads back empty) — YTM rejected the adds; re-check cookie and retry")
+        yt_delete_playlist(plid, base_h)
+        raise RuntimeError("songs did not land (playlist reads back empty, husk deleted) — YTM rejected the adds; re-check cookie and retry")
     return {"playlistId": plid, "url": f"https://music.youtube.com/playlist?list={plid}",
             "added": confirmed, "sent": len(video_ids)}
+
+def yt_delete_playlist(plid: str, headers: dict):
+    try:
+        body = json.dumps({"context": {"client": CLIENT}, "playlistId": plid}).encode()
+        urllib.request.urlopen(urllib.request.Request(
+            f"https://music.youtube.com/youtubei/v1/playlist/delete?key={YT_KEY}&prettyPrint=false",
+            data=body, headers=headers), timeout=20).read()
+    except Exception:
+        pass
+
+def yt_create_checked(spotify_id: str, yt_cookie: str, title: str, description: str,
+                      video_ids: list, privacy: str = "PRIVATE") -> dict:
+    """Dupe-aware create: same spotify source transferred before and YTM copy
+    still alive -> return it, create nothing. Empty results always deleted."""
+    yt_cookie = normalize_cookie(yt_cookie)
+    auth = sapisid_hash(yt_cookie)
+    base_h = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0",
+              "Origin": YT_ORIGIN, "Referer": YT_ORIGIN + "/", "Cookie": yt_cookie,
+              "Authorization": auth, "X-Origin": YT_ORIGIN}
+    if spotify_id:
+        rec = load_created().get(spotify_id)
+        if rec and rec.get("yt_id"):
+            n = yt_playlist_count(rec["yt_id"], base_h)
+            if n:
+                blog("create", f"exists title={title} url={rec.get('url')} tracks={n}")
+                return {"playlistId": rec["yt_id"], "url": rec.get("url", ""),
+                        "added": n, "sent": len(video_ids), "existing": True}
+    r = yt_create_playlist(yt_cookie, title, description, video_ids, privacy)
+    if spotify_id:
+        created = load_created()
+        created[spotify_id] = {"yt_id": r["playlistId"], "url": r["url"], "title": title}
+        save_created(created)
+    return r
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -395,10 +454,11 @@ class H(BaseHTTPRequestHandler):
                 blog("batch", f"n={len(clean)} matched={hit} skipped={skip} workers={payload.get('workers', 8)}")
                 return self.send_json({"ok": True, "results": results})
             if self.path == "/api/create-playlist":
-                r = yt_create_playlist(payload.get("yt_cookie", ""), payload.get("title", "Spotify import"),
-                                       payload.get("description", ""), payload.get("videoIds", []),
-                                       payload.get("privacy", "PRIVATE"))
-                blog("create", f"ok playlist={r.get('playlistId')} added={r.get('added')}")
+                r = yt_create_checked(payload.get("spotify_id", ""), payload.get("yt_cookie", ""),
+                                      payload.get("title", "Spotify import"),
+                                      payload.get("description", ""), payload.get("videoIds", []),
+                                      payload.get("privacy", "PRIVATE"))
+                blog("create", f"ok playlist={r.get('playlistId')} added={r.get('added')} existing={r.get('existing', False)}")
                 return self.send_json({"ok": True, **r})
             if self.path == "/api/check":
                 sp = check_spotify_cookie(payload.get("spotify_cookie", ""))
