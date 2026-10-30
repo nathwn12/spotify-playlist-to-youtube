@@ -73,7 +73,18 @@ sp2yt/
 
 Live mark: `assets/icon.ico` (built from `assets/icon-src.png`). Candidate shelf lives beside it — swap the winner in, rebuild the `.exe`, then run `refresh-shortcut.cmd`: it rebuilds the Desktop shortcut and refreshes the Windows icon cache automatically. No manual cache clearing.
 
+## Build
+
+Two lanes, same repo:
+
+- **DEV** — double-click `sp2yt-start.cmd` (or the `sp2yt-dev` desktop shortcut). Runs the Python source directly, no build. Iterate here.
+- **PROD** — run `build.cmd`. Backs up the current exe, kills running instances, compiles a single portable `sp2yt.exe`, then smoke-tests it (health + UI markers). Green? The backup is deleted and prod is live. Red? The previous exe is restored automatically.
+
+Every build must go green before it ships — no green, no prod.
+
 ## License
+
+MIT — see `LICENSE`.
 
 MIT — see `LICENSE`.
 
