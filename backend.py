@@ -396,14 +396,14 @@ def yt_create_playlist(yt_cookie: str, title: str, description: str, video_ids: 
     if not plid:
         raise RuntimeError("create failed: " + r[:400])
     blog("create", f"id={plid} reply={r[:200]}")
-    # 2. belt and suspenders: also add everything via browse/edit_playlist.
+    # 2. add each video in its own call: one bad id must not poison the batch.
     # The read-back in step 3 is the source of truth — edit replies are only logged.
     edit_notes = []
+    failed = []
     if video_ids:
-        for i in range(0, len(video_ids), 50):
-            chunk = video_ids[i:i+50]
-            actions = [{"action": "ACTION_ADD_VIDEO", "addedVideoId": v} for v in chunk]
-            b2 = json.dumps({"context": {"client": CLIENT}, "playlistId": plid, "actions": actions}).encode()
+        for k, v in enumerate(video_ids):
+            b2 = json.dumps({"context": {"client": CLIENT}, "playlistId": plid, "actions": [
+                {"action": "ACTION_ADD_VIDEO", "addedVideoId": v}]}).encode()
             try:
                 er = urllib.request.urlopen(urllib.request.Request(
                     f"https://music.youtube.com/youtubei/v1/browse/edit_playlist?key={YT_KEY}&prettyPrint=false",
@@ -412,20 +412,24 @@ def yt_create_playlist(yt_cookie: str, title: str, description: str, video_ids: 
                     status = json.loads(er).get("status", "")
                 except Exception:
                     status = er[:120]
-                edit_notes.append(f"chunk {i // 50 + 1}: {status}")
-                blog("edit", f"chunk {i // 50 + 1} status={status}")
+                if "SUCCEED" in str(status).upper():
+                    continue
+                failed.append(v)
+                blog("edit", f"video {k + 1} {v} rejected: {status}")
             except Exception as e:
-                edit_notes.append(f"chunk {i // 50 + 1}: {type(e).__name__} {getattr(e, 'code', '')}")
-                blog("edit", f"chunk {i // 50 + 1} raised {type(e).__name__} {getattr(e, 'code', '')}")
+                failed.append(v)
+                blog("edit", f"video {k + 1} {v} raised {type(e).__name__} {getattr(e, 'code', '')}")
+        if failed:
+            blog("edit", f"{len(failed)}/{len(video_ids)} rejected")
     # 3. verify: browse it back with the user's auth and count real items
     confirmed = yt_playlist_count(plid, yt_cookie)
     if video_ids and not confirmed:
         cleaned = yt_delete_playlist(plid, yt_cookie)
         raise RuntimeError("songs did not land (playlist reads back empty"
                            + (", husk deleted" if cleaned else ", husk cleanup failed — delete it manually")
-                           + "). Edits said: " + "; ".join(edit_notes)[:250])
+                           + f"). {len(failed)}/{len(video_ids)} adds rejected — see server.log edit lines")
     return {"playlistId": plid, "url": f"https://music.youtube.com/playlist?list={plid}",
-            "added": confirmed, "sent": len(video_ids)}
+            "added": confirmed, "sent": len(video_ids), "rejected": len(failed)}
 
 def yt_delete_playlist(plid: str, yt_cookie: str) -> bool:
     try:

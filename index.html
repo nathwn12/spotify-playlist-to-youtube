@@ -121,6 +121,7 @@ document.getElementById('step1').onclick=async()=>{
 };
 document.getElementById('go').onclick=async()=>{
  document.getElementById('log').textContent=''; workOn('checking cookies…'); setBar(0,100);
+ post('/api/latch',{spotify_cookie:sp_cookie.value,yt_cookie:yt_cookie.value}).catch(()=>{});
  try{const k=await post('/api/check',{spotify_cookie:sp_cookie.value,yt_cookie:yt_cookie.value},30000);
   log(`cookies: spotify ${k.spotify.ok?'OK':'STALE'} (${k.spotify.msg}) · ytm ${k.ytm.ok?'OK':'STALE'} (${k.ytm.msg})`);
   if(!k.spotify.ok)log('note: continuing without spotify login (public playlists need none).');
@@ -155,6 +156,6 @@ document.getElementById('go').onclick=async()=>{
  setBar(tracks.length,tracks.length);
  if(c.existing){workOff('already existed.');log(`EXISTS: ${c.url} — ${c.added} tracks already there, nothing created.`);return;}
  workOff('done.');
- log(`DONE: ${c.url} — ${c.added}/${c.sent} tracks confirmed on YTM`);
+ log(`DONE: ${c.url} — ${c.added}/${c.sent} tracks confirmed on YTM${c.rejected?` (${c.rejected} rejected at add, see log)`:''}`);
 };
 </script></body></html>
