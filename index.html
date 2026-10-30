@@ -46,7 +46,7 @@ button:disabled{filter:grayscale(.6) brightness(.7);cursor:wait}
 <textarea id="sp_cookie" rows="2" placeholder="sp_dc=...; sp_key=... (optional)"></textarea>
 <label>YouTube Music cookie <span class="hint">(needed to create playlist — auto-filled from upload, or type)</span></label>
 <textarea id="yt_cookie" rows="3" placeholder="__Secure-3PAPISID=...; SAPISID=...; ..."></textarea>
-<div class="row"><div><label>New YTM playlist title</label><input id="pl_title" value="black b1ll (from spotify)"></div>
+<div class="row"><div><label>New YTM playlist title</label><input id="pl_title" value="" placeholder="auto from link"></div>
 <div style="flex:0 0 64px"><label>Cover</label><img id="cover" alt="" style="width:56px;height:56px;border-radius:8px;object-fit:cover;display:none;border:1px solid #3a3a44"></div>
 <div style="flex:0 0 170px"><label>Privacy</label><select id="privacy"><option>PRIVATE</option><option>PUBLIC</option><option>UNLISTED</option></select></div></div>
 </div>
@@ -60,8 +60,8 @@ const workOn=(label)=>{spinEl.classList.add('on');barEl.classList.add('live');wi
 const workOff=(label)=>{spinEl.classList.remove('on');barEl.classList.remove('live');window._busy=false;document.getElementById('go').disabled=false;document.getElementById('step1').disabled=false;if(label)progEl.textContent=label;};
 const prog=(m)=>{progEl.textContent=m;};
 const setBar=(done,total)=>{fillEl.style.width=(total?Math.round(100*done/total):0)+'%';};
-const setAutoTitle=(name,cover)=>{const auto=`${name} (from spotify)`;const el=document.getElementById('pl_title');
- if(!el.value.trim()||el.value===window._autoTitle||el.value==='black b1ll (from spotify)')el.value=auto;window._autoTitle=auto;
+const setAutoTitle=(name,cover)=>{const auto=String(name||'').trim();const el=document.getElementById('pl_title');
+ if(!el.value.trim()||el.value===window._autoTitle||/ \(from spotify\)$/.test(el.value))el.value=auto;window._autoTitle=auto;
  const im=document.getElementById('cover'); if(cover){im.src=cover;im.style.display='block';}};
 function guessTarget(fname,text){const n=(fname||'').toLowerCase(),t=String(text||'').slice(0,4000);
  let yt=0,sp=0;
@@ -135,6 +135,6 @@ document.getElementById('go').onclick=async()=>{
  const c=await post('/api/create-playlist',{yt_cookie:yt_cookie.value,title:pl_title.value||r.playlist_name,description:'',videoIds:vids,privacy:privacy.value});
  if(!c.ok){log('CREATE FAIL: '+c.error); if(c.hint)log('DIAGNOSIS ['+(c.kind||'?')+']: '+c.hint); workOff('create failed.');return;}
  setBar(tracks.length,tracks.length); workOff('done.');
- log('DONE: '+c.url);
+ log(`DONE: ${c.url} — ${c.added}/${c.sent} tracks confirmed on YTM`);
 };
 </script></body></html>

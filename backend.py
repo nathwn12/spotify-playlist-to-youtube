@@ -279,6 +279,19 @@ def sapisid_hash(cookie: str, origin: str = YT_ORIGIN) -> str:
     h = hashlib.sha1(f"{ts} {sid} {origin}".encode()).hexdigest()
     return f"SAPISIDHASH {ts}_{h}"
 
+def yt_playlist_count(plid: str, headers: dict) -> int:
+    """Browse a playlist with the user's auth, count its video items. 0 on any failure."""
+    try:
+        body = json.dumps({"context": {"client": CLIENT}, "browseId": plid}).encode()
+        req = urllib.request.Request(
+            f"https://music.youtube.com/youtubei/v1/browse?key={YT_KEY}&prettyPrint=false",
+            data=body, headers=headers)
+        txt = urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "ignore")
+        vids = set(re.findall(r'"videoId":"([A-Za-z0-9_-]{11})"', txt))
+        return len(vids)
+    except Exception:
+        return 0
+
 def yt_create_playlist(yt_cookie: str, title: str, description: str, video_ids: list, privacy: str = "PRIVATE"):
     yt_cookie = normalize_cookie(yt_cookie)
     auth = sapisid_hash(yt_cookie)
@@ -296,23 +309,32 @@ def yt_create_playlist(yt_cookie: str, title: str, description: str, video_ids: 
     plid = j.get("playlistId") or j.get("playlistID")
     if not plid:
         raise RuntimeError("create failed: " + r[:400])
-    # 2. add videos in chunks of 50
+    # 2. add videos in chunks of 50, demanding STATUS_SUCCEEDED from the edit call
+    edit_paths = ["browse/edit_playlist", "playlist/edit"]
     for i in range(0, len(video_ids), 50):
         chunk = video_ids[i:i+50]
         actions = [{"action": "ACTION_ADD_VIDEO", "addedVideoId": v} for v in chunk]
         b2 = json.dumps({"context": {"client": CLIENT}, "playlistId": plid, "actions": actions}).encode()
-        req2 = urllib.request.Request(
-            f"https://music.youtube.com/youtubei/v1/browse/edit_playlist?key={YT_KEY}&prettyPrint=false",
-            data=b2, headers=base_h)
-        # NOTE: correct endpoint is playlist/edit ; try edit_playlist then fallback
-        try:
-            urllib.request.urlopen(req2, timeout=25).read()
-        except Exception:
-            req3 = urllib.request.Request(
-                f"https://music.youtube.com/youtubei/v1/playlist/edit?key={YT_KEY}&prettyPrint=false",
-                data=b2, headers=base_h)
-            urllib.request.urlopen(req3, timeout=25).read()
-    return {"playlistId": plid, "url": f"https://music.youtube.com/playlist?list={plid}", "added": len(video_ids)}
+        last_err = ""
+        for path in edit_paths:
+            try:
+                er = urllib.request.urlopen(urllib.request.Request(
+                    f"https://music.youtube.com/youtubei/v1/{path}?key={YT_KEY}&prettyPrint=false",
+                    data=b2, headers=base_h), timeout=25).read().decode("utf-8", "ignore")
+                if '"STATUS_SUCCEEDED"' in er or '"status":"STATUS_SUCCEEDED"' in er.replace(" ", ""):
+                    last_err = ""
+                    break
+                last_err = er[:200]
+            except Exception as e:
+                last_err = f"{type(e).__name__} {getattr(e, 'code', '')}"
+        if last_err:
+            raise RuntimeError(f"add failed on chunk {i // 50 + 1}: {last_err}")
+    # 3. verify: browse it back with the user's auth and count real items
+    confirmed = yt_playlist_count(plid, base_h)
+    if video_ids and not confirmed:
+        raise RuntimeError("songs did not land (playlist reads back empty) — YTM rejected the adds; re-check cookie and retry")
+    return {"playlistId": plid, "url": f"https://music.youtube.com/playlist?list={plid}",
+            "added": confirmed, "sent": len(video_ids)}
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
