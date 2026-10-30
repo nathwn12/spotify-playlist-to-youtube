@@ -10,3 +10,6 @@ build/
 dist/
 *.spec
 sp2yt.exe
+sp2yt-app.exe
+sp2yt.prev.exe
+sp2yt-app.prev.exe

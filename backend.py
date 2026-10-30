@@ -15,10 +15,15 @@ except Exception:
     HAVE_AES = False
 
 HERE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
-LOGF = os.path.join(HERE, "server.log")
+STATE = os.path.join(os.environ.get("APPDATA", HERE), "sp2yt")
+try:
+    os.makedirs(STATE, exist_ok=True)
+except Exception:
+    STATE = HERE
+LOGF = os.path.join(STATE, "server.log")
 HISTORY = []
-VAULTF = os.path.join(HERE, "cookie_vault.json")
-WATCHF = os.path.join(HERE, "cookie_watch.json")
+VAULTF = os.path.join(STATE, "cookie_vault.json")
+WATCHF = os.path.join(STATE, "cookie_watch.json")
 
 def home_dir() -> str:
     return os.path.expanduser("~")
@@ -390,7 +395,7 @@ def sapisid_hash(cookie: str, origin: str = YT_ORIGIN) -> str:
     h = hashlib.sha1(f"{ts} {sid} {origin}".encode()).hexdigest()
     return f"SAPISIDHASH {ts}_{h}"
 
-CREATEDF = os.path.join(HERE, "created.json")
+CREATEDF = os.path.join(STATE, "created.json")
 
 def load_created() -> dict:
     try:
