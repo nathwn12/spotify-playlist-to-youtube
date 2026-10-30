@@ -71,6 +71,12 @@ sp2yt/
 └── server.log        # local audit log (git-ignored)
 ```
 
+## Icons
+
+Live mark: `assets/icon.ico` (built from `assets/icon-src.png`). Candidate shelf lives beside it — swap the winner in, rebuild the `.exe`, then run `refresh-shortcut.cmd`: it rebuilds the Desktop shortcut and refreshes the Windows icon cache automatically. No manual cache clearing.
+
 ## License
+
+MIT — see `LICENSE`.
 
 MIT — see `LICENSE`.
