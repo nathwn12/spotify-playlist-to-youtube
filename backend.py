@@ -381,6 +381,7 @@ def yt_playlist_count(plid: str, yt_cookie: str) -> int:
 
 def yt_create_playlist(yt_cookie: str, title: str, description: str, video_ids: list, privacy: str = "PRIVATE"):
     yt_cookie = normalize_cookie(yt_cookie)
+    video_ids = list(dict.fromkeys(video_ids or []))  # dupes collapse to one add
     base_h = yt_headers(yt_cookie)
     # 1. create WITH the songs inline (upstream-blessed path)
     body = json.dumps({"context": {"client": CLIENT}, "title": title,
