@@ -1,6 +1,7 @@
 server.log
 created.json
 cookie_vault.json
+cookie_watch.json
 __pycache__/
 *.pyc
 *.pyo

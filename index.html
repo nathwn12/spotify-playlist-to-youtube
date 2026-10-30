@@ -43,6 +43,8 @@ button:disabled{filter:grayscale(.6) brightness(.7);cursor:wait}
 <label>Load cookies <span class="hint">(one upload — select both .txt files, auto-sorts Spotify vs YouTube)</span></label>
 <input type="file" id="cookie_files" accept=".txt,text/plain,*/*" multiple>
 <div style="margin:6px 0 0"><button id="forget" type="button" style="flex:none;padding:4px 12px;font-size:12px;background:#33333b;color:#fff">forget saved cookies</button> <span id="latchstat" style="font-size:12px;color:#8e8e98"></span></div>
+<div style="margin:6px 0 0;display:flex;gap:8px"><input id="watchdir" placeholder="extra folder to watch (optional)" style="flex:1"><button id="watchsave" type="button" style="flex:none;padding:4px 12px;font-size:12px;background:#33333b;color:#fff">watch</button></div>
+<div id="watchlist" style="font-size:12px;color:#8e8e98"></div>
 <label>YouTube Music cookie <span class="hint">(the only login you need — auto-filled from upload, or type)</span></label>
 <textarea id="yt_cookie" rows="3" placeholder="__Secure-3PAPISID=...; SAPISID=...; ..."></textarea>
 <div class="row"><div><label>New YTM playlist title</label><input id="pl_title" value="" placeholder="auto from link"></div>
@@ -78,14 +80,22 @@ document.getElementById('cookie_files').onchange=()=>{const files=[...document.g
   post('/api/latch',{spotify_cookie:'',yt_cookie:text}).catch(()=>{});
  };r.readAsText(f);});};
 document.getElementById('forget').onclick=async()=>{await post('/api/forget',{}).catch(()=>{});
- yt_cookie.value='';document.getElementById('latchstat').textContent='vault cleared.';
- log('saved cookies forgotten.');};
+ yt_cookie.value='';document.getElementById('watchdir').value='';document.getElementById('watchlist').textContent='';
+ document.getElementById('latchstat').textContent='vault cleared.';
+ log('saved cookies + watch folder forgotten.');};
+async function showWatch(){try{const w=await post('/api/watch',{},15000);
+ if(w.ok)document.getElementById('watchlist').textContent='watching: '+w.dirs.join(' · ');}catch(e){}}
+document.getElementById('watchsave').onclick=async()=>{const d=document.getElementById('watchdir').value.trim();
+ if(!d)return; const w=await post('/api/watch',{extra:d}).catch(e=>({ok:false}));
+ if(w&&w.ok){document.getElementById('watchlist').textContent='watching: '+w.dirs.join(' · ');log('watching extra folder.');}
+ else log('watch failed: folder not found.');};
+showWatch();
 async function lastSession(){
  sp_url.value='';pl_title.value='';window._autoTitle='';
  try{const v=await post('/api/vault',{},15000);
   if(v.has_yt)yt_cookie.value=v.yt_cookie;
   document.getElementById('latchstat').textContent=v.has_yt?'cookies latched from last session.':'no saved cookies.';
-  if(v.has_yt)log('latched YouTube cookie'+((v.refreshed||[]).includes('yt')?' (fresh file from Desktop)':' from last session')+'.');
+  if(v.has_yt)log('latched YouTube cookie'+((v.refreshed||[]).some(x=>x.startsWith('yt'))?' (fresh file from disk)':' from last session')+'.');
  }catch(e){document.getElementById('latchstat').textContent='';}
 }
 lastSession();

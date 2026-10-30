@@ -18,9 +18,46 @@ HERE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 LOGF = os.path.join(HERE, "server.log")
 HISTORY = []
 VAULTF = os.path.join(HERE, "cookie_vault.json")
-KNOWN_COOKIE_FILES = [
-    os.path.join(os.environ.get("USERPROFILE", ""), "Desktop", "music.youtube.com_cookies.txt"),
-]
+WATCHF = os.path.join(HERE, "cookie_watch.json")
+
+def home_dir() -> str:
+    return os.path.expanduser("~")
+
+def cookie_dirs() -> list:
+    dirs = [os.path.join(home_dir(), "Desktop"), os.path.join(home_dir(), "Downloads")]
+    try:
+        with open(WATCHF, encoding="utf-8") as f:
+            extra = (json.load(f) or {}).get("extra", "")
+            if extra and os.path.isdir(extra) and extra not in dirs:
+                dirs.append(extra)
+    except Exception:
+        pass
+    return [d for d in dirs if os.path.isdir(d)]
+
+def scan_disk_cookies() -> dict:
+    """Newest cookie-like .txt per site across watched dirs. Reads metadata+markers only."""
+    best = {}
+    for d in cookie_dirs():
+        try:
+            names = [n for n in os.listdir(d) if n.lower().endswith(".txt")]
+        except Exception:
+            continue
+        for n in names[:100]:
+            p = os.path.join(d, n)
+            try:
+                if os.path.getsize(p) > 1024 * 1024:
+                    continue
+                with open(p, encoding="utf-8", errors="ignore") as f:
+                    raw = f.read(200000)
+            except Exception:
+                continue
+            site = detect_site(raw)
+            if not site:
+                continue
+            mt = os.path.getmtime(p)
+            if site not in best or mt > best[site][0]:
+                best[site] = (mt, p, raw)
+    return best
 
 def detect_site(cookie: str) -> str:
     c = cookie or ""
@@ -80,20 +117,14 @@ def vault_load() -> dict:
                 ctypes.windll.crypt32.CryptUnprotectData, base64.b64decode(v[k])).decode() if v.get(k) else ""
         except Exception:
             out[k + "_cookie"] = ""
-    # re-latch: known Desktop files changed on disk -> adopt, by content markers
-    for path in KNOWN_COOKIE_FILES:
-        try:
-            with open(path, encoding="utf-8", errors="ignore") as f:
-                raw = f.read()
-        except Exception:
-            continue
-        site = detect_site(raw)
+    # re-latch: watched dirs may hold a regenerated file -> adopt by content markers
+    for site, (_mt, path, raw) in scan_disk_cookies().items():
         norm = normalize_cookie(raw)
         if site and norm and norm != normalize_cookie(out.get(site + "_cookie", "")):
             out[site + "_cookie"] = norm
             v[site] = base64.b64encode(_dpapi_blob(
                 ctypes.windll.crypt32.CryptProtectData, norm.encode())).decode()
-            refreshed.append(site)
+            refreshed.append(site + ":" + os.path.basename(path))
     if refreshed:
         try:
             with open(VAULTF, "w", encoding="utf-8") as f:
@@ -569,8 +600,25 @@ class H(BaseHTTPRequestHandler):
                 return self.send_json({"ok": True})
             if self.path == "/api/forget":
                 vault_forget()
-                blog("forget", "vault cleared")
+                try:
+                    os.remove(WATCHF)
+                except Exception:
+                    pass
+                blog("forget", "vault + watch path cleared")
                 return self.send_json({"ok": True})
+            if self.path == "/api/watch":
+                if not payload.get("extra"):
+                    return self.send_json({"ok": True, "dirs": cookie_dirs()})
+                extra = str(payload.get("extra", "")).strip().strip('"')
+                if not os.path.isdir(extra):
+                    return self.send_json({"ok": False, "error": "not a folder: " + extra[:120]}, 400)
+                try:
+                    with open(WATCHF, "w", encoding="utf-8") as f:
+                        json.dump({"extra": extra}, f)
+                except Exception as e:
+                    return self.send_json({"ok": False, "error": str(e)}, 500)
+                blog("watch", f"extra={extra[:120]}")
+                return self.send_json({"ok": True, "dirs": cookie_dirs()})
         except ValueError as e:
             blog("fail", f"{self.path} ValueError: {e}")
             return self.send_json({"ok": False, "error": str(e), **classify(str(e))}, 400)
