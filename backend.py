@@ -423,70 +423,136 @@ def yt_headers(yt_cookie: str) -> dict:
             "Origin": YT_ORIGIN, "Referer": YT_ORIGIN + "/", "Cookie": yt_cookie,
             "Authorization": sapisid_hash(yt_cookie), "X-Origin": YT_ORIGIN}
 
-def yt_playlist_count(plid: str, yt_cookie: str) -> int:
-    """Browse a playlist with the user's auth, count its video items. 0 on any failure."""
+CREATE_INLINE_MAX = 50  # playlist/create carries at most this many videoIds inline
+
+def _shelf(node):
+    """musicPlaylistShelfRenderer anywhere in a browse reply (shape drifts)."""
+    if isinstance(node, dict):
+        if "musicPlaylistShelfRenderer" in node:
+            return node["musicPlaylistShelfRenderer"]
+        for v in node.values():
+            r = _shelf(v)
+            if r:
+                return r
+    elif isinstance(node, list):
+        for v in node:
+            r = _shelf(v)
+            if r:
+                return r
+    return None
+
+def yt_playlist_entries(plid: str, yt_cookie: str):
+    """Every entry on the playlist, in order, repeats included. None on any failure.
+    Reads playlist rows only — not recommendations or headers — so this is the real
+    playlist length, unlike a bare videoId regex over the whole reply."""
     try:
         body = json.dumps({"context": {"client": CLIENT}, "browseId": vl_id(plid)}).encode()
         req = urllib.request.Request(
             f"https://music.youtube.com/youtubei/v1/browse?key={YT_KEY}&prettyPrint=false",
             data=body, headers=yt_headers(yt_cookie))
-        txt = urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "ignore")
-        vids = set(re.findall(r'"videoId":\s*"([A-Za-z0-9_-]{11})"', txt))
-        return len(vids)
+        j = json.loads(urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "ignore"))
+        out = []
+        for item in (_shelf(j) or {}).get("contents", []) or []:
+            mrl = item.get("musicResponsiveListItemRenderer", {}) if isinstance(item, dict) else {}
+            v = mrl_video_id(mrl) if mrl else ""
+            if v:
+                out.append(v)
+        return out
     except Exception:
-        return 0
+        return None
+
+def yt_playlist_count(plid: str, yt_cookie: str) -> int:
+    """Entries on the playlist. 0 on any failure."""
+    entries = yt_playlist_entries(plid, yt_cookie)
+    return len(entries) if entries is not None else 0
+
+def yt_add_one(plid: str, vid: str, yt_cookie: str) -> str:
+    """Append one entry. -> YTM's status string ("STATUS_SUCCEEDED"/"STATUS_FAILED"),
+    or the exception text. Fresh SAPISIDHASH per call: it goes stale within minutes."""
+    b2 = json.dumps({"context": {"client": CLIENT}, "playlistId": plid, "actions": [
+        {"action": "ACTION_ADD_VIDEO", "addedVideoId": vid}]}).encode()
+    try:
+        er = urllib.request.urlopen(urllib.request.Request(
+            f"https://music.youtube.com/youtubei/v1/browse/edit_playlist?key={YT_KEY}&prettyPrint=false",
+            data=b2, headers=yt_headers(yt_cookie)), timeout=25).read().decode("utf-8", "ignore")
+    except Exception as e:
+        return f"{type(e).__name__} {getattr(e, 'code', '')}".strip()
+    try:
+        return str(json.loads(er).get("status", ""))
+    except Exception:
+        return er[:120]
+
+def _ledger(video_ids: list, entries, attempts: dict) -> list:
+    """One outcome per requested copy, in send order. A copy counts as landed while the
+    playlist still holds an unclaimed entry for that videoId — 4 copies need 4 entries,
+    so a repeat that YTM refused shows up as its own rejected row."""
+    left = {}
+    for v in entries or []:
+        left[v] = left.get(v, 0) + 1
+    out = []
+    for i, v in enumerate(video_ids):
+        if left.get(v, 0) > 0:
+            left[v] -= 1
+            out.append({"i": i + 1, "videoId": v, "outcome": "landed", "status": ""})
+        else:
+            st = attempts.get(i, "")
+            out.append({"i": i + 1, "videoId": v,
+                        "outcome": "rejected" if st else "missing", "status": st[:80]})
+    return out
 
 def yt_create_playlist(yt_cookie: str, title: str, description: str, video_ids: list, privacy: str = "PRIVATE"):
+    """1:1 with the Spotify playlist: 48 tracks in => 48 entries out, repeats included.
+    Nothing here drops, dedupes or membership-checks an id: every copy of the input is
+    one copy we ask YTM to hold, and whatever YTM refuses is reported per copy."""
     yt_cookie = normalize_cookie(yt_cookie)
-    video_ids = list(dict.fromkeys(video_ids or []))  # dupes collapse to one add
-    base_h = yt_headers(yt_cookie)
-    # 1. create WITH the songs inline (upstream-blessed path)
+    video_ids = [v for v in (video_ids or []) if isinstance(v, str) and v]
+    if not video_ids:
+        raise ValueError("no videoIds to send")
+    inline = video_ids[:CREATE_INLINE_MAX]
+    # 1. create WITH the copies inline: the only reply shape that can express a repeat,
+    #    because edit_playlist refuses a videoId that is already on the list.
     body = json.dumps({"context": {"client": CLIENT}, "title": title,
                        "description": description or "", "privacyStatus": privacy,
-                       "videoIds": video_ids[:50]}).encode()
+                       "videoIds": inline}).encode()
     req = urllib.request.Request(
         f"https://music.youtube.com/youtubei/v1/playlist/create?key={YT_KEY}&prettyPrint=false",
-        data=body, headers=base_h)
+        data=body, headers=yt_headers(yt_cookie))
     r = urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "ignore")
     j = json.loads(r)
     plid = j.get("playlistId") or j.get("playlistID")
     if not plid:
         raise RuntimeError("create failed: " + r[:400])
-    blog("create", f"id={plid} reply={r[:200]}")
-    # 2. add each video in its own call: one bad id must not poison the batch.
-    # The read-back in step 3 is the source of truth — edit replies are only logged.
-    edit_notes = []
-    failed = []
-    if video_ids:
-        for k, v in enumerate(video_ids):
-            b2 = json.dumps({"context": {"client": CLIENT}, "playlistId": plid, "actions": [
-                {"action": "ACTION_ADD_VIDEO", "addedVideoId": v}]}).encode()
-            try:
-                er = urllib.request.urlopen(urllib.request.Request(
-                    f"https://music.youtube.com/youtubei/v1/browse/edit_playlist?key={YT_KEY}&prettyPrint=false",
-                    data=b2, headers=base_h), timeout=25).read().decode("utf-8", "ignore")
-                try:
-                    status = json.loads(er).get("status", "")
-                except Exception:
-                    status = er[:120]
-                if "SUCCEED" in str(status).upper():
-                    continue
-                failed.append(v)
-                blog("edit", f"video {k + 1} {v} rejected: {status}")
-            except Exception as e:
-                failed.append(v)
-                blog("edit", f"video {k + 1} {v} raised {type(e).__name__} {getattr(e, 'code', '')}")
-        if failed:
-            blog("edit", f"{len(failed)}/{len(video_ids)} rejected")
-    # 3. verify: browse it back with the user's auth and count real items
-    confirmed = yt_playlist_count(plid, yt_cookie)
-    if video_ids and not confirmed:
+    first = yt_playlist_entries(plid, yt_cookie)
+    blog("create", f"id={plid} inline={len(inline)} back={0 if first is None else len(first)}")
+    # 2. second shape for every copy the create did not hold: append one at a time so each
+    #    copy gets its own status, with a fresh hash so a long run cannot expire mid-way.
+    attempts = {}
+    if first is None:
+        todo = []   # unread back: appending blind could double every entry
+        blog("verify", "read-back after create failed — no appends attempted")
+    else:
+        todo = [int(e["i"]) - 1 for e in _ledger(video_ids, first, {}) if e["outcome"] != "landed"]
+        for idx in todo:
+            st = yt_add_one(plid, video_ids[idx], yt_cookie)
+            attempts[idx] = st
+            blog("add", f"copy {idx + 1}/{len(video_ids)} {video_ids[idx]} -> {st}")
+    # 3. read back again: the playlist itself is the only truth about parity.
+    entries = yt_playlist_entries(plid, yt_cookie)
+    ledger = _ledger(video_ids, entries or [], attempts)
+    added = sum(1 for e in ledger if e["outcome"] == "landed")
+    rejected = sum(1 for e in ledger if e["outcome"] == "rejected")
+    missing = sum(1 for e in ledger if e["outcome"] == "missing")
+    repeats = len(video_ids) - len(set(video_ids))
+    blog("parity", f"{added}/{len(video_ids)} landed, {rejected} refused, {missing} missing, "
+                   f"{repeats} repeat(s) in source, {len(todo)} append attempt(s)")
+    if not added:
         cleaned = yt_delete_playlist(plid, yt_cookie)
-        raise RuntimeError("songs did not land (playlist reads back empty"
+        raise RuntimeError("nothing landed (playlist reads back empty or unreadable"
                            + (", husk deleted" if cleaned else ", husk cleanup failed — delete it manually")
-                           + f"). {len(failed)}/{len(video_ids)} adds rejected — see server.log edit lines")
+                           + f"). {rejected} refused by YTM, {missing} missing — see server.log add lines")
     return {"playlistId": plid, "url": f"https://music.youtube.com/playlist?list={plid}",
-            "added": confirmed, "sent": len(video_ids), "rejected": len(failed)}
+            "added": added, "sent": len(video_ids), "rejected": rejected,
+            "missing": missing, "repeats": repeats, "ledger": ledger}
 
 def yt_delete_playlist(plid: str, yt_cookie: str) -> bool:
     try:
@@ -501,18 +567,20 @@ def yt_delete_playlist(plid: str, yt_cookie: str) -> bool:
 
 def yt_create_checked(spotify_id: str, yt_cookie: str, title: str, description: str,
                       video_ids: list, privacy: str = "PRIVATE") -> dict:
-    """Dupe-aware create: same spotify source transferred before and YTM copy
-    still alive -> return it, create nothing. Empty results always deleted."""
+    """Dupe-aware create: same spotify source transferred before and YTM copy still
+    alive -> return it, create nothing. Every matched copy is sent to YTM as-is."""
     yt_cookie = normalize_cookie(yt_cookie)
+    ids = [v for v in (video_ids or []) if isinstance(v, str) and v]
     if spotify_id:
         rec = load_created().get(spotify_id)
         if rec and rec.get("yt_id"):
             n = yt_playlist_count(rec["yt_id"], yt_cookie)
             if n:
                 blog("create", f"exists title={title} url={rec.get('url')} tracks={n}")
-                return {"playlistId": rec["yt_id"], "url": rec.get("url", ""),
-                        "added": n, "sent": len(video_ids), "existing": True}
-    r = yt_create_playlist(yt_cookie, title, description, video_ids, privacy)
+                return {"playlistId": rec["yt_id"], "url": rec.get("url", ""), "added": n,
+                        "sent": len(ids), "rejected": 0, "missing": 0,
+                        "repeats": len(ids) - len(set(ids)), "existing": True, "ledger": []}
+    r = yt_create_playlist(yt_cookie, title, description, ids, privacy)
     if spotify_id:
         created = load_created()
         created[spotify_id] = {"yt_id": r["playlistId"], "url": r["url"], "title": title}
@@ -587,7 +655,9 @@ class H(BaseHTTPRequestHandler):
                                       payload.get("title", "Spotify import"),
                                       payload.get("description", ""), payload.get("videoIds", []),
                                       payload.get("privacy", "PRIVATE"))
-                blog("create", f"ok playlist={r.get('playlistId')} added={r.get('added')} existing={r.get('existing', False)}")
+                blog("create", f"ok playlist={r.get('playlistId')} confirmed={r.get('added')}/{r.get('sent')} "
+                               f"refused={r.get('rejected')} missing={r.get('missing')} "
+                               f"repeats={r.get('repeats')} existing={r.get('existing', False)}")
                 return self.send_json({"ok": True, **r})
             if self.path == "/api/check":
                 sp = check_spotify_cookie(payload.get("spotify_cookie", ""))

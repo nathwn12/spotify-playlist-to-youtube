@@ -35,7 +35,7 @@ if __name__ == "__main__":
         sys.exit(1)
     import webview
 
-    webview.create_window("sp2yt", f"http://127.0.0.1:{PORT}/", width=800, height=980,
-                          text_select=True)
+    webview.create_window("sp2yt", f"http://127.0.0.1:{PORT}/", width=840, height=864,
+                          text_select=True, resizable=False)
     webview.start(gui="edgechromium")
     proc.terminate()

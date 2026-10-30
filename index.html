@@ -2,7 +2,7 @@
 <title>sp2yt — keyless spotify→ytmusic (personal use)</title>
 <style>
 *{box-sizing:border-box}
-body{font-family:"Segoe UI",system-ui,-apple-system,Roboto,sans-serif;max-width:720px;margin:32px auto;padding:0 20px;background:radial-gradient(1200px 400px at 50% -80px,#1f5133 0%,#141417 60%);color:#e8e8ea;line-height:1.45;min-height:100vh}
+body{font-family:"Segoe UI",system-ui,-apple-system,Roboto,sans-serif;max-width:720px;margin:0 auto;padding:32px 20px 0;background:radial-gradient(1200px 400px at 50% -80px,#1f5133 0%,#141417 60%);color:#e8e8ea;line-height:1.45;min-height:100vh}
 h2{margin:0 0 4px;font-size:22px;letter-spacing:.2px}
 h2 .dot{color:#1db954}
 p.sub{color:#a9a9b2;margin:0 0 20px;font-size:14px}
@@ -99,6 +99,10 @@ async function lastSession(){
  }catch(e){document.getElementById('latchstat').textContent='';}
 }
 lastSession();
+const privacySel=document.getElementById('privacy');
+const savedPrivacy=localStorage.getItem('sp2yt.privacy');
+if(savedPrivacy&&[...privacySel.options].some(o=>o.value===savedPrivacy))privacySel.value=savedPrivacy;
+privacySel.onchange=()=>localStorage.setItem('sp2yt.privacy',privacySel.value);
 let detectToken=0,detectTimer=null;
 document.getElementById('sp_url').addEventListener('input',()=>{clearTimeout(detectTimer);detectTimer=setTimeout(autoDetectTitle,600);});
 async function autoDetectTitle(){
@@ -161,6 +165,10 @@ document.getElementById('go').onclick=async()=>{
  setBar(tracks.length,tracks.length);
  if(c.existing){workOff('already existed.');log(`EXISTS: ${c.url} — ${c.added} tracks already there, nothing created.`);return;}
  workOff('done.');
- log(`DONE: ${c.url} — ${c.added}/${c.sent} tracks confirmed on YTM${c.rejected?` (${c.rejected} rejected at add, see log)`:''}`);
+ const L=c.ledger||[];
+ const byOut=o=>L.filter(e=>e.outcome===o).length;
+ log(`DONE: ${c.url} — matched ${c.sent}/${tracks.length} → sent ${c.sent} → confirmed ${c.added}/${tracks.length} on YTM (${c.repeats||0} repeat${c.repeats===1?'':'s'} in source, ${byOut('rejected')} refused by YTM, ${byOut('missing')} missing)`);
+ L.forEach(e=>log(` ledger [${e.i}/${c.sent}] ${e.videoId} ${e.outcome==='landed'?'landed':(e.status?'refused by YTM: '+e.status:'missing at create')}`));
+ if(L.length&&c.added<tracks.length)log(`WARN: ${tracks.length-c.added} of ${tracks.length} tracks are not on the playlist — see the ledger lines above.`);
 };
 </script></body></html>
