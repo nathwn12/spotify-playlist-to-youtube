@@ -332,8 +332,9 @@ def yt_create_playlist(yt_cookie: str, title: str, description: str, video_ids: 
     if not plid:
         raise RuntimeError("create failed: " + r[:400])
     blog("create", f"id={plid} reply={r[:200]}")
-    # 2. belt and suspenders: also add everything via browse/edit_playlist,
-    # then verify. Full edit response goes to the audit log for diagnosis.
+    # 2. belt and suspenders: also add everything via browse/edit_playlist.
+    # The read-back in step 3 is the source of truth — edit replies are only logged.
+    edit_notes = []
     if video_ids:
         for i in range(0, len(video_ids), 50):
             chunk = video_ids[i:i+50]
@@ -343,12 +344,21 @@ def yt_create_playlist(yt_cookie: str, title: str, description: str, video_ids: 
                 er = urllib.request.urlopen(urllib.request.Request(
                     f"https://music.youtube.com/youtubei/v1/browse/edit_playlist?key={YT_KEY}&prettyPrint=false",
                     data=b2, headers=base_h), timeout=25).read().decode("utf-8", "ignore")
+                try:
+                    status = json.loads(er).get("status", "")
+                except Exception:
+                    status = er[:120]
+                edit_notes.append(f"chunk {i // 50 + 1}: {status}")
+                blog("edit", f"chunk {i // 50 + 1} status={status}")
             except Exception as e:
+                edit_notes.append(f"chunk {i // 50 + 1}: {type(e).__name__} {getattr(e, 'code', '')}")
                 blog("edit", f"chunk {i // 50 + 1} raised {type(e).__name__} {getattr(e, 'code', '')}")
-                raise RuntimeError(f"add failed on chunk {i // 50 + 1}: {type(e).__name__} {getattr(e, 'code', '')}")
-            blog("edit", f"chunk {i // 50 + 1} reply: {er[:300]}")
-            if "SUCCEEDED" not in er:
-                raise RuntimeError(f"add rejected on chunk {i // 50 + 1}: " + er[:300])
+    # 3. verify: browse it back with the user's auth and count real items
+    confirmed = yt_playlist_count(plid, base_h)
+    if video_ids and not confirmed:
+        yt_delete_playlist(plid, base_h)
+        raise RuntimeError("songs did not land (playlist reads back empty, husk deleted). Edits said: "
+                           + "; ".join(edit_notes)[:250])
     # 3. verify: browse it back with the user's auth and count real items
     confirmed = yt_playlist_count(plid, base_h)
     if video_ids and not confirmed:
