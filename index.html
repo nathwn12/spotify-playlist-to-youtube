@@ -72,7 +72,10 @@ document.getElementById('cookie_files').onchange=()=>{const files=[...document.g
  files.forEach(f=>{const r=new FileReader();r.onload=()=>{const text=String(r.result||'').trim();const g=guessTarget(f.name,text);
   let field=g==='yt'?'yt_cookie':g==='sp'?'sp_cookie':(!document.getElementById('sp_cookie').value?'sp_cookie':!document.getElementById('yt_cookie').value?'yt_cookie':'sp_cookie');
   document.getElementById(field).value=text;
-  log(`loaded ${f.name} (${text.length} chars) → ${field==='yt_cookie'?'YouTube':'Spotify'}`);};r.readAsText(f);});};
+  log(`loaded ${f.name} (${text.length} chars) → ${field==='yt_cookie'?'YouTube':'Spotify'}`);
+  const sp=document.getElementById('sp_cookie').value,yt=document.getElementById('yt_cookie').value;
+  if(yt.trim()){post('/api/check',{spotify_cookie:sp,yt_cookie:yt},30000).then(k=>{if(k.ok)log(`cookie check: spotify ${k.spotify.ok?'OK':'STALE'} · ytm ${k.ytm.ok?'OK':'STALE — re-export!'}`);}).catch(()=>{});}
+ };r.readAsText(f);});};
 let detectToken=0,detectTimer=null;
 document.getElementById('sp_url').addEventListener('input',()=>{clearTimeout(detectTimer);detectTimer=setTimeout(autoDetectTitle,600);});
 async function autoDetectTitle(){
@@ -97,7 +100,12 @@ document.getElementById('step1').onclick=async()=>{
  window._tracks=r.tracks; window._plname=r.playlist_name;
 };
 document.getElementById('go').onclick=async()=>{
- document.getElementById('log').textContent=''; workOn('1/3 fetching spotify…'); setBar(0,100);
+ document.getElementById('log').textContent=''; workOn('checking cookies…'); setBar(0,100);
+ try{const k=await post('/api/check',{spotify_cookie:sp_cookie.value,yt_cookie:yt_cookie.value},30000);
+  log(`cookies: spotify ${k.spotify.ok?'OK':'STALE'} (${k.spotify.msg}) · ytm ${k.ytm.ok?'OK':'STALE'} (${k.ytm.msg})`);
+  if(!k.spotify.ok)log('note: continuing without spotify login (public playlists need none).');
+  if(!k.ytm.ok){log('STOPPED: YTM cookie '+k.ytm.msg);log('fix: music.youtube.com → DevTools → Network → copy Cookie → save .txt → upload again.');workOff('cookie expired.');return;}
+ }catch(e){log('cookie check skipped ('+e+'), continuing…');}
  log('1/3 fetching spotify (keyless embed, + your cookie if given)…');
  let r=await post('/api/spotify',{url:sp_url.value,spotify_cookie:sp_cookie.value});
  if(!r.ok){log('SPOTIFY FAIL: '+r.error); if(r.hint)log('DIAGNOSIS ['+(r.kind||'?')+']: '+r.hint); workOff('failed.');return;}

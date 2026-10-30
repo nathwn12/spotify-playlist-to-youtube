@@ -166,6 +166,41 @@ def yt_search_batch(queries, workers: int = 8):
     with ThreadPoolExecutor(max_workers=workers) as ex:
         return list(ex.map(yt_search_safe, queries))
 
+def check_spotify_cookie(cookie: str = "") -> dict:
+    c = normalize_cookie(cookie)
+    if not c:
+        return {"ok": True, "msg": "not provided (optional for public playlists)"}
+    try:
+        req = urllib.request.Request(
+            "https://open.spotify.com/get_access_token?reason=transport&productType=web-player",
+            headers={"User-Agent": "Mozilla/5.0", "Cookie": c})
+        r = json.loads(urllib.request.urlopen(req, timeout=15).read().decode())
+        if r.get("accessToken"):
+            return {"ok": True, "msg": "valid"}
+        return {"ok": False, "msg": "expired — export a fresh cookie file from open.spotify.com"}
+    except Exception as e:
+        return {"ok": False, "msg": f"expired or rejected (HTTP {getattr(e, 'code', '?')}) — export a fresh cookie file from open.spotify.com"}
+
+def check_yt_cookie(cookie: str = "") -> dict:
+    c = normalize_cookie(cookie)
+    if not c:
+        return {"ok": False, "msg": "missing — upload your music.youtube.com cookie file"}
+    if not re.search(r"(?:__Secure-3PAPISID|SAPISID)=([^;]+)", c):
+        return {"ok": False, "msg": "no SAPISID in file — re-export the full Cookie from music.youtube.com"}
+    try:
+        body = json.dumps({"context": {"client": CLIENT}, "browseId": "FEmusic_library_landing"}).encode()
+        req = urllib.request.Request(
+            f"https://music.youtube.com/youtubei/v1/browse?key={YT_KEY}&prettyPrint=false",
+            data=body, headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0",
+                                "Origin": YT_ORIGIN, "Referer": YT_ORIGIN + "/", "Cookie": c,
+                                "Authorization": sapisid_hash(c), "X-Origin": YT_ORIGIN})
+        txt = urllib.request.urlopen(req, timeout=20).read().decode()
+        if '"logged_in","value":"1"' in txt:
+            return {"ok": True, "msg": "valid"}
+        return {"ok": False, "msg": "expired — export a fresh cookie file from music.youtube.com and re-upload"}
+    except Exception as e:
+        return {"ok": False, "msg": f"rejected ({type(e).__name__} {getattr(e, 'code', '')}) — export a fresh cookie file and re-upload"}
+
 def sapisid_hash(cookie: str, origin: str = YT_ORIGIN) -> str:
     cookie = normalize_cookie(cookie)
     m = re.search(r"(?:__Secure-3PAPISID|SAPISID)=([^;]+)", cookie)
@@ -272,6 +307,11 @@ class H(BaseHTTPRequestHandler):
                                        payload.get("privacy", "PRIVATE"))
                 blog("create", f"ok playlist={r.get('playlistId')} added={r.get('added')}")
                 return self.send_json({"ok": True, **r})
+            if self.path == "/api/check":
+                sp = check_spotify_cookie(payload.get("spotify_cookie", ""))
+                yt = check_yt_cookie(payload.get("yt_cookie", ""))
+                blog("check", f"spotify={sp['ok']} ytm={yt['ok']}")
+                return self.send_json({"ok": True, "spotify": sp, "ytm": yt})
         except ValueError as e:
             blog("fail", f"{self.path} ValueError: {e}")
             return self.send_json({"ok": False, "error": str(e), **classify(str(e))}, 400)
