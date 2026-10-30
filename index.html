@@ -1,13 +1,15 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>sp2yt — keyless spotify→ytmusic (personal use)</title>
 <style>
-/* direction C — composite. tokens only:
-   #f2f2ef field · #0a0a0a ink · #4a4a4a dim · #c0390b rust · #fff URL plate.
-   2px rules, radius 0, flat fills only, no shadows. rust = run button, live status, progress fill. */
-:root{--field:#f2f2ef;--ink:#0a0a0a;--dim:#4a4a4a;--rust:#c0390b}
+/* direction C — composite, dark concrete. tokens only:
+   #131311 field · #ece8dd ink · #8f8a7c dim · #d15a2a rust · #1d1c19 URL plate.
+   2px rules solid ink, inputs 2px dim, radius 0, flat fills only, no shadows.
+   rust = run button, live status, progress fill. --on-rust is the one label value that
+   clears 4.5:1 on the rust plate (4.91:1); ink on rust is only 3.29:1. */
+:root{--field:#131311;--ink:#ece8dd;--dim:#8f8a7c;--rust:#d15a2a;--plate:#1d1c19;--on-rust:#0a0a0a}
 *,*::before,*::after{box-sizing:border-box;border-radius:0}
 html{-webkit-text-size-adjust:100%}
-body{margin:0;min-height:100vh;background:var(--field);color:var(--ink);color-scheme:light;
+body{margin:0;min-height:100vh;background:var(--field);color:var(--ink);color-scheme:dark;
   font:14.5px/1.55 ui-monospace,"Cascadia Mono",Consolas,"Courier New",monospace;font-variant-numeric:tabular-nums}
 .wrap{max-width:800px;margin:0 auto;padding:0 30px 104px}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
@@ -33,7 +35,7 @@ h1{font-size:15px;letter-spacing:.28em;text-transform:uppercase;font-weight:700}
 .pill{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;padding:2px 7px;
   border:1px solid var(--dim);background:transparent;color:var(--dim);vertical-align:1px}
 .pill.ok{background:var(--ink);border-color:var(--ink);color:var(--field)}
-.pill.bad{background:var(--rust);border-color:var(--rust);color:#fff}
+.pill.bad{background:var(--rust);border-color:var(--rust);color:var(--on-rust)}
 
 /* sections: one 2px rule above, numbered label */
 main{counter-reset:sec}
@@ -42,15 +44,15 @@ main>section{margin:34px 0 0;border-top:2px solid var(--ink);counter-increment:s
 .lbl .n{color:var(--dim);font-weight:400;margin-right:.7em}
 .lbl .n::after{content:counter(sec,decimal-leading-zero)}
 
-/* command bar: white plate, rust run button */
-.urlline{display:flex;margin:18px 0 0;border:2px solid var(--ink);background:#fff}
-.urlline input{flex:1 1 auto;min-width:0;height:52px;padding:0 14px;border:0;border-right:2px solid var(--ink);
+/* command bar: plate, rust run button */
+.urlline{display:flex;margin:18px 0 0;border:2px solid var(--ink);background:var(--plate)}
+.urlline input{flex:1 1 auto;min-width:0;height:52px;padding:0 14px;border:0;border-right:2px solid var(--dim);
   background:transparent;color:inherit;font:inherit;appearance:none}
 .urlline input::placeholder{color:var(--dim);opacity:1}
 /* resting control is rust, always: no state repaints the plate */
 #go{flex:0 0 auto;padding:0 30px;border:0;font:inherit;font-size:11.5px;font-weight:700;letter-spacing:.22em;
-  text-transform:uppercase;background:var(--rust);background-image:none;appearance:none;color:#fff;cursor:pointer}
-#go:hover,#go:active,#go:focus{background:var(--rust);background-image:none;color:#fff}
+  text-transform:uppercase;background:var(--rust);background-image:none;appearance:none;color:var(--on-rust);cursor:pointer}
+#go:hover,#go:active,#go:focus{background:var(--rust);background-image:none;color:var(--on-rust)}
 #go:hover{outline:2px solid var(--ink);outline-offset:-6px}
 #go:active{transform:translateY(1px)}
 #go:disabled,#go:disabled:hover{background:var(--dim);color:var(--field);cursor:wait;outline:0}
@@ -64,7 +66,7 @@ main>section{margin:34px 0 0;border-top:2px solid var(--ink);counter-increment:s
 /* fields: transparent plate, 2px ink frame */
 label{display:block;margin:18px 0 0;font-size:12.5px;font-weight:700}
 label .hint{display:block;margin-top:2px;font-size:12px;font-weight:400;color:var(--dim)}
-input[type=text],textarea,select{width:100%;max-width:100%;margin:8px 0 0;padding:9px 12px;border:2px solid var(--ink);
+input[type=text],textarea,select{width:100%;max-width:100%;margin:8px 0 0;padding:9px 12px;border:2px solid var(--dim);
   background:transparent;color:var(--ink);font:inherit;font-size:13.5px;appearance:none}
 textarea{display:block;resize:vertical;min-height:56px;overflow:auto}
 select{background:var(--field)}
@@ -108,7 +110,7 @@ input[type=file]{width:100%;margin:8px 0 0;font:inherit;font-size:12px;color:var
 .st.ok .v{background:var(--ink);border-color:var(--ink);color:var(--field)}
 .st.alt .v{border-color:var(--ink);color:var(--ink)}
 .st.skip .v{color:var(--dim)}
-.st.err .v{background:var(--rust);border-color:var(--rust);color:#fff}
+.st.err .v{background:var(--rust);border-color:var(--rust);color:var(--on-rust)}
 
 /* responsive: the app window is 800px */
 @media (max-width:800px){
@@ -127,7 +129,7 @@ input[type=file]{width:100%;margin:8px 0 0;font:inherit;font-size:12px;color:var
   .trio{grid-template-columns:1fr 64px}
   .trio>div:last-child{grid-column:1/-1}
   .urlline{flex-wrap:wrap}
-  .urlline input{flex:1 0 100%;height:auto;min-height:50px;border-right:0;border-bottom:2px solid var(--ink)}
+  .urlline input{flex:1 0 100%;height:auto;min-height:50px;border-right:0;border-bottom:2px solid var(--dim)}
   #go{width:100%;height:46px}
 }
 @media (prefers-reduced-motion:reduce){
@@ -191,7 +193,7 @@ input[type=file]{width:100%;margin:8px 0 0;font:inherit;font-size:12px;color:var
         <span id="stR">0 / 0 confirmed</span>
       </div>
       <div id="bar"><div id="fill"></div></div>
-      <div id="log">ready. transfer = fetch spotify → search ytm → create playlist. No dev keys. Cookies stay localhost-only.</div>
+      <div id="log">ready. transfer = fetch spotify → search ytm → create playlist. No dev keys. Cookies stay localhost-only.&#10;</div>
       <div id="verdict-wrap">
         <table class="ledger">
           <caption class="sr">Every track, its YouTube match and its verdict</caption>

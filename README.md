@@ -13,7 +13,7 @@ No developer API keys, no Spotify app, no Google Cloud project, no paid transfer
 ## Quick start
 
 - **DEV (localhost server):** double-click `sp2yt-start.cmd` (or the `sp2yt-dev` desktop shortcut). Runs the Python source at `http://127.0.0.1:8787`. Iterate here, no build.
-- **PROD (portable app):** run `build.cmd`, then launch `sp2yt-app.exe` (or copy it to Desktop). Self-contained WebView2 window, no browser tab. Needs the WebView2 runtime (ships with Edge).
+- **PROD (portable app):** run `build.cmd`, then launch `sp2yt.exe` (or copy it to Desktop). Self-contained WebView2 window, no browser tab. Needs the WebView2 runtime (ships with Edge).
 
 Manual dev:
 
@@ -68,7 +68,7 @@ sp2yt/
 ├── index.html        # single-page UI
 ├── watchdog.py       # log monitor / failure diagnosis
 ├── sp2yt-start.cmd   # DEV launcher (localhost server)
-├── build.cmd         # PROD build: single portable sp2yt-app.exe + smoke test
+├── build.cmd         # PROD build: single portable sp2yt.exe + smoke test
 └── server.log        # local audit log (git-ignored, in %APPDATA%\sp2yt)
 ```
 
@@ -81,7 +81,7 @@ Live mark: `assets/icon.ico` (built from `assets/icon-src.png`). Candidate shelf
 Two lanes, same repo:
 
 - **DEV** — double-click `sp2yt-start.cmd` (or the `sp2yt-dev` desktop shortcut). Runs the Python source directly at `http://127.0.0.1:8787`, no build. Iterate here.
-- **PROD** — run `build.cmd`. Backs up the current exe, kills running instances, compiles a single portable `sp2yt-app.exe` (WebView2 window, no browser tab), then smoke-tests it (health). Green? The backup is deleted and prod is live. Red? The previous exe is restored automatically.
+- **PROD** — run `build.cmd`. Backs up the current exe, kills running instances, compiles a single portable `sp2yt.exe` (WebView2 window, no browser tab), then smoke-tests it (health). Green? The backup is deleted and prod is live. Red? The previous exe is restored automatically.
 
 Every build must go green before it ships — no green, no prod.
 
