@@ -55,8 +55,8 @@ button:disabled{filter:grayscale(.6) brightness(.7);cursor:wait}
 const logEl=document.getElementById('log'),progEl=document.getElementById('prog'),spinEl=document.getElementById('spin'),barEl=document.getElementById('bar'),fillEl=document.getElementById('fill');
 const follow=()=>{logEl.scrollTop=logEl.scrollHeight;};
 const log=(m)=>{logEl.textContent+=m+"\n";requestAnimationFrame(follow);follow();};
-const workOn=(label)=>{spinEl.classList.add('on');barEl.classList.add('live');document.getElementById('go').disabled=true;document.getElementById('step1').disabled=true;if(label)progEl.textContent=label;};
-const workOff=(label)=>{spinEl.classList.remove('on');barEl.classList.remove('live');document.getElementById('go').disabled=false;document.getElementById('step1').disabled=false;if(label)progEl.textContent=label;};
+const workOn=(label)=>{spinEl.classList.add('on');barEl.classList.add('live');window._busy=true;document.getElementById('go').disabled=true;document.getElementById('step1').disabled=true;if(label)progEl.textContent=label;};
+const workOff=(label)=>{spinEl.classList.remove('on');barEl.classList.remove('live');window._busy=false;document.getElementById('go').disabled=false;document.getElementById('step1').disabled=false;if(label)progEl.textContent=label;};
 const prog=(m)=>{progEl.textContent=m;};
 const setBar=(done,total)=>{fillEl.style.width=(total?Math.round(100*done/total):0)+'%';};
 const setAutoTitle=(name)=>{const auto=`${name} (from spotify)`;const el=document.getElementById('pl_title');
@@ -73,6 +73,19 @@ document.getElementById('cookie_files').onchange=()=>{const files=[...document.g
   let field=g==='yt'?'yt_cookie':g==='sp'?'sp_cookie':(!document.getElementById('sp_cookie').value?'sp_cookie':!document.getElementById('yt_cookie').value?'yt_cookie':'sp_cookie');
   document.getElementById(field).value=text;
   log(`loaded ${f.name} (${text.length} chars) → ${field==='yt_cookie'?'YouTube':'Spotify'}`);};r.readAsText(f);});};
+let detectToken=0,detectTimer=null;
+document.getElementById('sp_url').addEventListener('input',()=>{clearTimeout(detectTimer);detectTimer=setTimeout(autoDetectTitle,600);});
+async function autoDetectTitle(){
+ if(window._busy)return;
+ const u=document.getElementById('sp_url').value.trim();
+ if(!/open\.spotify\.com\/playlist\/[A-Za-z0-9]+/.test(u))return;
+ const my=++detectToken; prog('detecting playlist title…');
+ try{const r=await post('/api/spotify',{url:u,spotify_cookie:document.getElementById('sp_cookie').value},25000);
+  if(my!==detectToken||!r.ok)return;
+  setAutoTitle(r.playlist_name);
+  prog(`detected: ${r.playlist_name} — ${r.tracks.length} tracks. Ready.`);
+ }catch(e){/* silent; the button run reports errors */}
+}
 async function post(p,b,ms=25000){const c=new AbortController();const t=setTimeout(()=>c.abort(),ms);try{const r=await fetch(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b),signal:c.signal});return r.json();}finally{clearTimeout(t);}}
 document.getElementById('step1').onclick=async()=>{
  document.getElementById('log').textContent=''; workOn('loading spotify…'); setBar(0,1);
