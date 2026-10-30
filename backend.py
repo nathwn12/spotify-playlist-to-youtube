@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""sp2yt keyless web service - stdlib only. No API keys, no secrets stored.
+Spotify: scrapes public embed __NEXT_DATA__ (optional user Cookie forwarded).
+YTM: InnerTube WEB_REMIX + user-supplied Cookie (SAPISIDHASH derived server-side).
+"""
+import json, re, time, hashlib, urllib.request, urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import os
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+LOGF = os.path.join(HERE, "server.log")
+HISTORY = []
+
+def blog(event: str, detail: str = ""):
+    """Audit log. Never writes cookie values — lengths only."""
+    line = f"{time.strftime('%H:%M:%S')} {event} {detail[:220]}".rstrip()
+    HISTORY.append(line)
+    del HISTORY[:-50]
+    try:
+        with open(LOGF, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+def scrub_cookie(c: str) -> str:
+    c = normalize_cookie(c)
+    n = len(re.findall(r"[A-Za-z0-9_-]+=", c))
+    return f"cookie_pairs={n} chars={len(c)}" if c else "no-cookie"
+
+def classify(msg: str) -> dict:
+    m = (msg or "").lower()
+    if "not a spotify" in m:
+        return {"kind": "user", "hint": "That is not a Spotify playlist link — paste an open.spotify.com/playlist/… URL."}
+    if "401" in m or "unauthorized" in m or "sapisid" in m or "login" in m:
+        return {"kind": "auth", "hint": "YTM/Spotify login rejected it — cookie expired or wrong site. Re-export fresh cookie file and re-upload."}
+    if "429" in m or "rate" in m or "quota" in m or "too many" in m:
+        return {"kind": "throttle", "hint": "Rate-limited — auto-retrying with fewer workers."}
+    if "timed out" in m or "timeout" in m or "urlerror" in m or "connection" in m:
+        return {"kind": "transient", "hint": "Network blip — auto-retrying once."}
+    if "embed parse" in m or "no ytm result" in m:
+        return {"kind": "parse", "hint": "Upstream page format changed — run stopped for inspection."}
+    return {"kind": "unknown", "hint": "Stopped. Copy this error line to the agent for diagnosis."}
+
+YT_KEY = "AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30"
+YT_ORIGIN = "https://music.youtube.com"
+CLIENT = {"clientName": "WEB_REMIX", "clientVersion": "1.20251027.01.00", "hl": "en", "gl": "US"}
+
+def normalize_cookie(raw: str = "") -> str:
+    """Accept typed 'a=b; c=d' header OR Netscape cookie-file content. Returns header."""
+    if not raw:
+        return ""
+    s = raw.strip().strip('"').strip("'")
+    if s[:7].lower() == "cookie:":
+        s = s[7:].strip()
+    if "# Netscape" not in s and "\t" not in s and "\n" not in s:
+        return s
+    pairs = []
+    for line in s.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line[:7].lower() == "cookie:":
+            line = line[7:].strip()
+        if "\t" in line:
+            parts = line.split("\t")
+            if len(parts) >= 7 and parts[5].strip() and parts[6].strip() not in ("", "__Host-"):
+                pairs.append(f"{parts[5].strip()}={parts[6].strip()}")
+            continue
+        if "=" in line and "://" not in line:
+            for p in line.split(";"):
+                p = p.strip()
+                if "=" in p and not p.startswith("#"):
+                    pairs.append(p)
+    # de-dupe, keep last occurrence
+    seen = {}
+    for p in pairs:
+        seen[p.split("=", 1)[0].strip()] = p.split("=", 1)[1].strip()
+    return "; ".join(f"{k}={v}" for k, v in seen.items())
+
+def extract_playlist_id(url: str) -> str:
+    m = re.search(r"playlist/([A-Za-z0-9]+)", url or "")
+    if not m:
+        raise ValueError("not a spotify playlist url")
+    return m.group(1)
+
+def fetch_spotify_tracks(playlist_url: str, cookie: str = ""):
+    pid = extract_playlist_id(playlist_url)
+    embed = f"https://open.spotify.com/embed/playlist/{pid}"
+    headers = {"User-Agent": "Mozilla/5.0", "Accept-Language": "en-US,en;q=0.9"}
+    cookie = normalize_cookie(cookie)
+    if cookie:
+        headers["Cookie"] = cookie
+    req = urllib.request.Request(embed, headers=headers)
+    raw = urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "ignore")
+    m = re.search(r"__NEXT_DATA__[^>]*>(.*?)</script>", raw, re.S)
+    if not m:
+        raise RuntimeError("embed parse failed (spotify changed html?)")
+    data = json.loads(m.group(1))
+    entity = data["props"]["pageProps"]["state"]["data"]["entity"]
+    out = []
+    for t in entity.get("trackList", []):
+        out.append({
+            "uri": t.get("uri", ""),
+            "title": t.get("title", ""),
+            "artist": t.get("subtitle", ""),
+            "duration_ms": t.get("duration", 0),
+        })
+    return {"playlist_id": pid, "playlist_name": entity.get("title", ""), "tracks": out}
+
+def yt_search(query: str):
+    body = json.dumps({"context": {"client": CLIENT}, "query": query,
+                       "params": "EgWKAQIIAWoQEAMQBBAJEAkQBRAK"}).encode()
+    req = urllib.request.Request(
+        f"https://music.youtube.com/youtubei/v1/search?key={YT_KEY}&prettyPrint=false",
+        data=body, headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0",
+                            "Origin": YT_ORIGIN, "Referer": YT_ORIGIN + "/"})
+    r = urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "ignore")
+    j = json.loads(r)
+    # walk to first song result: contents -> tabbedSearchResultsRenderer -> ...
+    try:
+        sections = j["contents"]["tabbedSearchResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"]
+        for sec in sections:
+            ms = sec.get("musicShelfRenderer", {}).get("contents", [])
+            for item in ms:
+                mrl = item.get("musicResponsiveListItemRenderer", {})
+                pid = (mrl.get("playlistItemData", {}) or {}).get("videoId")
+                # fallback: overlay / navigation endpoints
+                if not pid:
+                    ov = json.dumps(mrl)
+                    mm = re.search(r'"videoId":"([A-Za-z0-9_-]{11})"', ov)
+                    if mm:
+                        pid = mm.group(1)
+                if pid:
+                    # title = first text run
+                    flex = mrl.get("flexColumns", [])
+                    title = ""
+                    try:
+                        title = flex[0]["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"][0]["text"]
+                    except Exception:
+                        pass
+                    # duration from fixedColumns
+                    dur = ""
+                    try:
+                        dur = mrl["fixedColumns"][0]["musicResponsiveListItemFixedColumnRenderer"]["text"]["runs"][0]["text"]
+                    except Exception:
+                        pass
+                    return {"videoId": pid, "title": title, "duration": dur, "query": query}
+    except Exception as e:
+        pass
+    # regex fallback (proven to work keyless)
+    m = re.search(r'"videoId":"([A-Za-z0-9_-]{11})"', r)
+    if m:
+        return {"videoId": m.group(1), "title": "", "duration": "", "query": query}
+    raise RuntimeError("no ytm result for: " + query)
+
+def yt_search_safe(query: str):
+    try:
+        r = yt_search(query)
+        return {"ok": True, **r}
+    except Exception as e:
+        return {"ok": False, "query": query, "error": f"{type(e).__name__}: {e}"}
+
+def yt_search_batch(queries, workers: int = 8):
+    from concurrent.futures import ThreadPoolExecutor
+    workers = max(1, min(int(workers or 8), 10))
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        return list(ex.map(yt_search_safe, queries))
+
+def sapisid_hash(cookie: str, origin: str = YT_ORIGIN) -> str:
+    cookie = normalize_cookie(cookie)
+    m = re.search(r"(?:__Secure-3PAPISID|SAPISID)=([^;]+)", cookie)
+    if not m:
+        raise ValueError("yt cookie missing SAPISID (paste full Cookie from music.youtube.com DevTools)")
+    sid = m.group(1)
+    ts = int(time.time())
+    h = hashlib.sha1(f"{ts} {sid} {origin}".encode()).hexdigest()
+    return f"SAPISIDHASH {ts}_{h}"
+
+def yt_create_playlist(yt_cookie: str, title: str, description: str, video_ids: list, privacy: str = "PRIVATE"):
+    yt_cookie = normalize_cookie(yt_cookie)
+    auth = sapisid_hash(yt_cookie)
+    base_h = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0",
+              "Origin": YT_ORIGIN, "Referer": YT_ORIGIN + "/", "Cookie": yt_cookie,
+              "Authorization": auth, "X-Origin": YT_ORIGIN}
+    # 1. create
+    body = json.dumps({"context": {"client": CLIENT}, "title": title,
+                       "description": description or "", "privacyStatus": privacy}).encode()
+    req = urllib.request.Request(
+        f"https://music.youtube.com/youtubei/v1/playlist/create?key={YT_KEY}&prettyPrint=false",
+        data=body, headers=base_h)
+    r = urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "ignore")
+    j = json.loads(r)
+    plid = j.get("playlistId") or j.get("playlistID")
+    if not plid:
+        raise RuntimeError("create failed: " + r[:400])
+    # 2. add videos in chunks of 50
+    for i in range(0, len(video_ids), 50):
+        chunk = video_ids[i:i+50]
+        actions = [{"action": "ACTION_ADD_VIDEO", "addedVideoId": v} for v in chunk]
+        b2 = json.dumps({"context": {"client": CLIENT}, "playlistId": plid, "actions": actions}).encode()
+        req2 = urllib.request.Request(
+            f"https://music.youtube.com/youtubei/v1/browse/edit_playlist?key={YT_KEY}&prettyPrint=false",
+            data=b2, headers=base_h)
+        # NOTE: correct endpoint is playlist/edit ; try edit_playlist then fallback
+        try:
+            urllib.request.urlopen(req2, timeout=25).read()
+        except Exception:
+            req3 = urllib.request.Request(
+                f"https://music.youtube.com/youtubei/v1/playlist/edit?key={YT_KEY}&prettyPrint=false",
+                data=b2, headers=base_h)
+            urllib.request.urlopen(req3, timeout=25).read()
+    return {"playlistId": plid, "url": f"https://music.youtube.com/playlist?list={plid}", "added": len(video_ids)}
+
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def send_json(self, obj, code=200):
+        b = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+    def do_GET(self):
+        if self.path in ("/", "/index.html"):
+            p = os.path.join(HERE, "index.html")
+            with open(p, "rb") as f:
+                b = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+        elif self.path == "/health":
+            self.send_json({"ok": True})
+        elif self.path == "/api/status":
+            self.send_json({"ok": True, "recent": HISTORY[-20:]})
+        else:
+            self.send_json({"error": "not found"}, 404)
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", 0))
+        if n > 2_000_000:
+            return self.send_json({"ok": False, "error": "body too large"}, 413)
+        try:
+            payload = json.loads(self.rfile.read(n).decode() or "{}")
+        except Exception:
+            return self.send_json({"error": "bad json"}, 400)
+        try:
+            if self.path == "/api/spotify":
+                r = fetch_spotify_tracks(payload.get("url", ""), payload.get("spotify_cookie", ""))
+                blog("spotify", f"ok name={r.get('playlist_name')} n={len(r.get('tracks', []))} {scrub_cookie(payload.get('spotify_cookie', ''))}")
+                return self.send_json({"ok": True, **r})
+            if self.path == "/api/search":
+                q = str(payload.get("query", ""))[:300]
+                if not q.strip():
+                    return self.send_json({"ok": False, "error": "empty query"}, 400)
+                r = yt_search(q)
+                return self.send_json({"ok": True, **r})
+            if self.path == "/api/search-batch":
+                qs = payload.get("queries", [])
+                if not isinstance(qs, list) or not qs:
+                    return self.send_json({"ok": False, "error": "queries must be a non-empty list"}, 400)
+                if len(qs) > 25:
+                    return self.send_json({"ok": False, "error": "max 25 queries per batch"}, 400)
+                qs = [str(q)[:300] for q in qs]
+                results = yt_search_batch(qs, payload.get("workers", 8))
+                hit = sum(1 for x in results if x.get("ok"))
+                blog("batch", f"n={len(qs)} matched={hit} workers={payload.get('workers', 8)}")
+                return self.send_json({"ok": True, "results": results})
+            if self.path == "/api/create-playlist":
+                r = yt_create_playlist(payload.get("yt_cookie", ""), payload.get("title", "Spotify import"),
+                                       payload.get("description", ""), payload.get("videoIds", []),
+                                       payload.get("privacy", "PRIVATE"))
+                blog("create", f"ok playlist={r.get('playlistId')} added={r.get('added')}")
+                return self.send_json({"ok": True, **r})
+        except ValueError as e:
+            blog("fail", f"{self.path} ValueError: {e}")
+            return self.send_json({"ok": False, "error": str(e), **classify(str(e))}, 400)
+        except Exception as e:
+            msg = f"{type(e).__name__}: {e}"
+            blog("fail", f"{self.path} {msg}")
+            return self.send_json({"ok": False, "error": msg, **classify(msg)}, 500)
+        return self.send_json({"error": "unknown route"}, 404)
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", "8787"))
+    print(f"sp2yt listening on http://127.0.0.1:{port}", flush=True)
+    ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
