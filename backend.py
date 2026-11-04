@@ -629,13 +629,105 @@ def mrl_texts(mrl: dict):
     t, _sub, _dur, typ = mrl_parts(mrl)
     return t, typ
 
+def _version_zones(title: str) -> str:
+    """Version phrase only: parenthesised/bracketed text plus the '- suffix'."""
+    s = title or ""
+    zones = []
+    try:
+        zones += re.findall(r"\(([^)]*)\)", s)
+        zones += re.findall(r"\[([^\]]*)\]", s)
+        parts = re.split(r"\s+[-\u2013\u2014]\s+", s)
+        if len(parts) > 1:
+            zones.append(" ".join(parts[1:]))
+    except Exception:
+        pass
+    return " ".join(zones)
+
+
+def _version_sig(title: str) -> frozenset:
+    """Normalised set of version modifiers found in the version zones."""
+    z = _version_zones(title).lower()
+    try:
+        z = unicodedata.normalize("NFKD", z).encode("ascii", "ignore").decode()
+    except Exception:
+        pass
+    z = re.sub(r"[^a-z0-9\s]", " ", z)
+    z = re.sub(r"\s+", " ", z).strip()
+    if not z:
+        # No parenthesised/bracketed/suffix zone: fall back to the full title
+        # so bare "TITLE SUPER SLOWED" still reads as versioned.
+        try:
+            f = (title or "").lower()
+            f = unicodedata.normalize("NFKD", f).encode("ascii", "ignore").decode()
+            f = re.sub(r"[^a-z0-9\s]", " ", f)
+            z = re.sub(r"\s+", " ", f).strip()
+        except Exception:
+            pass
+    if not z:
+        return frozenset()
+    sig = set()
+    if re.search(r"\bsped\s*up\b", z) or re.search(r"\bspeed\s*up\b", z):
+        sig.add("sped up")
+    if re.search(r"\bslowed\b", z):
+        sig.add("slowed")
+    if re.search(r"\bsuper\b", z):
+        sig.add("super")
+    if re.search(r"\bultra\b", z):
+        sig.add("ultra")
+    if re.search(r"\breverb\b", z):
+        sig.add("reverb")
+    if re.search(r"\bnightcore\b", z):
+        sig.add("nightcore")
+    if re.search(r"\b8\s*d\b", z):
+        sig.add("8d")
+    if re.search(r"\bbass\s*boost\w*\b", z):
+        sig.add("bass boosted")
+    if re.search(r"\binstrumental\b", z):
+        sig.add("instrumental")
+    if re.search(r"\bkaraoke\b", z):
+        sig.add("karaoke")
+    if re.search(r"\bacoustic\b", z):
+        sig.add("acoustic")
+    if re.search(r"\blive\b", z):
+        sig.add("live")
+    if re.search(r"\bremix\b", z):
+        sig.add("remix")
+    if re.search(r"\bedit\b", z):
+        sig.add("edit")
+    if re.search(r"\bextended\b", z):
+        sig.add("extended")
+    if re.search(r"\bdemo\b", z):
+        sig.add("demo")
+    if re.search(r"\bcover\b", z):
+        sig.add("cover")
+    if re.search(r"\balternat\w*\b", z):
+        sig.add("alternative")
+    return frozenset(sig)
+
+
+def _sig_label(sig) -> str:
+    try:
+        s = sorted(set(sig or []))
+    except Exception:
+        return "plain"
+    return "+".join(s) if s else "plain"
+
+
+_PLAIN_FORBIDDEN = frozenset({"slowed", "sped up", "nightcore", "reverb", "8d", "bass boosted"})
+
 def _norm_text(s: str) -> str:
     s = (s or "").lower()
     s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
     s = re.sub(r"[\(\[].*?[\)\]]", " ", s)
     s = re.sub(r"\b(?:feat\.?|ft\.?|featuring)\b.*$", " ", s)
     for pat in (r"\bremaster\w*\b.*$", r"\bofficial\b.*$", r"\blyric\w*\b.*$",
-                r"\bsped\s*up\b.*$", r"\bslowed\b.*$", r"\baudio\b.*$",
+                r"\bsped\s*up\b.*$", r"\bspeed\s*up\b.*$", r"\bslowed\b.*$",
+                r"\bsuper\b.*$", r"\bultra\b.*$", r"\balternat\w*\b.*$",
+                r"\bremix\b.*$", r"\breverb\b.*$", r"\bnightcore\b.*$",
+                r"\b8\s*d\b.*$", r"\bbass\s*boost\w*\b.*$",
+                r"\binstrumental\b.*$", r"\bkaraoke\b.*$", r"\bacoustic\b.*$",
+                r"\blive\b.*$", r"\bedit\b.*$", r"\bextended\b.*$",
+                r"\bdemo\b.*$", r"\bcover\b.*$", r"\baudio\b.*$",
                 r"\bvisualizer\b.*$"):
         s = re.sub(pat, " ", s)
     s = re.sub(r"[^a-z0-9\s]", " ", s)
@@ -681,6 +773,8 @@ def _duration_score(want_ms: int, cand_dur: str):
         return 1.0
     if diff <= 8:
         return 0.5
+    if diff > 20:
+        return 0.0
     return 0.0
 
 def _combined(t: float, a: float, d):
@@ -701,6 +795,31 @@ def _score_candidates(want_title: str, want_artist: str, want_ms: int, cands: li
     return out
 
 def _pick_best(query: str, want_title: str, want_artist: str, want_ms: int, cands: list) -> dict:
+    cands = [c for c in (cands or []) if isinstance(c, dict)]
+    want_sig = _version_sig(want_title)
+    if want_sig:
+        want_label = _sig_label(want_sig)
+        matching = [c for c in cands if _version_sig(c.get("title", "")) == want_sig]
+        if not matching:
+            found = sorted({_sig_label(_version_sig(c.get("title", ""))) for c in cands if c.get("title")})
+            raise RuntimeError(
+                f"no confident match (version mismatch: want '{want_label}', "
+                f"found [{', '.join(found[:6]) or 'none'}]) for: " + query)
+        cands = matching
+    else:
+        # Plain source: the version IS the song, so a versioned row can never
+        # substitute for it. Filter to plain-signature rows whenever any
+        # exist; when only slowed/sped-up rows exist the row skips naming
+        # what was found instead of falling back to a wrong version.
+        plain = [c for c in cands
+                 if not (_version_sig(c.get("title", "")) & _PLAIN_FORBIDDEN)]
+        if plain:
+            cands = plain
+        elif cands:
+            found = sorted({_sig_label(_version_sig(c.get("title", ""))) for c in cands if c.get("title")})
+            raise RuntimeError(
+                f"no confident match (only {', '.join(found[:6]) or 'slowed/sped-up'} "
+                f"versions found) for: " + query)
     scored = _score_candidates(want_title, want_artist, want_ms, cands)
     scored = [c for c in scored if c.get("title")]
     if not scored:
@@ -716,6 +835,39 @@ def _pick_best(query: str, want_title: str, want_artist: str, want_ms: int, cand
         f"'{best.get('artist', '')}' [{best.get('videoId', '')}], "
         f"runner-up {second:.2f}) for: " + query)
 
+def _card_candidate(sec: dict):
+    """Top-result card (musicCardShelfRenderer) as a candidate. The card is the
+    one place these search responses carry a duration (subtitle tail mm:ss),
+    so harvesting it is what makes duration scoring real; shelf rows keep the
+    0.7/0.3 renormalisation when they carry none."""
+    try:
+        card = (sec or {}).get("musicCardShelfRenderer", {})
+        if not card:
+            return None
+        runs = (card.get("title", {}) or {}).get("runs", []) or []
+        if not runs:
+            return None
+        title = (runs[0].get("text", "") or "").strip()
+        pid = ""
+        try:
+            pid = runs[0]["navigationEndpoint"]["watchEndpoint"]["videoId"]
+        except Exception:
+            pid = ""
+        if not pid:
+            mm = re.search(r'"videoId":\s*"([A-Za-z0-9_-]{11})"', json.dumps(card))
+            pid = mm.group(1) if mm else ""
+        if not pid or not title:
+            return None
+        sub = "".join((r or {}).get("text", "")
+                      for r in ((card.get("subtitle", {}) or {}).get("runs", []) or []))
+        m = re.search(r"\b(?:\d+:)?\d{1,2}:\d{2}\b", sub or "")
+        typ = (sub or "").split("\u2022")[0].strip() if sub else ""
+        return {"videoId": pid, "title": title or "", "artist": (sub or "").strip(),
+                "duration": (m.group(0) if m else ""), "type": typ or ""}
+    except Exception:
+        return None
+
+
 def _candidates_from_search_json(j: dict) -> list:
     try:
         sections = j["contents"]["tabbedSearchResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"]
@@ -723,6 +875,9 @@ def _candidates_from_search_json(j: dict) -> list:
         return []
     cands = []
     for sec in sections or []:
+        card = _card_candidate(sec)
+        if card:
+            cands.append(card)
         items = sec.get("musicShelfRenderer", {}).get("contents", [])
         if not items and "itemSectionRenderer" in sec:
             items = sec["itemSectionRenderer"].get("contents", [])
@@ -738,11 +893,45 @@ def _candidates_from_search_json(j: dict) -> list:
                           "duration": dur or "", "type": typ or ""})
     return cands
 
+_SEARCH_CACHE = {}
+_SEARCH_CACHE_MAX = 500
+
+
+def _search_key(query: str, want_title: str, want_artist: str = "", want_ms: int = 0) -> tuple:
+    """Cache key for one search row. The version signature is part of the key
+    so a slowed lookup can never serve a sped-up row (or any other version):
+    two source rows that differ only by version have different keys."""
+    return (query or "", _sig_label(_version_sig(want_title)),
+            (want_artist or "").strip().lower(), int(want_ms or 0))
+
+
+def _search_cache_get(key):
+    try:
+        return _SEARCH_CACHE.get(key)
+    except Exception:
+        return None
+
+
+def _search_cache_put(key, cands):
+    try:
+        if len(_SEARCH_CACHE) >= _SEARCH_CACHE_MAX:
+            _SEARCH_CACHE.clear()
+        _SEARCH_CACHE[key] = [dict(c) for c in (cands or [])]
+    except Exception:
+        pass
+
+
 def yt_search(query: str, title: str = "", artist: str = "", duration_ms: int = 0):
     """Confident match. Raises with best-candidate + score when nothing clears the bar."""
     want_title = (title or query or "").strip()
     want_artist = (artist or "").strip()
     want_ms = int(duration_ms or 0)
+    key = _search_key(query, want_title, want_artist, want_ms)
+    hit = _search_cache_get(key)
+    if hit is not None:
+        best = _pick_best(query, want_title, want_artist, want_ms, hit)
+        best.update({"query": query})
+        return best
     body = json.dumps({"context": {"client": CLIENT}, "query": query,
                        "params": "EgWKAQIIAWoQEAMQBBAJEAkQBRAK"}).encode()
     last = None
@@ -762,6 +951,7 @@ def yt_search(query: str, title: str = "", artist: str = "", duration_ms: int = 
     else:
         raise last
     cands = _candidates_from_search_json(json.loads(r))
+    _search_cache_put(key, cands)
     best = _pick_best(query, want_title, want_artist, want_ms, cands)
     best.update({"query": query})
     return best
@@ -963,6 +1153,35 @@ def yt_add_one(plid: str, vid: str, yt_cookie: str) -> str:
     except Exception:
         return er[:120]
 
+def _repeat_count(video_ids: list, version_sigs=None) -> int:
+    """Genuine repeats only: the same version, same videoId, twice in the source.
+    Different versions resolve to different videoIds (the matcher rejects cross-
+    version substitution), so a bare duplicate videoId is already genuine; when
+    parallel version labels are supplied, pairs are counted to make it explicit."""
+    ids = [v for v in (video_ids or []) if isinstance(v, str) and v]
+    try:
+        if version_sigs is not None and len(version_sigs) == len(video_ids):
+            pairs = [(ids[i], str(version_sigs[i]))
+                     for i in range(len(video_ids)) if isinstance(video_ids[i], str) and video_ids[i]]
+            return len(pairs) - len(set(pairs))
+    except Exception:
+        pass
+    return len(ids) - len(set(ids))
+
+
+def _rows_for_video(video_id: str, rows: list) -> list:
+    """All row indices carrying one videoId, in row order. A list, never a
+    single index, because one videoId may legitimately appear twice in the
+    source (a genuine repeat: same version, same videoId)."""
+    out = []
+    try:
+        for k, row in enumerate(rows or []):
+            if isinstance(row, dict) and row.get("videoId") == video_id:
+                out.append(k)
+    except Exception:
+        pass
+    return out
+
 def _ledger(video_ids: list, entries, attempts: dict) -> list:
     """One outcome per requested copy, in send order. A copy counts as landed while the
     playlist still holds an unclaimed entry for that videoId — 4 copies need 4 entries.
@@ -1069,7 +1288,8 @@ def yt_delete_playlist(plid: str, yt_cookie: str) -> bool:
         blog("delete", f"{plid} {type(e).__name__} {getattr(e, 'code', '')}")
         return False
 
-def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, hooks=None):
+def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, hooks=None,
+                version_sigs=None):
     on_created = (hooks or {}).get("on_created")
     on_phase = (hooks or {}).get("on_phase")
     if on_phase:
@@ -1124,7 +1344,7 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
         raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (final read-back failed)")
     ledger = _ledger(video_ids, entries, attempts)
     added, rejected, missing = _ledger_counts(ledger)
-    repeats = len(video_ids) - len(set(video_ids))
+    repeats = _repeat_count(video_ids, version_sigs)
     blog("parity", f"{added}/{len(video_ids)} landed, {rejected} refused, {missing} missing, "
                    f"{repeats} repeat(s) in source, {len(todo)} append attempt(s)")
     _persist_final(spotify_id, plid, url, title, len(video_ids), added == len(video_ids))
@@ -1141,7 +1361,8 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
             "missing": missing, "repeats": repeats, "ledger": ledger,
             "playlist_count": len(entries) if isinstance(entries, list) else 0}
 
-def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None):
+def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
+                       version_sigs=None):
     on_created = (hooks or {}).get("on_created")
     on_phase = (hooks or {}).get("on_phase")
     plid = rec.get("yt_id", "")
@@ -1178,7 +1399,7 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None)
         raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (final read-back failed)")
     ledger = _ledger(video_ids, entries2, attempts)
     added, rejected, missing = _ledger_counts(ledger)
-    repeats = len(video_ids) - len(set(video_ids))
+    repeats = _repeat_count(video_ids, version_sigs)
     blog("parity", f"resume {added}/{len(video_ids)} landed, {rejected} refused, {missing} missing")
     _persist_final(spotify_id, plid, url, title, len(video_ids), added == len(video_ids))
     if not added:
@@ -1195,9 +1416,11 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None)
             "playlist_count": len(entries2) if isinstance(entries2, list) else 0}
 
 def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PRIVATE",
-                           spotify_id="", hooks=None):
+                           spotify_id="", hooks=None, version_sigs=None):
     """One implementation, two entry points: sync /api/create-playlist and the
-    async /api/transfer worker. Never dedupes video_ids."""
+    async /api/transfer worker. Never dedupes video_ids. The ledger works on
+    the videoId multiset: a present Slowed never satisfies a missing Super
+    Slowed, because versions resolve to distinct videoIds (or skip)."""
     yt_cookie = normalize_cookie(yt_cookie)
     ids = [v for v in (video_ids or []) if isinstance(v, str) and v]
     if not ids:
@@ -1219,7 +1442,7 @@ def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PR
                         blog("create", f"exists title={title} url={rec.get('url')} tracks={added}")
                         return {"playlistId": rec["yt_id"], "url": rec.get("url", ""),
                                 "added": added, "sent": len(ids), "rejected": 0, "missing": missing,
-                                "repeats": len(ids) - len(set(ids)), "existing": True, "ledger": seed,
+                                "repeats": _repeat_count(ids, version_sigs), "existing": True, "ledger": seed,
                                 "playlist_count": len(entries) if isinstance(entries, list) else 0}
                     on_phase = (hooks or {}).get("on_phase")
                     if on_phase:
@@ -1243,7 +1466,7 @@ def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PR
                     todo_set = set(todo)
                     newly = sum(1 for e in ledger
                                 if e["outcome"] == "landed" and (int(e["i"]) - 1) in todo_set)
-                    repeats = len(ids) - len(set(ids))
+                    repeats = _repeat_count(ids, version_sigs)
                     blog("parity", f"topup {added}/{len(ids)} landed, {rejected} refused, {missing} missing")
                     _persist_final(spotify_id, plid, rec.get("url", ""), title, len(ids), added == len(ids))
                     return {"playlistId": plid, "url": rec.get("url", ""),
@@ -1254,11 +1477,11 @@ def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PR
                     return {"playlistId": rec["yt_id"], "url": rec.get("url", ""),
                             "added": rec.get("expected", len(ids)), "sent": len(ids),
                             "rejected": 0, "missing": 0,
-                            "repeats": len(ids) - len(set(ids)), "existing": True, "ledger": [],
+                            "repeats": _repeat_count(ids, version_sigs), "existing": True, "ledger": [],
                             "playlist_count": 0}
             else:
-                return _resume_incomplete(rec, yt_cookie, title, ids, spotify_id, hooks)
-    r = _create_new(yt_cookie, title, description, ids, privacy, spotify_id, hooks)
+                return _resume_incomplete(rec, yt_cookie, title, ids, spotify_id, hooks, version_sigs)
+    r = _create_new(yt_cookie, title, description, ids, privacy, spotify_id, hooks, version_sigs)
     return r
 
 def yt_create_playlist(yt_cookie: str, title: str, description: str, video_ids: list, privacy: str = "PRIVATE"):
@@ -1383,8 +1606,21 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
             RUN["sent"] = len(vids)
         # video_ids position -> row index. video_ids holds one entry per matched
         # row (repeats included), in row order; skipped rows have no entry.
+        # The version signature is part of each row's identity: two rows that
+        # differ only by version are two distinct tracks needing two distinct
+        # videoIds, so rows are joined to ledger entries by position, never by
+        # collapsing on videoId. vid_rows maps each videoId to its list of row
+        # indices (a list, because one videoId may legitimately appear twice
+        # as a genuine repeat: same version, same videoId).
         with _RUN_LOCK:
             row_for_pos = [k for k, row in enumerate(RUN["rows"]) if row.get("videoId")]
+            vid_rows = {}
+            for k, row in enumerate(RUN["rows"]):
+                v = row.get("videoId")
+                if v:
+                    vid_rows.setdefault(v, []).append(k)
+            sigs_for_pos = [_sig_label(_version_sig(RUN["rows"][k].get("title", "")))
+                            for k in row_for_pos]
         def _row_of_pos(pos):
             try:
                 p = int(pos)
@@ -1497,7 +1733,7 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
         hooks = {"on_created": _on_created, "on_append_start": _on_start,
                  "on_append_one": _on_one, "on_phase": _on_phase, "on_seed": _on_seed}
         try:
-            res = transfer_create_append(yt_cookie, pname, "", vids, privacy, sid, hooks)
+            res = transfer_create_append(yt_cookie, pname, "", vids, privacy, sid, hooks, sigs_for_pos)
         except Exception as e:
             msg = f"{type(e).__name__}: {e}"
             c = classify(msg)
