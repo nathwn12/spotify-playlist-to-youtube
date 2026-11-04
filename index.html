@@ -7,9 +7,6 @@ h2{margin:0 0 4px;font-size:22px;letter-spacing:.2px}
 h2 .dot{color:#1db954}
 p.sub{color:#a9a9b2;margin:0 0 20px;font-size:14px}
 .card{background:rgba(29,29,34,.96);border:1px solid #2c2c34;border-radius:12px;padding:16px;margin:0 0 14px;box-shadow:0 6px 24px rgba(0,0,0,.35)}
-h2{margin:0 0 4px;font-size:22px}
-p.sub{color:#a9a9b2;margin:0 0 20px;font-size:14px}
-.card{background:#1d1d22;border:1px solid #2c2c34;border-radius:10px;padding:16px;margin:0 0 14px}
 label{display:block;font-size:13px;font-weight:600;color:#cfcfd8;margin:12px 0 6px}
 label:first-child{margin-top:0}
 .hint{font-weight:400;color:#8e8e98;font-size:12px}
@@ -23,9 +20,9 @@ button{flex:1;padding:12px;font-size:15px;font-weight:700;border:0;border-radius
 button:hover{filter:brightness(1.12)}
 button:active{transform:scale(.98)}
 button:disabled{filter:grayscale(.6) brightness(.7);cursor:wait}
-#go{background:linear-gradient(180deg,#23d664,#159a46);color:#fff;box-shadow:0 4px 16px rgba(29,185,84,.35)}
-#step1{background:#33333b;color:#fff;flex:0 0 190px}
-#log{background:#0c0f0c;color:#7dffa8;border:1px solid #2c2c34;border-radius:8px;padding:12px;font:12px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;max-height:300px;overflow-y:auto;overflow-x:hidden;margin:10px 0 0}
+#go{background:linear-gradient(180deg,#23d664,#159a46);color:#fff;box-shadow:0 4px 16px rgba(29,185,84,.35);width:100%}
+#step1{background:#33333b;color:#fff}
+#log{background:#0c0f0c;color:#7dffa8;border:1px solid #2c2c34;border-radius:8px;padding:12px;font:12px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;max-height:160px;overflow-y:auto;overflow-x:hidden;margin:10px 0 0}
 #progrow{display:flex;gap:10px;align-items:center;font-size:13px;font-weight:700;color:#ffd866;margin:0}
 #spin{width:14px;height:14px;flex:0 0 14px;border:2px solid #3a3a44;border-top-color:#1db954;border-radius:50%;display:none}
 #spin.on{display:inline-block;animation:rot .7s linear infinite}
@@ -34,6 +31,22 @@ button:disabled{filter:grayscale(.6) brightness(.7);cursor:wait}
 #fill{height:100%;width:0%;background:#1db954;transition:width .3s}
 #bar.live #fill{background-image:linear-gradient(45deg,rgba(255,255,255,.28) 25%,transparent 25%,transparent 50%,rgba(255,255,255,.28) 50%,rgba(255,255,255,.28) 75%,transparent 75%);background-size:16px 16px;animation:slide .6s linear infinite}
 @keyframes slide{to{background-position:16px 0}}
+#plcard{display:none;margin:10px 0 0;padding:10px 12px;border:1px solid #1db954;border-radius:8px;background:#0e1a12;font-size:13px}
+#plcard.show{display:block}
+#plcard a{color:#1db954;word-break:break-all}
+#rows{list-style:none;margin:10px 0 0;padding:0;max-height:320px;overflow-y:auto;font-size:12px}
+#rows li{display:flex;gap:8px;align-items:baseline;padding:3px 0;border-top:1px solid #222}
+#rows .n{flex:0 0 40px;color:#8e8e98}
+#rows .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#rows .v{flex:0 0 90px;color:#8e8e98;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chip{flex:0 0 auto;font-size:10px;font-weight:700;padding:1px 7px;border-radius:20px;background:#33333b;color:#cfcfd8}
+.chip.matched{background:#123a22;color:#7dffa8}.chip.landed{background:#123a22;color:#7dffa8}
+.chip.appending{background:#3a2f10;color:#ffd866}.chip.skipped{background:#33333b;color:#a9a9b2}
+.chip.refused{background:#3a1515;color:#ff8a8a}.chip.missing{background:#3a1515;color:#ff8a8a}
+#newbtn{display:none;margin:8px auto 0;padding:6px 14px;font-size:12px;background:#33333b;color:#fff}
+#showing{font-size:11px;color:#8e8e98;margin:6px 0 0}
+details{margin:0 0 14px}
+details summary{cursor:pointer;font-size:13px;font-weight:700;color:#cfcfd8}
 </style></head><body>
 <h2><span class="dot">●</span> sp2yt — 1-click, keyless, cookies are yours</h2>
 <p class="sub">Paste playlist + your cookies. Nothing leaves your machine except direct Spotify / YT Music calls.</p>
@@ -42,25 +55,28 @@ button:disabled{filter:grayscale(.6) brightness(.7);cursor:wait}
 <input id="sp_url" value="" placeholder="paste playlist link — title fills in">
 <label>Load cookies <span class="hint">(one upload — select both .txt files, auto-sorts Spotify vs YouTube)</span></label>
 <input type="file" id="cookie_files" accept=".txt,text/plain,*/*" multiple>
-<div style="margin:6px 0 0"><button id="forget" type="button" style="flex:none;padding:4px 12px;font-size:12px;background:#33333b;color:#fff">forget saved cookies</button> <span id="latchstat" style="font-size:12px;color:#8e8e98"></span></div>
-<div style="margin:6px 0 0;display:flex;gap:8px"><input id="watchdir" placeholder="extra folder to watch (optional)" style="flex:1"><button id="watchsave" type="button" style="flex:none;padding:4px 12px;font-size:12px;background:#33333b;color:#fff">watch</button></div>
-<div id="watchlist" style="font-size:12px;color:#8e8e98"></div>
-<label>YouTube Music cookie <span class="hint">(the only login you need — auto-filled from upload, or type)</span></label>
-<textarea id="yt_cookie" rows="3" placeholder="__Secure-3PAPISID=...; SAPISID=...; ..."></textarea>
 <div class="row"><div><label>New YTM playlist title</label><input id="pl_title" value="" placeholder="auto from link"></div>
 <div style="flex:0 0 64px"><label>Cover</label><img id="cover" alt="" style="width:56px;height:56px;border-radius:8px;object-fit:cover;display:none;border:1px solid #3a3a44"></div>
 <div style="flex:0 0 170px"><label>Privacy</label><select id="privacy"><option>PRIVATE</option><option>PUBLIC</option><option>UNLISTED</option></select></div></div>
 </div>
-<div class="btns"><button id="go">1-CLICK TRANSFER →</button><button id="step1" type="button">1) load spotify only</button><button id="copylog" type="button" style="flex:0 0 120px">copy log</button></div>
-<div class="card"><div id="progrow"><span id="spin"></span><span id="prog">idle.</span></div><div id="bar"><div id="fill"></div></div><div id="log">ready. 1-click = fetch spotify → search ytm → create playlist. No dev keys. Cookies stay localhost-only.</div></div>
+<div class="btns"><button id="go">Transfer to YouTube Music</button></div>
+<div class="card"><div id="progrow"><span id="spin"></span><span id="prog">idle.</span></div><div id="bar"><div id="fill"></div></div><div id="plcard"></div><ol id="rows"></ol><button id="newbtn" type="button"></button><div id="showing"></div></div>
+<details><summary>advanced</summary><div class="card" style="margin-top:10px">
+<label>YouTube Music cookie <span class="hint">(the only login you need — auto-filled from upload, or type)</span></label>
+<textarea id="yt_cookie" rows="3" placeholder="__Secure-3PAPISID=...; SAPISID=...; ..."></textarea>
+<div style="margin:6px 0 0"><button id="forget" type="button" style="flex:none;padding:4px 12px;font-size:12px;background:#33333b;color:#fff">forget saved cookies</button> <span id="latchstat" style="font-size:12px;color:#8e8e98"></span></div>
+<div style="margin:6px 0 0;display:flex;gap:8px"><input id="watchdir" placeholder="extra folder to watch (optional)" style="flex:1"><button id="watchsave" type="button" style="flex:none;padding:4px 12px;font-size:12px;background:#33333b;color:#fff">watch</button></div>
+<div id="watchlist" style="font-size:12px;color:#8e8e98"></div>
+<div style="display:flex;gap:10px;margin-top:10px"><button id="step1" type="button" style="font-size:12px;padding:8px">load spotify only (dev)</button><button id="copylog" type="button" style="font-size:12px;padding:8px">copy rows</button></div>
+<div id="log">ready. Transfer = fetch spotify → search ytm → create playlist. No dev keys. Cookies stay localhost-only.</div>
+</div></details>
 <script>
 const logEl=document.getElementById('log'),progEl=document.getElementById('prog'),spinEl=document.getElementById('spin'),barEl=document.getElementById('bar'),fillEl=document.getElementById('fill');
-const follow=()=>{logEl.scrollTop=logEl.scrollHeight;};
-const log=(m)=>{logEl.textContent+=m+"\n";requestAnimationFrame(follow);follow();};
-const workOn=(label)=>{spinEl.classList.add('on');barEl.classList.add('live');window._busy=true;document.getElementById('go').disabled=true;document.getElementById('step1').disabled=true;if(label)progEl.textContent=label;};
-const workOff=(label)=>{spinEl.classList.remove('on');barEl.classList.remove('live');window._busy=false;document.getElementById('go').disabled=false;document.getElementById('step1').disabled=false;if(label)progEl.textContent=label;};
-const prog=(m)=>{progEl.textContent=m;};
-const setBar=(done,total)=>{fillEl.style.width=(total?Math.round(100*done/total):0)+'%';};
+const rowsEl=document.getElementById('rows'),newBtn=document.getElementById('newbtn'),showingEl=document.getElementById('showing'),plcard=document.getElementById('plcard');
+const log=(m)=>{const lines=(logEl.textContent+m+"\n").split("\n");if(lines.length>100)logEl.textContent=lines.slice(-100).join("\n");else logEl.textContent+=m+"\n";logEl.scrollTop=logEl.scrollHeight;};
+const workOn=(label)=>{spinEl.classList.add('on');barEl.classList.add('live');window._busy=true;document.getElementById('go').disabled=true;if(label)progEl.textContent=label;};
+const workOff=(label)=>{spinEl.classList.remove('on');barEl.classList.remove('live');window._busy=false;document.getElementById('go').disabled=false;if(label)progEl.textContent=label;};
+const setBarStrict=(pct)=>{pct=Math.max(0,Math.min(100,pct));window._maxBar=Math.max(window._maxBar||0,pct);fillEl.style.width=window._maxBar+'%';};
 const setAutoTitle=(name,cover)=>{const auto=String(name||'').trim();const el=document.getElementById('pl_title');
  if(!el.value.trim()||el.value===window._autoTitle||/ \(from spotify\)$/.test(el.value))el.value=auto;window._autoTitle=auto;
  const im=document.getElementById('cover'); if(cover){im.src=cover;im.style.display='block';}};
@@ -100,75 +116,148 @@ async function lastSession(){
 }
 lastSession();
 const privacySel=document.getElementById('privacy');
-const savedPrivacy=localStorage.getItem('sp2yt.privacy');
-if(savedPrivacy&&[...privacySel.options].some(o=>o.value===savedPrivacy))privacySel.value=savedPrivacy;
-privacySel.onchange=()=>localStorage.setItem('sp2yt.privacy',privacySel.value);
+(async()=>{try{
+ const r=await fetch('/api/settings').then(r=>r.json());
+ if(r.ok&&r.privacy&&[...privacySel.options].some(o=>o.value===r.privacy)){privacySel.value=r.privacy;}
+ else{const lp=localStorage.getItem('sp2yt.privacy');
+  if(lp&&[...privacySel.options].some(o=>o.value===lp)){privacySel.value=lp;
+   fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({privacy:lp})}).catch(()=>{});}}
+}catch(e){try{const lp=localStorage.getItem('sp2yt.privacy');
+ if(lp&&[...privacySel.options].some(o=>o.value===lp))privacySel.value=lp;}catch(_){}}})();
+privacySel.onchange=()=>{fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({privacy:privacySel.value})}).catch(()=>{});};
 let detectToken=0,detectTimer=null;
 document.getElementById('sp_url').addEventListener('input',()=>{clearTimeout(detectTimer);detectTimer=setTimeout(autoDetectTitle,600);});
 async function autoDetectTitle(){
  if(window._busy)return;
  const u=document.getElementById('sp_url').value.trim();
  if(!/open\.spotify\.com\/playlist\/[A-Za-z0-9]+/.test(u))return;
- const my=++detectToken; prog('detecting playlist title…');
+ const my=++detectToken; progEl.textContent='detecting playlist title…';
  try{const r=await post('/api/spotify',{url:u,spotify_cookie:''},25000);
   if(my!==detectToken||!r.ok)return;
   setAutoTitle(r.playlist_name,r.cover_url);
-  prog(`detected: ${r.playlist_name} — ${r.tracks.length} tracks. Ready.`);
- }catch(e){/* silent; the button run reports errors */}
+  progEl.textContent=`detected: ${r.playlist_name} — ${r.tracks.length} tracks. Ready.`;
+ }catch(e){}
 }
 async function post(p,b,ms=25000){const c=new AbortController();const t=setTimeout(()=>c.abort(),ms);try{const r=await fetch(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b),signal:c.signal});return r.json();}finally{clearTimeout(t);}}
-document.getElementById('copylog').onclick=async()=>{const t=document.getElementById('log').textContent;
- try{await navigator.clipboard.writeText(t);prog('log copied ('+t.length+' chars).');}
- catch(e){const ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();try{document.execCommand('copy');prog('log copied ('+t.length+' chars).');}catch(_){prog('copy failed — select the log manually.');}ta.remove();}};
+document.getElementById('copylog').onclick=async()=>{const rows=[...window._rowMap.values()].sort((a,b)=>a.i-b.i);
+ const t=rows.map(r=>`${r.i}. ${r.title} — ${r.artist} [${r.videoId||'-'}] ${r.state}`).join("\n");
+ try{await navigator.clipboard.writeText(t);progEl.textContent='rows copied ('+t.length+' chars).';}
+ catch(e){const ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();try{document.execCommand('copy');progEl.textContent='rows copied ('+t.length+' chars).';}catch(_){progEl.textContent='copy failed — select manually.';}ta.remove();}};
 document.getElementById('step1').onclick=async()=>{
- document.getElementById('log').textContent=''; workOn('loading spotify…'); setBar(0,1);
+ logEl.textContent=''; workOn('loading spotify…'); setBarStrict(0);
  const r=await post('/api/spotify',{url:sp_url.value,spotify_cookie:''});
  if(!r.ok){log('SPOTIFY FAIL: '+r.error);workOff('failed.');return;} log(`SPOTIFY OK: ${r.playlist_name} — ${r.tracks.length} tracks`);
  setAutoTitle(r.playlist_name,r.cover_url);
- r.tracks.slice(0,5).forEach(t=>log(` - ${t.title} — ${t.artist}`)); setBar(1,1); workOff('spotify loaded.');
- r.tracks.slice(0,5).forEach(t=>log(` - ${t.title} — ${t.artist}`));
+ r.tracks.slice(0,5).forEach(t=>log(` - ${t.title} — ${t.artist}`)); setBarStrict(100); workOff('spotify loaded.');
  window._tracks=r.tracks; window._plname=r.playlist_name;
 };
-document.getElementById('go').onclick=async()=>{
- document.getElementById('log').textContent=''; workOn('checking cookies…'); setBar(0,100);
- post('/api/latch',{spotify_cookie:'',yt_cookie:yt_cookie.value}).catch(()=>{});
- try{const k=await post('/api/check',{spotify_cookie:'',yt_cookie:yt_cookie.value},30000);
-  log(`cookies: ytm ${k.ytm.ok?'OK':'STALE'} (${k.ytm.msg})`);
-  if(!k.ytm.ok){log('STOPPED: YTM cookie '+k.ytm.msg);log('fix: music.youtube.com → DevTools → Network → copy Cookie → save .txt → upload again.');workOff('cookie expired.');return;}
- }catch(e){log('cookie check skipped ('+e+'), continuing…');}
- log('1/3 fetching spotify (keyless embed, + your cookie if given)…');
- let r=await post('/api/spotify',{url:sp_url.value,spotify_cookie:''});
- if(!r.ok){log('SPOTIFY FAIL: '+r.error); if(r.hint)log('DIAGNOSIS ['+(r.kind||'?')+']: '+r.hint); workOff('failed.');return;}
- const tracks=r.tracks; log(`SPOTIFY OK: ${r.playlist_name} — ${tracks.length} tracks`); setAutoTitle(r.playlist_name,r.cover_url); setBar(2,100);
- log('2/3 searching ytm (parallel batches of 10)…');
- const vids=[]; const CHUNK=10;
- for(let base=0;base<tracks.length;base+=CHUNK){const slice=tracks.slice(base,base+CHUNK);
-  const done=Math.min(base+CHUNK,tracks.length);
-  prog(`${done}/${tracks.length} searching: batch ${Math.floor(base/CHUNK)+1}/${Math.ceil(tracks.length/CHUNK)}…`); setBar(done,tracks.length);
-  let b=null; const tq=slice.map(t=>({title:t.title,artist:t.artist,duration_ms:t.duration_ms}));
-  try{b=await post('/api/search-batch',{tracks:tq,workers:8},90000);}
-  catch(e){log(` batch ${base/CHUNK+1} ERR: ${e.name==='AbortError'?'timeout 90s, skipped':e}`);continue;}
-  if(!b.ok&&(b.kind==='throttle'||b.kind==='transient')){log(` batch ${base/CHUNK+1} ${b.kind}: ${b.hint} retrying…`);await new Promise(r=>setTimeout(r,2500));
-   try{b=await post('/api/search-batch',{tracks:tq,workers:4},90000);}catch(e){log(` batch retry ERR: ${e}`);continue;}}
-  if(!b.ok){if(b.kind==='auth'||b.kind==='parse'){log(` batch FATAL [${b.kind}]: ${b.hint}`);workOff(`stopped: ${b.kind}.`);return {fatal:true};}log(` batch ${base/CHUNK+1} FAIL: ${b.error}`);continue;}
-  b.results.forEach((s,k)=>{const t=slice[k],i=base+k;
-   if(s.videoId){vids.push(s.videoId); log(` [${i+1}/${tracks.length}] ${t.title} → ${s.videoId}${s.alt?' (alt match)':''} (${s.title})`);}
-   else log(` [${i+1}] SKIP ${t.title}: ${s.skipped||s.error||'no match'}`);});
+// ---- live run model ----
+window._rowMap=new Map(); window._since=0; window._pollTimer=null; window._fail=0; window._lastOk=Date.now(); window._maxBar=0; window._pendingNew=0; window._reconcile=0;
+const phaseWord=(ph)=>({idle:'idle.',spotify:'Fetching Spotify…',search:'Searching YouTube Music…',create:'Creating playlist…',append:'Adding tracks…',verify:'Verifying…',done:'Done.',failed:'Failed.'}[ph]||ph);
+function nearBottom(el){return (el.scrollHeight-el.scrollTop-el.clientHeight)<80;}
+function renderPlcard(d){
+ if(!d.created||!d.url){plcard.className='';plcard.innerHTML='';return;}
+ const n=d.landed||0,m=d.sent||d.total||0;
+ const head=d.existing?`Exists — ${n} of ${m} tracks from this playlist are on it`:`Playlist created — ${n} of ${m} added`;
+ plcard.className='show';
+ const a=document.createElement('a');a.href=d.url;a.textContent=d.url;a.target='_blank';a.rel='noopener';
+ plcard.innerHTML='';const s=document.createElement('span');s.textContent=head+' ';
+ plcard.appendChild(s);plcard.appendChild(a);
+}
+function renderRows(full){
+ const all=[...window._rowMap.values()].sort((a,b)=>a.i-b.i);
+ const total=all.length, cap=500;
+ const vis=total>cap?all.slice(-cap):all;
+ showingEl.textContent=total>cap?`showing last ${cap} of ${total}`:'';
+ const stick=nearBottom(rowsEl);
+ rowsEl.innerHTML='';
+ for(const r of vis){
+  const li=document.createElement('li');
+  const n=document.createElement('span');n.className='n';n.textContent=r.i;
+  const t=document.createElement('span');t.className='t';t.textContent=`${r.title} — ${r.artist}`;
+  const v=document.createElement('span');v.className='v';v.textContent=r.videoId||'';
+  const c=document.createElement('span');c.className='chip '+r.state;c.textContent=r.state;
+  li.append(n,t,v,c);rowsEl.appendChild(li);
  }
- prog(`MATCHED ${vids.length}/${tracks.length}`); setBar(vids.length,tracks.length);
- log(`MATCHED ${vids.length}/${tracks.length} (${tracks.length-vids.length} skipped — playlist continues regardless)`);
- if(!vids.length){log('STOPPED: zero matches, nothing to create.');workOff('zero matches.');return;}
- if(!yt_cookie.value.trim()){log('3/3 SKIPPED create — no YTM cookie. Paste/type or load file, then click again.');window._vids=vids;workOff(`matched ${vids.length}/${tracks.length} — waiting for YTM cookie.`);return;}
- log('3/3 creating ytm playlist (auth = YOUR cookie only)…'); prog('3/3 creating playlist…');
- const c=await post('/api/create-playlist',{spotify_id:(sp_url.value.match(/playlist\/([A-Za-z0-9]+)/)||[])[1]||'',yt_cookie:yt_cookie.value,title:pl_title.value||r.playlist_name,description:'',videoIds:vids,privacy:privacy.value});
- if(!c.ok){log('CREATE FAIL: '+c.error); if(c.hint)log('DIAGNOSIS ['+(c.kind||'?')+']: '+c.hint); workOff('create failed.');return;}
- setBar(tracks.length,tracks.length);
- if(c.existing){workOff('already existed.');log(`EXISTS: ${c.url} — ${c.added} tracks already there, nothing created.`);return;}
- workOff('done.');
- const L=c.ledger||[];
- const byOut=o=>L.filter(e=>e.outcome===o).length;
- log(`DONE: ${c.url} — matched ${c.sent}/${tracks.length} → sent ${c.sent} → confirmed ${c.added}/${tracks.length} on YTM (${c.repeats||0} repeat${c.repeats===1?'':'s'} in source, ${byOut('rejected')} refused by YTM, ${byOut('missing')} missing)`);
- L.forEach(e=>log(` ledger [${e.i}/${c.sent}] ${e.videoId} ${e.outcome==='landed'?'landed':(e.status?'refused by YTM: '+e.status:'missing at create')}`));
- if(L.length&&c.added<tracks.length)log(`WARN: ${tracks.length-c.added} of ${tracks.length} tracks are not on the playlist — see the ledger lines above.`);
+ if(stick)rowsEl.scrollTop=rowsEl.scrollHeight;
+}
+newBtn.onclick=()=>{rowsEl.scrollTop=rowsEl.scrollHeight;window._pendingNew=0;newBtn.style.display='none';};
+function applyRun(d){
+ window._since=d.seq;
+ for(const r of (d.rows||[])){window._rowMap.set(r.i,r);}
+ if((d.rows||[]).length&&!nearBottom(rowsEl)){window._pendingNew+=(d.rows||[]).length;newBtn.style.display='block';newBtn.textContent=window._pendingNew+' new ↓';}
+ else if(nearBottom(rowsEl)){window._pendingNew=0;newBtn.style.display='none';}
+ renderPlcard(d);
+ // status line
+ const tot=d.total||0, sent=d.sent||d.matched||0;
+ let msg=phaseWord(d.phase);
+ if(d.phase==='search')msg=`Searching — ${d.matched} of ${tot} matched`;
+ else if(d.phase==='append'||d.phase==='create')msg=`Adding tracks — ${d.landed} of ${sent||tot} on the playlist`;
+ else if(d.phase==='verify')msg=`Verifying — ${d.landed} of ${sent||tot} on the playlist`;
+ else if(d.phase==='done')msg=d.existing?`exists — ${d.landed} of ${sent} tracks from this playlist are on it`:`Done — ${d.landed} of ${sent} on the playlist`;
+ else if(d.phase==='failed')msg=`Failed: ${d.error||'unknown'}`;
+ else if(d.phase==='spotify')msg='Fetching Spotify…';
+ progEl.textContent=msg;
+ if(d.hint&&(d.phase==='failed'))log('DIAGNOSIS ['+(d.kind||'?')+']: '+d.hint);
+ // progress bar monotonic
+ let pct=0;
+ if(d.phase==='search'&&tot)pct=100*d.matched/tot;
+ else if(sent)pct=100*(d.landed||0)/sent;
+ else if(tot&&d.phase==='spotify')pct=2;
+ setBarStrict(pct);
+ renderRows();
+}
+async function pollOnce(){
+ let c=null,t=null;
+ try{
+  c=new AbortController();t=setTimeout(()=>c.abort(),10000);
+  const r=await fetch('/api/run?since='+window._since,{signal:c.signal});
+  const d=await r.json();
+  window._fail=0;window._lastOk=Date.now();
+  if(d.ok){
+   if(d.phase==='done'){
+    if(!window._reconcile){window._reconcile=1;applyRun(d);return;}
+    applyRun(d);stopPoll();workOff(d.existing?`exists — ${d.landed} of ${d.sent} tracks from this playlist are on it`:`Done — ${d.landed} of ${d.sent} on the playlist`);
+    log(d.existing?`EXISTS: ${d.url} — ${d.landed} of ${d.sent} tracks from this playlist are on it`:`DONE: ${d.url} — confirmed ${d.landed}/${d.sent} on YTM`);
+    return;
+   }
+   window._reconcile=0;
+   applyRun(d);
+   if(d.phase==='failed'){stopPoll();workOff('failed.');log('FAILED: '+(d.error||'unknown'));if(d.hint)log('DIAGNOSIS ['+(d.kind||'?')+']: '+d.hint);}
+   else workOn(null);
+  }
+ }catch(e){
+  window._fail++;
+  if(window._fail>=3){const s=Math.round((Date.now()-window._lastOk)/1000);progEl.textContent=`Server stopped answering ${s}s ago — the playlist link above may still be real.`;document.getElementById('go').disabled=false;window._busy=false;spinEl.classList.remove('on');barEl.classList.remove('live');}
+ }finally{if(t)clearTimeout(t);}
+}
+function startPoll(){stopPoll();window._pollTimer=setInterval(pollOnce,700);}
+function stopPoll(){if(window._pollTimer){clearInterval(window._pollTimer);window._pollTimer=null;}}
+document.getElementById('go').onclick=async()=>{
+ if(window._busy)return;
+ const url=sp_url.value.trim();
+ if(!url){progEl.textContent='paste a Spotify playlist URL first.';return;}
+ if(!yt_cookie.value.trim()){progEl.textContent='need YTM cookie — upload or paste it in advanced.';return;}
+ workOn('starting transfer…');
+ post('/api/latch',{spotify_cookie:'',yt_cookie:yt_cookie.value}).catch(()=>{});
+ let t;
+ try{t=await fetch('/api/transfer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url,yt_cookie:yt_cookie.value,title:pl_title.value||'',privacy:privacy.value})}).then(r=>r.json());}
+ catch(e){workOff('server did not answer — the playlist link shown stays valid; click again to re-attach if the run is alive.');log('transfer attempt failed ('+e+') — server did not answer; the playlist link shown stays valid. Click again to re-attach if the run is alive. Polling for truth…');startPoll();pollOnce();return;}
+ if(!t.ok){if(t.run_id){workOn('still running on the server — re-attached; the playlist link shown stays valid.');log('transfer not started ('+(t.error||'unknown')+') — server did not answer for a new run; the playlist link shown stays valid; re-attached to the live run. Click again to re-attach if needed.');startPoll();pollOnce();}else{workOff(t.error||'transfer not started.');log('transfer not started ('+(t.error||'unknown')+').');}return;}
+ window._rowMap=new Map();window._since=0;window._fail=0;window._lastOk=Date.now();window._maxBar=0;window._reconcile=0;window._pendingNew=0;newBtn.style.display='none';
+ rowsEl.innerHTML='';showingEl.textContent='';plcard.className='';plcard.innerHTML='';fillEl.style.width='0%';
+ log('transfer started ('+t.run_id+'). Polling every 700ms…');
+ startPoll();pollOnce();
 };
+(async()=>{try{
+ const c=new AbortController();const t=setTimeout(()=>c.abort(),10000);
+ const r=await fetch('/api/run?since=0',{signal:c.signal});clearTimeout(t);
+ const d=await r.json();
+ if(d.ok&&d.run_id){
+  for(const row of (d.rows||[]))window._rowMap.set(row.i,row);
+  window._since=d.seq;renderPlcard(d);renderRows();
+  if(['spotify','search','create','append','verify'].includes(d.phase)){applyRun({ ...d, rows:[] });window._since=d.seq;startPoll();}
+  else if(d.phase==='done'||d.phase==='failed'){applyRun({ ...d, rows:[] });window._since=d.seq;workOff(d.phase==='done'?`Done — ${d.landed} of ${d.sent} on the playlist`:'failed.');}
+ }
+}catch(e){}})();
 </script></body></html>

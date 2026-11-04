@@ -22,6 +22,94 @@ except Exception:
     STATE = HERE
 LOGF = os.path.join(STATE, "server.log")
 HISTORY = []
+_HIST_LOCK = threading.Lock()
+_RUN_LOCK = threading.Lock()
+_RUN_COUNTER = [0]
+RUN = {
+    "id": "",
+    "seq": 0,
+    "phase": "idle",
+    "started_at": 0.0,
+    "updated_at": time.time(),
+    "spotify_id": "",
+    "title": "",
+    "playlist_id": "",
+    "url": "",
+    "created": False,
+    "existing": False,
+    "total": 0,
+    "matched": 0,
+    "sent": 0,
+    "landed": 0,
+    "refused": 0,
+    "skipped": 0,
+    "missing": 0,
+    "rows": [],
+    "error": "",
+    "hint": "",
+    "kind": "",
+}
+
+def _run_touch_locked():
+    RUN["seq"] += 1
+    RUN["updated_at"] = time.time()
+
+def run_set(**kw):
+    with _RUN_LOCK:
+        for k, v in kw.items():
+            RUN[k] = v
+        _run_touch_locked()
+
+def run_row_set(idx, **kw):
+    with _RUN_LOCK:
+        try:
+            row = RUN["rows"][idx]
+        except Exception:
+            return
+        for k, v in kw.items():
+            row[k] = v
+        RUN["seq"] += 1
+        row["row_seq"] = RUN["seq"]
+        RUN["updated_at"] = time.time()
+
+def run_is_live():
+    with _RUN_LOCK:
+        return RUN.get("phase") in ("spotify", "search", "create", "append", "verify")
+
+def run_snapshot():
+    with _RUN_LOCK:
+        snap = {k: v for k, v in RUN.items() if k != "rows"}
+        snap["rows"] = [dict(r) for r in RUN["rows"]]
+        return snap
+
+def run_begin(spotify_id="", title=""):
+    with _RUN_LOCK:
+        _RUN_COUNTER[0] += 1
+        rid = "r%d" % _RUN_COUNTER[0]
+        now = time.time()
+        RUN["id"] = rid
+        RUN["phase"] = "spotify"
+        RUN["started_at"] = now
+        RUN["updated_at"] = now
+        RUN["spotify_id"] = spotify_id
+        RUN["title"] = title
+        RUN["playlist_id"] = ""
+        RUN["url"] = ""
+        RUN["created"] = False
+        RUN["existing"] = False
+        RUN["total"] = 0
+        RUN["matched"] = 0
+        RUN["sent"] = 0
+        RUN["landed"] = 0
+        RUN["refused"] = 0
+        RUN["skipped"] = 0
+        RUN["missing"] = 0
+        RUN["rows"] = []
+        RUN["error"] = ""
+        RUN["hint"] = ""
+        RUN["kind"] = ""
+        RUN["seq"] += 1
+        return rid
 VAULTF = os.path.join(STATE, "cookie_vault.json")
 WATCHF = os.path.join(STATE, "cookie_watch.json")
 
@@ -149,8 +237,9 @@ def vault_forget():
 def blog(event: str, detail: str = ""):
     """Audit log. Never writes cookie values — lengths only."""
     line = f"{time.strftime('%H:%M:%S')} {event} {detail[:220]}".rstrip()
-    HISTORY.append(line)
-    del HISTORY[:-50]
+    with _HIST_LOCK:
+        HISTORY.append(line)
+        del HISTORY[:-50]
     try:
         with open(LOGF, "a", encoding="utf-8") as f:
             f.write(line + "\n")
@@ -166,8 +255,12 @@ def classify(msg: str) -> dict:
     m = (msg or "").lower()
     if "not a spotify" in m:
         return {"kind": "user", "hint": "That is not a Spotify playlist link — paste an open.spotify.com/playlist/… URL."}
+    if "nothing landed" in m:
+        return {"kind": "write", "hint": "YTM created the empty playlist but no songs could be added — the cookie has create-but-cannot-add scope; re-export a fresh full Cookie from music.youtube.com and retry."}
     if "did not land" in m or "add failed" in m or "add rejected" in m:
-        return {"kind": "write", "hint": "YTM took the empty playlist but refused the songs — cookie may lack write scope; re-export a fresh full Cookie and retry."}
+        return {"kind": "write", "hint": "YTM took the empty playlist but the songs could not be added — cookie has create-but-cannot-add scope; re-export a fresh full Cookie and retry."}
+    if "returned no id" in m or "did not accept the create" in m:
+        return {"kind": "write", "hint": "YTM did not accept the playlist create; retry once, then re-export the cookie if it repeats."}
     if "401" in m or "unauthorized" in m or "sapisid" in m or "login" in m:
         return {"kind": "auth", "hint": "YTM/Spotify login rejected it — cookie expired or wrong site. Re-export fresh cookie file and re-upload."}
     if "429" in m or "rate" in m or "quota" in m or "too many" in m:
@@ -322,20 +415,23 @@ def yt_match(title: str, artist: str = "", duration_ms: int = 0) -> dict:
     Never raises: no match -> videoId None (skip), never a batch failure."""
     title, artist = (title or "").strip(), (artist or "").strip()
     want_q = f"{title} {artist}".strip()
+    last_err = ""
     for qi, q in enumerate([want_q, title, f"{artist} - {title}".strip()]):
         if not q:
             continue
         try:
             r = yt_search(q)
-        except Exception:
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {e}"
             continue
         if r.get("videoId"):
             r["query"] = want_q
             r["via"] = q
             r["alt"] = qi > 0
             return {**{"ok": True}, **r}
+    skip = "no match on any variant" + (f" ({last_err})" if last_err else "")
     return {"ok": True, "query": want_q, "videoId": None,
-            "title": "", "duration": "", "skipped": "no match on any variant"}
+            "title": "", "duration": "", "skipped": skip}
 
 def yt_search_safe(query: str):
     try:
@@ -383,7 +479,12 @@ def check_yt_cookie(cookie: str = "") -> dict:
             return {"ok": True, "msg": "valid"}
         return {"ok": False, "msg": "expired — export a fresh cookie file from music.youtube.com and re-upload"}
     except Exception as e:
-        return {"ok": False, "msg": f"rejected ({type(e).__name__} {getattr(e, 'code', '')}) — export a fresh cookie file and re-upload"}
+        t = type(e).__name__
+        ml = (t + " " + str(e or "")).lower()
+        if ("urlerror" in ml or "timeout" in ml or "timed out" in ml or "connection" in ml
+                or "dns" in ml or "gaierror" in ml or "unreachable" in ml or "temporary failure" in ml):
+            return {"ok": False, "msg": "could not reach music.youtube.com — the cookie is not the problem"}
+        return {"ok": False, "msg": f"rejected ({t} {getattr(e, 'code', '')}) — export a fresh cookie file and re-upload"}
 
 def sapisid_hash(cookie: str, origin: str = YT_ORIGIN) -> str:
     cookie = normalize_cookie(cookie)
@@ -396,6 +497,23 @@ def sapisid_hash(cookie: str, origin: str = YT_ORIGIN) -> str:
     return f"SAPISIDHASH {ts}_{h}"
 
 CREATEDF = os.path.join(STATE, "created.json")
+SETTINGF = os.path.join(STATE, "settings.json")
+_SETTING_KEYS = ("privacy",)
+
+def load_settings() -> dict:
+    try:
+        with open(SETTINGF, encoding="utf-8") as f:
+            d = json.load(f)
+            return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+def save_settings(d: dict):
+    try:
+        with open(SETTINGF, "w", encoding="utf-8") as f:
+            json.dump({k: d[k] for k in _SETTING_KEYS if k in d}, f)
+    except Exception:
+        pass
 
 def load_created() -> dict:
     try:
@@ -484,8 +602,11 @@ def yt_add_one(plid: str, vid: str, yt_cookie: str) -> str:
 
 def _ledger(video_ids: list, entries, attempts: dict) -> list:
     """One outcome per requested copy, in send order. A copy counts as landed while the
-    playlist still holds an unclaimed entry for that videoId — 4 copies need 4 entries,
-    so a repeat that YTM refused shows up as its own rejected row."""
+    playlist still holds an unclaimed entry for that videoId — 4 copies need 4 entries.
+    Honest outcomes: only an explicit YTM STATUS_FAILED is 'rejected' (YTM said so);
+    STATUS_SUCCEEDED-but-absent and transport errors are 'missing' (asked, not on the
+    playlist), with the raw status kept verbatim — no line claims a refusal that did
+    not happen."""
     left = {}
     for v in entries or []:
         left[v] = left.get(v, 0) + 1
@@ -495,64 +616,72 @@ def _ledger(video_ids: list, entries, attempts: dict) -> list:
             left[v] -= 1
             out.append({"i": i + 1, "videoId": v, "outcome": "landed", "status": ""})
         else:
-            st = attempts.get(i, "")
-            out.append({"i": i + 1, "videoId": v,
-                        "outcome": "rejected" if st else "missing", "status": st[:80]})
+            st = (attempts.get(i, "") or "")
+            su = st.upper()
+            if "FAILED" in su:
+                out.append({"i": i + 1, "videoId": v,
+                            "outcome": "rejected", "status": st[:80]})
+            elif st:
+                out.append({"i": i + 1, "videoId": v,
+                            "outcome": "missing", "status": st[:80]})
+            else:
+                out.append({"i": i + 1, "videoId": v,
+                            "outcome": "missing", "status": ""})
     return out
 
-def yt_create_playlist(yt_cookie: str, title: str, description: str, video_ids: list, privacy: str = "PRIVATE"):
-    """1:1 with the Spotify playlist: 48 tracks in => 48 entries out, repeats included.
-    Nothing here drops, dedupes or membership-checks an id: every copy of the input is
-    one copy we ask YTM to hold, and whatever YTM refuses is reported per copy."""
-    yt_cookie = normalize_cookie(yt_cookie)
-    video_ids = [v for v in (video_ids or []) if isinstance(v, str) and v]
-    if not video_ids:
-        raise ValueError("no videoIds to send")
-    inline = video_ids[:CREATE_INLINE_MAX]
-    # 1. create WITH the copies inline: the only reply shape that can express a repeat,
-    #    because edit_playlist refuses a videoId that is already on the list.
-    body = json.dumps({"context": {"client": CLIENT}, "title": title,
-                       "description": description or "", "privacyStatus": privacy,
-                       "videoIds": inline}).encode()
-    req = urllib.request.Request(
-        f"https://music.youtube.com/youtubei/v1/playlist/create?key={YT_KEY}&prettyPrint=false",
-        data=body, headers=yt_headers(yt_cookie))
-    r = urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "ignore")
-    j = json.loads(r)
-    plid = j.get("playlistId") or j.get("playlistID")
-    if not plid:
-        raise RuntimeError("create failed: " + r[:400])
+def _persist_incomplete(spotify_id, plid, url, title, expected):
+    if not spotify_id:
+        return
+    try:
+        created = load_created()
+        created[spotify_id] = {"yt_id": plid, "url": url, "title": title,
+                               "expected": expected, "complete": False}
+        save_created(created)
+    except Exception:
+        pass
+
+def _persist_final(spotify_id, plid, url, title, expected, complete):
+    if not spotify_id:
+        return
+    try:
+        created = load_created()
+        created[spotify_id] = {"yt_id": plid, "url": url, "title": title,
+                               "expected": expected, "complete": bool(complete)}
+        save_created(created)
+    except Exception:
+        pass
+
+def _read_back_retry(plid, yt_cookie):
     first = yt_playlist_entries(plid, yt_cookie)
-    blog("create", f"id={plid} inline={len(inline)} back={0 if first is None else len(first)}")
-    # 2. second shape for every copy the create did not hold: append one at a time so each
-    #    copy gets its own status, with a fresh hash so a long run cannot expire mid-way.
-    attempts = {}
     if first is None:
-        todo = []   # unread back: appending blind could double every entry
-        blog("verify", "read-back after create failed — no appends attempted")
-    else:
-        todo = [int(e["i"]) - 1 for e in _ledger(video_ids, first, {}) if e["outcome"] != "landed"]
-        for idx in todo:
-            st = yt_add_one(plid, video_ids[idx], yt_cookie)
-            attempts[idx] = st
-            blog("add", f"copy {idx + 1}/{len(video_ids)} {video_ids[idx]} -> {st}")
-    # 3. read back again: the playlist itself is the only truth about parity.
-    entries = yt_playlist_entries(plid, yt_cookie)
-    ledger = _ledger(video_ids, entries or [], attempts)
+        first = yt_playlist_entries(plid, yt_cookie)
+    return first
+
+def _append_todo(plid, video_ids, todo, yt_cookie, hooks=None):
+    attempts = {}
+    on_start = (hooks or {}).get("on_append_start")
+    on_one = (hooks or {}).get("on_append_one")
+    for idx in todo:
+        if on_start:
+            try:
+                on_start(idx)
+            except Exception:
+                pass
+        st = yt_add_one(plid, video_ids[idx], yt_cookie)
+        attempts[idx] = st
+        blog("add", f"copy {idx + 1}/{len(video_ids)} {video_ids[idx]} -> {st}")
+        if on_one:
+            try:
+                on_one(idx, st)
+            except Exception:
+                pass
+    return attempts
+
+def _ledger_counts(ledger):
     added = sum(1 for e in ledger if e["outcome"] == "landed")
     rejected = sum(1 for e in ledger if e["outcome"] == "rejected")
     missing = sum(1 for e in ledger if e["outcome"] == "missing")
-    repeats = len(video_ids) - len(set(video_ids))
-    blog("parity", f"{added}/{len(video_ids)} landed, {rejected} refused, {missing} missing, "
-                   f"{repeats} repeat(s) in source, {len(todo)} append attempt(s)")
-    if not added:
-        cleaned = yt_delete_playlist(plid, yt_cookie)
-        raise RuntimeError("nothing landed (playlist reads back empty or unreadable"
-                           + (", husk deleted" if cleaned else ", husk cleanup failed — delete it manually")
-                           + f"). {rejected} refused by YTM, {missing} missing — see server.log add lines")
-    return {"playlistId": plid, "url": f"https://music.youtube.com/playlist?list={plid}",
-            "added": added, "sent": len(video_ids), "rejected": rejected,
-            "missing": missing, "repeats": repeats, "ledger": ledger}
+    return added, rejected, missing
 
 def yt_delete_playlist(plid: str, yt_cookie: str) -> bool:
     try:
@@ -565,27 +694,408 @@ def yt_delete_playlist(plid: str, yt_cookie: str) -> bool:
         blog("delete", f"{plid} {type(e).__name__} {getattr(e, 'code', '')}")
         return False
 
-def yt_create_checked(spotify_id: str, yt_cookie: str, title: str, description: str,
-                      video_ids: list, privacy: str = "PRIVATE") -> dict:
-    """Dupe-aware create: same spotify source transferred before and YTM copy still
-    alive -> return it, create nothing. Every matched copy is sent to YTM as-is."""
+def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, hooks=None):
+    on_created = (hooks or {}).get("on_created")
+    on_phase = (hooks or {}).get("on_phase")
+    if on_phase:
+        try:
+            on_phase("create")
+        except Exception:
+            pass
+    inline = video_ids[:CREATE_INLINE_MAX]
+    body = json.dumps({"context": {"client": CLIENT}, "title": title,
+                       "description": description or "", "privacyStatus": privacy,
+                       "videoIds": inline}).encode()
+    req = urllib.request.Request(
+        f"https://music.youtube.com/youtubei/v1/playlist/create?key={YT_KEY}&prettyPrint=false",
+        data=body, headers=yt_headers(yt_cookie))
+    r = urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "ignore")
+    j = json.loads(r)
+    plid = j.get("playlistId") or j.get("playlistID")
+    if not plid:
+        raise RuntimeError("playlist create returned no id — YTM did not accept the create; retry once, then re-export the cookie if it repeats")
+    url = f"https://music.youtube.com/playlist?list={plid}"
+    _persist_incomplete(spotify_id, plid, url, title, len(video_ids))
+    if on_created:
+        try:
+            on_created(plid, url, False)
+        except Exception:
+            pass
+    first = _read_back_retry(plid, yt_cookie)
+    blog("create", f"id={plid} inline={len(inline)} back={-1 if first is None else len(first)}")
+    if first is None:
+        blog("verify", "read-back after create returned nothing — no appends attempted")
+        raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (read-back failed)")
+    if on_phase:
+        try:
+            on_phase("append")
+        except Exception:
+            pass
+    seeded = sum(1 for e in _ledger(video_ids, first, {}) if e["outcome"] == "landed")
+    if hooks and hooks.get("on_seed"):
+        try:
+            hooks["on_seed"](seeded)
+        except Exception:
+            pass
+    todo = [int(e["i"]) - 1 for e in _ledger(video_ids, first, {}) if e["outcome"] != "landed"]
+    attempts = _append_todo(plid, video_ids, todo, yt_cookie, hooks)
+    if on_phase:
+        try:
+            on_phase("verify")
+        except Exception:
+            pass
+    entries = _read_back_retry(plid, yt_cookie)
+    if entries is None:
+        raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (final read-back failed)")
+    ledger = _ledger(video_ids, entries, attempts)
+    added, rejected, missing = _ledger_counts(ledger)
+    repeats = len(video_ids) - len(set(video_ids))
+    blog("parity", f"{added}/{len(video_ids)} landed, {rejected} refused, {missing} missing, "
+                   f"{repeats} repeat(s) in source, {len(todo)} append attempt(s)")
+    _persist_final(spotify_id, plid, url, title, len(video_ids), added == len(video_ids))
+    if not added:
+        if isinstance(entries, list) and len(entries) == 0:
+            cleaned = yt_delete_playlist(plid, yt_cookie)
+            raise RuntimeError("nothing landed (playlist reads back empty"
+                               + (", husk deleted" if cleaned else ", husk cleanup failed — delete it manually")
+                               + f"). {rejected} refused by YTM, {missing} missing — see server.log add lines")
+        raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified "
+                           f"({rejected} refused by YTM, {missing} missing — see server.log add lines)")
+    return {"playlistId": plid, "url": url,
+            "added": added, "sent": len(video_ids), "rejected": rejected,
+            "missing": missing, "repeats": repeats, "ledger": ledger}
+
+def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None):
+    on_created = (hooks or {}).get("on_created")
+    on_phase = (hooks or {}).get("on_phase")
+    plid = rec.get("yt_id", "")
+    url = rec.get("url", f"https://music.youtube.com/playlist?list={plid}")
+    if on_created:
+        try:
+            on_created(plid, url, False)
+        except Exception:
+            pass
+    if on_phase:
+        try:
+            on_phase("append")
+        except Exception:
+            pass
+    entries = _read_back_retry(plid, yt_cookie)
+    if entries is None:
+        raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (read-back failed)")
+    seeded = sum(1 for e in _ledger(video_ids, entries, {}) if e["outcome"] == "landed")
+    if hooks and hooks.get("on_seed"):
+        try:
+            hooks["on_seed"](seeded)
+        except Exception:
+            pass
+    todo = [int(e["i"]) - 1 for e in _ledger(video_ids, entries, {}) if e["outcome"] != "landed"]
+    blog("resume", f"id={plid} have={len(entries)} todo={len(todo)}")
+    attempts = _append_todo(plid, video_ids, todo, yt_cookie, hooks)
+    if on_phase:
+        try:
+            on_phase("verify")
+        except Exception:
+            pass
+    entries2 = _read_back_retry(plid, yt_cookie)
+    if entries2 is None:
+        raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (final read-back failed)")
+    ledger = _ledger(video_ids, entries2, attempts)
+    added, rejected, missing = _ledger_counts(ledger)
+    repeats = len(video_ids) - len(set(video_ids))
+    blog("parity", f"resume {added}/{len(video_ids)} landed, {rejected} refused, {missing} missing")
+    _persist_final(spotify_id, plid, url, title, len(video_ids), added == len(video_ids))
+    if not added:
+        if isinstance(entries2, list) and len(entries2) == 0:
+            cleaned = yt_delete_playlist(plid, yt_cookie)
+            raise RuntimeError("nothing landed (playlist reads back empty"
+                               + (", husk deleted" if cleaned else ", husk cleanup failed — delete it manually")
+                               + f"). {rejected} refused by YTM, {missing} missing — see server.log add lines")
+        raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified "
+                           f"({rejected} refused by YTM, {missing} missing — see server.log add lines)")
+    return {"playlistId": plid, "url": url,
+            "added": added, "sent": len(video_ids), "rejected": rejected,
+            "missing": missing, "repeats": repeats, "ledger": ledger, "resumed": True}
+
+def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PRIVATE",
+                           spotify_id="", hooks=None):
+    """One implementation, two entry points: sync /api/create-playlist and the
+    async /api/transfer worker. Never dedupes video_ids."""
     yt_cookie = normalize_cookie(yt_cookie)
     ids = [v for v in (video_ids or []) if isinstance(v, str) and v]
+    if not ids:
+        raise ValueError("no videoIds to send")
     if spotify_id:
         rec = load_created().get(spotify_id)
         if rec and rec.get("yt_id"):
-            n = yt_playlist_count(rec["yt_id"], yt_cookie)
-            if n:
-                blog("create", f"exists title={title} url={rec.get('url')} tracks={n}")
-                return {"playlistId": rec["yt_id"], "url": rec.get("url", ""), "added": n,
-                        "sent": len(ids), "rejected": 0, "missing": 0,
-                        "repeats": len(ids) - len(set(ids)), "existing": True, "ledger": []}
-    r = yt_create_playlist(yt_cookie, title, description, ids, privacy)
-    if spotify_id:
-        created = load_created()
-        created[spotify_id] = {"yt_id": r["playlistId"], "url": r["url"], "title": title}
-        save_created(created)
+            if rec.get("complete") is True:
+                entries = yt_playlist_entries(rec["yt_id"], yt_cookie)
+                if entries is not None and len(entries) > 0:
+                    ledger = _ledger(ids, entries, {})
+                    added = sum(1 for e in ledger if e["outcome"] == "landed")
+                    missing = sum(1 for e in ledger if e["outcome"] != "landed")
+                    for e in ledger:
+                        if e["outcome"] != "landed":
+                            e["status"] = "exists — not on playlist"
+                    if added < len(ids):
+                        blog("create", f"exists title={title} url={rec.get('url')} {added}/{len(ids)} from this playlist on it — source grew, leaving playlist alone")
+                    else:
+                        blog("create", f"exists title={title} url={rec.get('url')} tracks={added}")
+                    return {"playlistId": rec["yt_id"], "url": rec.get("url", ""),
+                            "added": added, "sent": len(ids), "rejected": 0, "missing": missing,
+                            "repeats": len(ids) - len(set(ids)), "existing": True, "ledger": ledger}
+                if entries is None:
+                    blog("create", f"exists-unreadable title={title} url={rec.get('url')} — returning record without new create")
+                    return {"playlistId": rec["yt_id"], "url": rec.get("url", ""),
+                            "added": rec.get("expected", len(ids)), "sent": len(ids),
+                            "rejected": 0, "missing": 0,
+                            "repeats": len(ids) - len(set(ids)), "existing": True, "ledger": []}
+            else:
+                return _resume_incomplete(rec, yt_cookie, title, ids, spotify_id, hooks)
+    r = _create_new(yt_cookie, title, description, ids, privacy, spotify_id, hooks)
     return r
+
+def yt_create_playlist(yt_cookie: str, title: str, description: str, video_ids: list, privacy: str = "PRIVATE"):
+    """1:1 with the Spotify playlist: 48 tracks in => 48 entries out, repeats included.
+    Nothing here drops, dedupes or membership-checks an id: every copy of the input is
+    one copy we ask YTM to hold, and whatever YTM refuses is reported per copy."""
+    return transfer_create_append(yt_cookie, title, description, video_ids, privacy, "", None)
+
+def yt_create_checked(spotify_id: str, yt_cookie: str, title: str, description: str,
+                      video_ids: list, privacy: str = "PRIVATE") -> dict:
+    """Dupe-aware create: complete record + live YTM copy -> return it, create nothing.
+    Incomplete record -> resume the same playlist, never a second playlist."""
+    return transfer_create_append(yt_cookie, title, description, video_ids, privacy, spotify_id or "", None)
+
+def _transfer_thread(url, yt_cookie, title, privacy, run_id):
+    try:
+        with _RUN_LOCK:
+            if RUN.get("id") != run_id:
+                return
+            RUN["phase"] = "spotify"
+            RUN["seq"] += 1
+            RUN["updated_at"] = time.time()
+        if not normalize_cookie(yt_cookie):
+            raise ValueError("yt cookie missing (paste full Cookie from music.youtube.com)")
+        sp = fetch_spotify_tracks(url, "")
+        pname = (title or "").strip() or sp.get("playlist_name", "") or "Spotify import"
+        tracks = sp.get("tracks", []) or []
+        sid = sp.get("playlist_id", "")
+        with _RUN_LOCK:
+            if RUN.get("id") != run_id:
+                return
+            RUN["spotify_id"] = sid
+            RUN["title"] = pname
+            RUN["total"] = len(tracks)
+            RUN["sent"] = 0
+            RUN["matched"] = 0
+            RUN["skipped"] = 0
+            RUN["landed"] = 0
+            RUN["refused"] = 0
+            RUN["missing"] = 0
+            RUN["rows"] = [{"i": k + 1, "title": t.get("title", ""), "artist": t.get("artist", ""),
+                             "videoId": "", "state": "queued", "status": "", "row_seq": 0}
+                            for k, t in enumerate(tracks)]
+            for r in RUN["rows"]:
+                RUN["seq"] += 1
+                r["row_seq"] = RUN["seq"]
+            RUN["phase"] = "search" if tracks else "failed"
+            RUN["updated_at"] = time.time()
+            if not tracks:
+                RUN["error"] = "empty playlist (no tracks in spotify embed)"
+                RUN["kind"] = "parse"
+                RUN["hint"] = "Upstream page format changed — run stopped for inspection."
+        if not tracks:
+            blog("fail", "transfer empty playlist")
+            return
+        blog("spotify", f"run={run_id} ok name={pname} n={len(tracks)}")
+        matched_ids = ["" for _ in tracks]
+        timeout_batches = 0
+        num_batches = 0
+        for base in range(0, len(tracks), 10):
+            with _RUN_LOCK:
+                if RUN.get("id") != run_id or RUN.get("phase") == "failed":
+                    return
+            chunk = tracks[base:base + 10]
+            num_batches += 1
+            batch_timeout = False
+            try:
+                results = yt_search_batch(chunk, 8)
+            except Exception as e:
+                results = [{"ok": True, "query": "", "videoId": None, "skipped": str(e)} for _ in chunk]
+                batch_timeout = True
+            if not batch_timeout and results and all(not (r or {}).get("videoId") for r in results):
+                for r in results:
+                    ml = str((r or {}).get("skipped") or (r or {}).get("error") or "").lower()
+                    if ("timeout" in ml or "timed out" in ml or "urlerror" in ml
+                            or "connection" in ml or "temporary failure" in ml or "gaierror" in ml):
+                        batch_timeout = True
+                        break
+            if batch_timeout:
+                timeout_batches += 1
+            with _RUN_LOCK:
+                if RUN.get("id") != run_id:
+                    return
+                for k, res in enumerate(results):
+                    idx = base + k
+                    if idx >= len(RUN["rows"]):
+                        break
+                    vid = (res or {}).get("videoId") or ""
+                    row = RUN["rows"][idx]
+                    row["videoId"] = vid
+                    if vid:
+                        row["state"] = "matched"
+                        row["status"] = ""
+                    else:
+                        row["state"] = "skipped"
+                        row["status"] = str((res or {}).get("skipped") or (res or {}).get("error") or "no match")[:80]
+                    RUN["seq"] += 1
+                    row["row_seq"] = RUN["seq"]
+                    matched_ids[idx] = vid
+                RUN["matched"] = sum(1 for v in matched_ids if v)
+                RUN["skipped"] = sum(1 for v in matched_ids if not v)
+                RUN["sent"] = RUN["matched"]
+                RUN["updated_at"] = time.time()
+        with _RUN_LOCK:
+            if RUN.get("id") != run_id:
+                return
+            vids = [RUN["rows"][k]["videoId"] for k in range(len(RUN["rows"])) if RUN["rows"][k]["videoId"]]
+            RUN["sent"] = len(vids)
+        if not vids:
+            with _RUN_LOCK:
+                RUN["phase"] = "failed"
+                if timeout_batches:
+                    RUN["error"] = f"no tracks matched — {timeout_batches} of {num_batches} search batches timed out; check the connection"
+                    RUN["kind"] = "transient"
+                    RUN["hint"] = "Search requests timed out — check the connection and retry."
+                else:
+                    RUN["error"] = "zero matches, nothing to create."
+                    RUN["kind"] = "parse"
+                    RUN["hint"] = "No YTM match for any track — nothing to create."
+                RUN["seq"] += 1
+                RUN["updated_at"] = time.time()
+            return
+        def _on_created(plid, purl, _existing=False):
+            with _RUN_LOCK:
+                if RUN.get("id") != run_id:
+                    return
+                RUN["playlist_id"] = plid
+                RUN["url"] = purl
+                RUN["created"] = True
+                RUN["phase"] = "append"
+                RUN["seq"] += 1
+                RUN["updated_at"] = time.time()
+        def _on_start(idx):
+            with _RUN_LOCK:
+                if RUN.get("id") != run_id:
+                    return
+                try:
+                    row = RUN["rows"][idx]
+                except Exception:
+                    return
+                row["state"] = "appending"
+                RUN["seq"] += 1
+                row["row_seq"] = RUN["seq"]
+                RUN["updated_at"] = time.time()
+        def _on_one(idx, st):
+            ok = "SUCCEEDED" in (st or "")
+            with _RUN_LOCK:
+                if RUN.get("id") != run_id:
+                    return
+                try:
+                    row = RUN["rows"][idx]
+                except Exception:
+                    return
+                row["status"] = (st or "")[:80]
+                if ok:
+                    row["state"] = "landed"
+                    RUN["landed"] = int(RUN.get("landed", 0)) + 1
+                else:
+                    row["state"] = "appending"
+                RUN["seq"] += 1
+                row["row_seq"] = RUN["seq"]
+                RUN["updated_at"] = time.time()
+        def _on_seed(n):
+            with _RUN_LOCK:
+                if RUN.get("id") != run_id:
+                    return
+                RUN["landed"] = int(n or 0)
+                RUN["seq"] += 1
+                RUN["updated_at"] = time.time()
+        def _on_phase(ph):
+            with _RUN_LOCK:
+                if RUN.get("id") != run_id:
+                    return
+                RUN["phase"] = ph
+                RUN["seq"] += 1
+                RUN["updated_at"] = time.time()
+        hooks = {"on_created": _on_created, "on_append_start": _on_start,
+                 "on_append_one": _on_one, "on_phase": _on_phase, "on_seed": _on_seed}
+        try:
+            res = transfer_create_append(yt_cookie, pname, "", vids, privacy, sid, hooks)
+        except Exception as e:
+            msg = f"{type(e).__name__}: {e}"
+            c = classify(msg)
+            with _RUN_LOCK:
+                if RUN.get("id") != run_id:
+                    return
+                RUN["phase"] = "failed"
+                RUN["error"] = msg[:300]
+                RUN["hint"] = c.get("hint", "")
+                RUN["kind"] = c.get("kind", "unknown")
+                RUN["seq"] += 1
+                RUN["updated_at"] = time.time()
+            blog("fail", f"run={run_id} {msg}")
+            return
+        with _RUN_LOCK:
+            if RUN.get("id") != run_id:
+                return
+            ledger = res.get("ledger", []) or []
+            sent_rows = [k for k, row in enumerate(RUN["rows"]) if row.get("videoId")]
+            for pos, k in enumerate(sent_rows):
+                e = ledger[pos] if pos < len(ledger) else None
+                if not e:
+                    continue
+                out = e.get("outcome")
+                if out == "landed":
+                    RUN["rows"][k]["state"] = "landed"
+                    RUN["rows"][k]["status"] = ""
+                elif out == "rejected":
+                    RUN["rows"][k]["state"] = "refused"
+                    RUN["rows"][k]["status"] = str(e.get("status", ""))[:80]
+                else:
+                    RUN["rows"][k]["state"] = "missing"
+                    RUN["rows"][k]["status"] = str(e.get("status", ""))[:80]
+                RUN["seq"] += 1
+                RUN["rows"][k]["row_seq"] = RUN["seq"]
+            RUN["playlist_id"] = res.get("playlistId", RUN.get("playlist_id", ""))
+            RUN["url"] = res.get("url", RUN.get("url", ""))
+            RUN["created"] = True
+            RUN["existing"] = bool(res.get("existing", False))
+            RUN["landed"] = int(res.get("added", 0))
+            RUN["refused"] = int(res.get("rejected", 0))
+            RUN["missing"] = int(res.get("missing", 0))
+            RUN["phase"] = "done"
+            RUN["error"] = ""
+            RUN["seq"] += 1
+            RUN["updated_at"] = time.time()
+        blog("create", f"run={run_id} ok playlist={res.get('playlistId')} confirmed={res.get('added')}/{res.get('sent')} "
+                       f"refused={res.get('rejected')} missing={res.get('missing')} existing={res.get('existing', False)}")
+    except Exception as e:
+        msg = f"{type(e).__name__}: {e}"
+        c = classify(msg)
+        with _RUN_LOCK:
+            try:
+                if RUN.get("id") == run_id:
+                    RUN["phase"] = "failed"
+                    RUN["error"] = msg[:300]
+                    RUN["hint"] = c.get("hint", "")
+                    RUN["kind"] = c.get("kind", "unknown")
+                    RUN["seq"] += 1
+                    RUN["updated_at"] = time.time()
+            except Exception:
+                pass
+        blog("fail", f"run={run_id} {msg}")
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -609,7 +1119,45 @@ class H(BaseHTTPRequestHandler):
         elif self.path == "/health":
             self.send_json({"ok": True})
         elif self.path == "/api/status":
-            self.send_json({"ok": True, "recent": HISTORY[-20:]})
+            with _HIST_LOCK:
+                recent = list(HISTORY[-20:])
+            self.send_json({"ok": True, "recent": recent})
+        elif self.path == "/api/settings":
+            cur = load_settings()
+            self.send_json({"ok": True, **{k: cur.get(k, "") for k in _SETTING_KEYS}})
+        elif self.path == "/api/run" or self.path.startswith("/api/run?"):
+            try:
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                since = int((qs.get("since", ["0"]) or ["0"])[0] or 0)
+            except Exception:
+                since = 0
+            snap = run_snapshot()
+            now = time.time()
+            rows = snap.get("rows", []) or []
+            if since:
+                rows = [r for r in rows if int(r.get("row_seq", 0) or 0) > since]
+            self.send_json({"ok": True, "run_id": snap.get("id", ""), "seq": snap.get("seq", 0),
+                            "phase": snap.get("phase", "idle"),
+                            "started_at": snap.get("started_at", 0),
+                            "updated_at": snap.get("updated_at", 0),
+                            "age": max(0.0, now - float(snap.get("updated_at", now) or now)),
+                            "spotify_id": snap.get("spotify_id", ""),
+                            "title": snap.get("title", ""),
+                            "playlist_id": snap.get("playlist_id", ""),
+                            "url": snap.get("url", ""),
+                            "created": bool(snap.get("created", False)),
+                            "existing": bool(snap.get("existing", False)),
+                            "total": int(snap.get("total", 0) or 0),
+                            "matched": int(snap.get("matched", 0) or 0),
+                            "sent": int(snap.get("sent", 0) or 0),
+                            "landed": int(snap.get("landed", 0) or 0),
+                            "refused": int(snap.get("refused", 0) or 0),
+                            "skipped": int(snap.get("skipped", 0) or 0),
+                            "missing": int(snap.get("missing", 0) or 0),
+                            "rows": rows,
+                            "error": snap.get("error", ""),
+                            "hint": snap.get("hint", ""),
+                            "kind": snap.get("kind", "")})
         else:
             self.send_json({"error": "not found"}, 404)
     def do_POST(self):
@@ -659,6 +1207,22 @@ class H(BaseHTTPRequestHandler):
                                f"refused={r.get('rejected')} missing={r.get('missing')} "
                                f"repeats={r.get('repeats')} existing={r.get('existing', False)}")
                 return self.send_json({"ok": True, **r})
+            if self.path == "/api/transfer":
+                if run_is_live():
+                    snap = run_snapshot()
+                    return self.send_json({"ok": False, "error": "a transfer is already running",
+                                           "run_id": snap.get("id", "")}, 409)
+                url = str(payload.get("url", "") or "")
+                if not url.strip():
+                    return self.send_json({"ok": False, "error": "missing url"}, 400)
+                title = str(payload.get("title", "") or "")
+                privacy = str(payload.get("privacy", "PRIVATE") or "PRIVATE")
+                rid = run_begin("", title)
+                blog("transfer", f"run={rid} started")
+                threading.Thread(target=_transfer_thread,
+                                 args=(url, payload.get("yt_cookie", ""), title, privacy, rid),
+                                 daemon=True).start()
+                return self.send_json({"ok": True, "run_id": rid})
             if self.path == "/api/check":
                 sp = check_spotify_cookie(payload.get("spotify_cookie", ""))
                 yt = check_yt_cookie(payload.get("yt_cookie", ""))
@@ -681,6 +1245,21 @@ class H(BaseHTTPRequestHandler):
                     pass
                 blog("forget", "vault + watch path cleared")
                 return self.send_json({"ok": True})
+            if self.path == "/api/settings":
+                cur = load_settings()
+                for k in _SETTING_KEYS:
+                    if k not in payload:
+                        continue
+                    if k == "privacy":
+                        v = str(payload.get(k) or "").upper()
+                        if v not in ("PRIVATE", "PUBLIC", "UNLISTED"):
+                            continue
+                        cur[k] = v
+                    else:
+                        cur[k] = payload.get(k)
+                save_settings(cur)
+                blog("settings", "saved")
+                return self.send_json({"ok": True, **{k: cur.get(k, "") for k in _SETTING_KEYS}})
             if self.path == "/api/watch":
                 if not payload.get("extra"):
                     return self.send_json({"ok": True, "dirs": cookie_dirs()})

@@ -41,6 +41,9 @@ then open `http://127.0.0.1:8787`. Requires Python 3.10+. No dependencies — st
 | `POST` | `/api/search` | `{query}` → top YTM match |
 | `POST` | `/api/search-batch` | `{queries[], workers}` → matches in order (max 25/batch, 8 threads) |
 | `POST` | `/api/create-playlist` | `{yt_cookie, title, description, videoIds[], privacy}` → playlist URL |
+| `POST` | `/api/transfer` | `{url, yt_cookie, title, privacy}` → `{run_id}` immediately; worker runs spotify → search (10s/8 workers) → create → append → verify, rows stream via `/api/run` |
+| `GET` | `/api/run?since=N` | `{run_id, seq, phase, total/matched/sent/landed/refused/skipped/missing, url, created, rows(changed), age}` polled every 700ms; `since=0` returns full rows |
+| `GET`/`POST` | `/api/settings` | `{privacy}` persisted server-side in `settings.json`; POST merges, unknown keys ignored, privacy clamped to `PRIVATE\|PUBLIC\|UNLISTED` |
 
 Errors carry a `kind` (`auth`, `throttle`, `transient`, `parse`, `user`, `unknown`) plus a `hint`. Transient/throttled batches auto-retry once at reduced workers; fatal errors stop the run with a diagnosis line.
 
@@ -50,7 +53,8 @@ Errors carry a `kind` (`auth`, `throttle`, `transient`, `parse`, `user`, `unknow
 
 - Everything runs on `127.0.0.1`. The only outbound traffic is the app → Spotify / YouTube Music directly.
 - The YouTube cookie is latched in a DPAPI-encrypted local vault (`%APPDATA%\sp2yt`) so it survives restarts. Logs record flags and counts only, never values. `forget` clears vault + watch folder.
-- Runtime state (`server.log`, vault, watch path, playlist record) is machine-local and git-ignored. No secrets are committed.
+- Runtime state (`server.log`, vault, watch path, playlist record, `settings.json`) is machine-local and git-ignored. No secrets are committed.
+- Settings persist server-side only: `privacy` in `%APPDATA%\sp2yt\settings.json` via `/api/settings` (survives WebView2 profile resets; shared by DEV and PROD). Deliberately never persisted: Spotify URL, playlist title, cookie (cookie lives DPAPI-encrypted in the vault).
 
 ## Limits & notes
 
