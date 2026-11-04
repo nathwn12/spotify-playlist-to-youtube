@@ -204,6 +204,8 @@ const ledger=$("ledger"),pad=$("pad"),zero=$("zerostate"),phaseEl=$("phaseline")
 const startB=$("startbtn"),stopB=$("stopbtn"),pname=$("pname");
 const ROWH=50, POLLMS=700;
 const LIVE=new Set(["spotify","search","create","append","verify"]);
+const HUMAN={idle:"idle",spotify:"reading",search:"reading",create:"creating",append:"adding",verify:"reconciling",done:"done",failed:"stopped",aborted:"stopped"};
+const human=p=>HUMAN[p]||p;
 const bucketsOf=r=>{const s=r.state;
   if(s==="landed")return"added"; if(s==="skipped")return"skipped";
   if(s==="refused"||s==="missing")return"refused"; return"pending";};
@@ -211,12 +213,12 @@ const clsOf=b=>b==="added"?"ok":b==="skipped"?"skip":b==="refused"?"deny":"wait"
 const S={runId:"",since:0,phase:"idle",total:0,declared:0,landed:0,refused:0,skipped:0,
   missing:0,attempted:0,created:false,existing:false,url:"",title:"",summary:"",
   rows:new Map(),filter:"all",timer:null,fails:0,lastOk:Date.now(),ceil:0,
-  localT0:0,aborted:false,privacy:"PRIVATE",deadNoted:false};
+  localT0:0,aborted:false,privacy:"PRIVATE",deadNoted:false,hist:[],interrupted:null};
 const mmss=ms=>{const s=Math.max(0,Math.round(ms/1000));
   return String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");};
 function elapsedMs(){if(S.phase==="idle")return 0;
   if(window.__t0srv)return Math.max(0,Date.now()-window.__t0srv);return Date.now()-S.localT0;}
-function setPhase(p){S.phase=p;pill.textContent=p;
+function setPhase(p){S.phase=p;pill.textContent=human(p);
   pill.classList.toggle("on",LIVE.has(p)||p==="created");}
 function setRunning(on){
   startB.disabled=on; stopB.disabled=!on;
@@ -226,38 +228,60 @@ function tally(){let a=0,s=0,r=0,p=0;
   for(const row of S.rows.values()){const b=bucketsOf(row);
     if(b==="added")a++;else if(b==="skipped")s++;else if(b==="refused")r++;else p++;}
   return{a,s,r,p};}
+/* Landed once: a row is landed when its video is on the playlist, seeds included.
+   Chips, big counter and footer all read this one number. */
+function landedNow(){return tally().a;}
 function countsLine(){const t=tally();
   if(!S.total&&!S.declared)return"nothing resolved yet — paste a link";
   return`${t.a} added · ${t.s} skipped · ${t.r} refused · ${t.p} pending`;}
-/* Counter: attempted/declared, monotonic, never full on a short fetch. */
+/* Counter: landed/declared, monotonic, never full on a short fetch. */
 function paintCounter(){
   if(!S.total&&!S.declared){big.textContent="–";big.dataset.den="–";return;}
-  const att=S.attempted, dec=S.declared||S.total;
-  S.ceil=Math.max(S.ceil,att);
-  big.textContent=String(S.ceil); big.dataset.den=String(dec);
+  const a=landedNow(), dec=S.declared||S.total;
+  S.ceil=Math.max(S.ceil,a);
+  big.textContent=String(a); big.dataset.den=String(dec);
 }
-function factsStr(){const e=elapsedMs(),mins=e/60000,rate=mins>0?S.ceil/mins:0;
-  const left=rate>0?(Math.max(0,(S.declared||S.total)-S.ceil))/rate*60000:0;
+function factsStr(){
+  const now=Date.now(), a=landedNow();
+  if(!S.hist)S.hist=[];
+  const lastA=S.hist.length?S.hist[S.hist.length-1].a:a;
+  if(S.hist.length&&(a-lastA)>20){
+    S.hist=[{t:now,a}];
+    const e0=elapsedMs();
+    return`${mmss(e0)} elapsed · —/min · ~— left`;
+  }
+  S.hist.push({t:now,a});
+  while(S.hist.length&&now-S.hist[0].t>60000)S.hist.shift();
+  if(S.hist.length>240)S.hist.splice(0,S.hist.length-240);
+  const e=elapsedMs();
+  if(e<3000||S.hist.length<2)return`${mmss(e)} elapsed · —/min · ~— left`;
+  const first=S.hist[0], dt=(now-first.t)/60000;
+  if(dt<=0)return`${mmss(e)} elapsed · —/min · ~— left`;
+  let rate=(a-first.a)/dt;
+  if(!(rate>0))return`${mmss(e)} elapsed · 0/min · ~— left`;
+  rate=Math.min(rate,9999);
+  const pending=Math.max(0,(S.declared||S.total||0)-a);
+  const left=pending/rate*60000;
   return`${mmss(e)} elapsed · ${Math.round(rate)}/min · ~${mmss(left)} left`;}
-function liveLabel(){const d=S,dec=d.declared||d.total||0;
-  switch(d.phase){
-    case"spotify":return"reading playlist — fetching declared tracks, no rows yet…";
-    case"search":return`searching — ${d.matched||0} of ${dec} matched`;
-    case"create":return`created — playlist shell live · adding ${d.landed||0} of ${d.sent||d.total||0}`;
-    case"append":return`adding — ${d.landed||0} of ${d.sent||d.total||0} on the playlist (${dec} declared)`;
-    case"verify":return`verifying — ${d.landed||0} of ${d.sent||d.total||0} on the playlist (${dec} declared)`;
-    case"done":return d.summary||`done — ${d.landed||0} of ${d.sent||0} on the playlist`;
-    case"failed":return`failed: ${d.error||"unknown"}`;
-    case"aborted":return`aborted at ${d.ceil}/${dec||"–"} — partial ledger kept · press Ctrl+Enter to restart.`;
-    default:return d.phase;}}
+function liveLabel(){const dec=S.declared||S.total||0, a=landedNow();
+  switch(S.phase){
+    case"spotify":return`reading — fetching declared tracks, no rows yet…`;
+    case"search":return`reading — ${S.matched||0} of ${dec} matched`;
+    case"create":return`creating — playlist shell live · ${a} of ${dec} on the playlist`;
+    case"append":return`adding — ${a} of ${dec} on the playlist`;
+    case"verify":return`reconciling — ${a} of ${dec} on the playlist`;
+    case"done":return S.summary||`done — ${a} of ${dec} on the playlist`;
+    case"failed":return`stopped: ${S.error||"unknown"}`;
+    case"aborted":return`stopped at ${a}/${dec||"–"} — partial ledger kept · press Ctrl+Enter to restart.`;
+    default:return human(S.phase);}}
 function paintFacts(){
   if(S.pin){phaseEl.textContent=S.pin;return;}
   if(S.phase==="idle"){phaseEl.textContent="idle — press Ctrl+Enter to start.";return;}
   phaseEl.textContent=`${liveLabel()} · ${factsStr()}`;return;}
 function paintChips(){const t=tally();
-  const n=S.total||0,labels={all:n,added:t.a,skipped:t.s,refused:t.r,pending:t.p};
+  const dec=S.declared||S.total||0, n=dec,labels={all:n,added:t.a,skipped:t.s,refused:t.r,pending:t.p};
   document.querySelectorAll(".fbtn").forEach(b=>{
-    b.textContent=`${b.dataset.f} ${S.total?labels[b.dataset.f]:0}`;
+    b.textContent=`${b.dataset.f} ${S.total||S.declared?labels[b.dataset.f]:0}`;
     b.setAttribute("aria-pressed",String(S.filter===b.dataset.f));});}
 function filtered(){const all=[...S.rows.values()].sort((x,y)=>x.i-y.i);
   if(!all.length)return[];
@@ -265,11 +289,21 @@ function filtered(){const all=[...S.rows.values()].sort((x,y)=>x.i-y.i);
   return all.filter(r=>bucketsOf(r)===S.filter);}
 function render(){
   const list=filtered(),t=tally();
+  // follow the active row while running (filter all only; idle preserves scroll)
+  if(LIVE.has(S.phase)&&S.filter==="all"&&list.length){
+    let act=-1;
+    for(let k=0;k<list.length;k++){const st=list[k].state;
+      if(st==="appending"||st==="landed")act=k;}
+    if(act>=0){
+      const vh0=ledger.clientHeight||392, top=act*ROWH, cur=ledger.scrollTop;
+      if(top<cur||top+ROWH>cur+vh0)ledger.scrollTop=Math.max(0,top-Math.floor(vh0/2));
+    }
+  }
   paintCounter();paintFacts();
   brk.innerHTML="";brk.textContent=countsLine();
   paintChips();
-  const done=S.total>0;
-  rule.style.setProperty("--fill",(done?100*S.ceil/Math.max(1,S.declared||S.total):0)+"%");
+  const done=S.total>0||S.declared>0, a=landedNow(), dec=S.declared||S.total||1;
+  rule.style.setProperty("--fill",(done?100*a/Math.max(1,dec):0)+"%");
   rule.classList.toggle("live",S.phase==="spotify"||S.phase==="search");
   pad.style.height=(list.length*ROWH)+"px";
   zero.hidden=list.length>0;
@@ -277,7 +311,7 @@ function render(){
   pad.textContent="";
   if(list.length){
     const vh=ledger.clientHeight||392;
-    const want=Math.min(12,Math.ceil(vh/ROWH)+2);
+    const want=Math.ceil(vh/ROWH)+2;
     const start=Math.max(0,Math.min(list.length-1,Math.floor(st/ROWH)-1));
     const end=Math.min(list.length,start+want);
     const frag=document.createDocumentFragment();
@@ -306,7 +340,7 @@ function paintChip(){
     chip.textContent=`${nm} · Open on YouTube Music ↗`;chip.title=`Open on YouTube Music — ${S.url}`;}
   else{chip.hidden=true;chip.removeAttribute("href");chip.textContent="";chip.title="";}}
 function mergeRun(d,full){
-  if(full){S.rows=new Map();S.ceil=0;}
+  if(full){S.rows=new Map();S.ceil=0;S.hist=[];}
   if(d.run_id)S.runId=d.run_id;
   if(d.seq!=null)S.since=d.seq;
   for(const r of(d.rows||[]))S.rows.set(r.i,r);
@@ -316,7 +350,19 @@ function mergeRun(d,full){
     if(d[k]!==undefined)S[k]=d[k];}
   if(d.phase)S.phase=d.phase;
   if(d.started_at&&!window.__t0srv)window.__t0srv=d.started_at*1000;
+  if(d.interrupted!==undefined)S.interrupted=d.interrupted||null;
   if(S.created)paintChip();
+}
+function showInterrupted(inc){
+  if(!inc)return;
+  S.interrupted=inc;
+  S.created=true;S.url=inc.url||"";S.title=inc.title||"";
+  paintChip();
+  if(!$("srcurl").value.trim()&&inc.spotify_id)
+    $("srcurl").value="https://open.spotify.com/playlist/"+inc.spotify_id;
+  if(inc.title)pname.textContent=`${inc.title} — interrupted, playlist linked`;
+  S.pin=`previous run was interrupted — playlist exists and is linked; press Start to resume the same playlist (no second create).`;
+  render();
 }
 async function pollOnce(){
   let t=null;
@@ -326,13 +372,14 @@ async function pollOnce(){
     const d=await r.json();clearTimeout(t);t=null;
     S.fails=0;S.lastOk=Date.now();S.deadNoted=false;
     if(!d.ok)return;
+    if(d.interrupted&&!d.run_id&&S.phase==="idle"){showInterrupted(d.interrupted);return;}
     mergeRun(d,false);render();
-    if(LIVE.has(d.phase)){setRunning(true);setPhase(d.phase);S.pin=null;paintChip();render();}
+    if(LIVE.has(d.phase)){setRunning(true);setPhase(d.phase);S.pin=null;S.interrupted=null;paintChip();render();}
     else if(d.phase==="done"){halt();setPhase("done");S.pin=null;paintChip();render();}
     else if(d.phase==="failed"){halt();setPhase("failed");S.pin=
       d.kind==="source"||/partial playlist|declared total/i.test(d.error||"")
         ?`refused: ${d.error} — nothing was created.`
-        :`failed: ${d.error||"unknown"}`+(d.hint?` (${d.hint})`:"");render();}
+        :`stopped: ${d.error||"unknown"}`+(d.hint?` (${d.hint})`:"");render();}
   }catch(e){
     S.fails++;
     if(S.fails>=3&&!S.deadNoted){S.deadNoted=true;halt();setRunning(false);
@@ -367,8 +414,8 @@ async function startTransfer(){
     else{setRunning(false);S.pin="transfer not started: "+(t.error||"unknown");render();}
     return;}
   S.rows=new Map();S.since=0;S.fails=0;S.lastOk=Date.now();S.deadNoted=false;
-  S.pin=null;
-  S.aborted=false;S.ceil=0;window.__t0srv=0;S.localT0=Date.now();
+  S.pin=null;S.interrupted=null;
+  S.aborted=false;S.ceil=0;S.hist=[];window.__t0srv=0;S.localT0=Date.now();
   S.runId=t.run_id;S.created=false;S.url="";S.title="";S.summary="";
   S.total=0;S.declared=0;S.attempted=0;S.landed=0;S.refused=0;S.skipped=0;S.missing=0;
   paintChip();ledger.scrollTop=0;render();
@@ -397,9 +444,9 @@ function drawPal(){palbox.querySelectorAll(".cmdopt").forEach(o=>o.remove());
 async function runCmd(cmd){closePal();
   if(cmd==="start")startTransfer();else if(cmd==="stop")abortRun();
   else if(cmd.startsWith("f-"))setFilter(cmd.slice(2));
-  else if(cmd==="copy"){const t=tally();
+  else if(cmd==="copy"){const t=tally(), dec=S.declared||S.total||0;
     try{await navigator.clipboard.writeText(
-      `sp2yt: ${t.a}/${S.total} added, ${t.s} skipped, ${t.r} refused`);}catch(e){}}
+      `sp2yt: ${t.a}/${dec} added, ${t.s} skipped, ${t.r} refused`);}catch(e){}}
   else if(cmd==="top")ledger.scrollTop=0;else if(cmd==="bottom")ledger.scrollTop=1e9;}
 palin.addEventListener("input",()=>{const q=palin.value.toLowerCase();
   items=CMDS.filter(c=>c[0].toLowerCase().includes(q));sel=0;drawPal();});
@@ -489,22 +536,25 @@ async function autoTitle(){
     if(my!==detTok||!r.ok||!r.playlist_name)return;
     pname.textContent=`${r.playlist_name} — ${r.tracks.length} of ${r.declared_total||r.tracks.length} tracks`;
     pname.dataset.custom="";}catch(e){}}
-/* reload re-attach: full rows once, then live deltas; never reset a live run */
+/* reload re-attach: full rows once, then live deltas; never reset a live run.
+   After a process restart an idle server reports {interrupted} — show it, link it. */
 (async()=>{try{
     const c=new AbortController();const t=setTimeout(()=>c.abort(),10000);
     const r=await fetch("/api/run?since=0",{signal:c.signal});clearTimeout(t);
-    const d=await r.json();if(!d.ok||!d.run_id)return;
+    const d=await r.json();if(!d.ok)return;
+    if(!d.run_id&&d.interrupted){showInterrupted(d.interrupted);return;}
+    if(!d.run_id)return;
     mergeRun(d,true);
-    if(d.title)pname.textContent=`${d.title} — ${d.total} tracks`;
+    if(d.title)pname.textContent=`${d.title} — ${d.declared||d.total} tracks`;
     paintChip();render();
     if(LIVE.has(d.phase)){S.localT0=Date.now();
       if(d.started_at)window.__t0srv=d.started_at*1000;
-      setRunning(true);setPhase(d.phase);S.pin=null;poll();}
+      setRunning(true);setPhase(d.phase);S.pin=null;S.interrupted=null;poll();}
     else if(d.phase==="done"||d.phase==="failed"){halt();setPhase(d.phase);
-      if(d.phase==="failed")S.pin=`failed: ${d.error||"unknown"}`+(d.hint?` (${d.hint})`:"");
+      if(d.phase==="failed")S.pin=`stopped: ${d.error||"unknown"}`+(d.hint?` (${d.hint})`:"");
       else S.pin=null;}
   }catch(e){}})();
-window.__sp2yt={get phase(){return S.phase;},get attempted(){return S.ceil;}};
+window.__sp2yt={get phase(){return human(S.phase);},get rawPhase(){return S.phase;},get attempted(){return landedNow();},get landed(){return landedNow();}};
 </script>
 </body>
 </html>

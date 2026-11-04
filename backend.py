@@ -910,6 +910,10 @@ def _append_todo(plid, video_ids, todo, yt_cookie, hooks=None):
                 pass
     return attempts
 
+def _seed_ledger(video_ids, entries):
+    """One ledger row per requested copy for the inline seed (no attempts yet)."""
+    return _ledger(video_ids, entries, {})
+
 def _ledger_counts(ledger):
     added = sum(1 for e in ledger if e["outcome"] == "landed")
     rejected = sum(1 for e in ledger if e["outcome"] == "rejected")
@@ -964,13 +968,13 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
             on_phase("append")
         except Exception:
             pass
-    seeded = sum(1 for e in _ledger(video_ids, first, {}) if e["outcome"] == "landed")
+    seed_ledger = _seed_ledger(video_ids, first)
     if hooks and hooks.get("on_seed"):
         try:
-            hooks["on_seed"](seeded)
+            hooks["on_seed"](seed_ledger)
         except Exception:
             pass
-    todo = [int(e["i"]) - 1 for e in _ledger(video_ids, first, {}) if e["outcome"] != "landed"]
+    todo = [int(e["i"]) - 1 for e in seed_ledger if e["outcome"] != "landed"]
     attempts = _append_todo(plid, video_ids, todo, yt_cookie, hooks)
     if on_phase:
         try:
@@ -1016,13 +1020,13 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None)
     entries = _read_back_retry(plid, yt_cookie)
     if entries is None:
         raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (read-back failed)")
-    seeded = sum(1 for e in _ledger(video_ids, entries, {}) if e["outcome"] == "landed")
+    seed_ledger = _seed_ledger(video_ids, entries)
     if hooks and hooks.get("on_seed"):
         try:
-            hooks["on_seed"](seeded)
+            hooks["on_seed"](seed_ledger)
         except Exception:
             pass
-    todo = [int(e["i"]) - 1 for e in _ledger(video_ids, entries, {}) if e["outcome"] != "landed"]
+    todo = [int(e["i"]) - 1 for e in seed_ledger if e["outcome"] != "landed"]
     blog("resume", f"id={plid} have={len(entries)} todo={len(todo)}")
     attempts = _append_todo(plid, video_ids, todo, yt_cookie, hooks)
     if on_phase:
@@ -1207,6 +1211,18 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                 return
             vids = [RUN["rows"][k]["videoId"] for k in range(len(RUN["rows"])) if RUN["rows"][k]["videoId"]]
             RUN["sent"] = len(vids)
+        # video_ids position -> row index. video_ids holds one entry per matched
+        # row (repeats included), in row order; skipped rows have no entry.
+        with _RUN_LOCK:
+            row_for_pos = [k for k, row in enumerate(RUN["rows"]) if row.get("videoId")]
+        def _row_of_pos(pos):
+            try:
+                p = int(pos)
+            except Exception:
+                return None
+            if 0 <= p < len(row_for_pos):
+                return row_for_pos[p]
+            return None
         if not vids:
             with _RUN_LOCK:
                 RUN["phase"] = "failed"
@@ -1235,9 +1251,14 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
             with _RUN_LOCK:
                 if RUN.get("id") != run_id:
                     return
+                rk = _row_of_pos(idx)
+                if rk is None:
+                    return
                 try:
-                    row = RUN["rows"][idx]
+                    row = RUN["rows"][rk]
                 except Exception:
+                    return
+                if row.get("state") == "landed":
                     return
                 row["state"] = "appending"
                 RUN["seq"] += 1
@@ -1248,24 +1269,51 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
             with _RUN_LOCK:
                 if RUN.get("id") != run_id:
                     return
+                rk = _row_of_pos(idx)
+                if rk is None:
+                    return
                 try:
-                    row = RUN["rows"][idx]
+                    row = RUN["rows"][rk]
                 except Exception:
                     return
                 row["status"] = (st or "")[:80]
                 if ok:
-                    row["state"] = "landed"
-                    RUN["landed"] = int(RUN.get("landed", 0)) + 1
+                    if row.get("state") != "landed":
+                        row["state"] = "landed"
+                        RUN["landed"] = int(RUN.get("landed", 0)) + 1
                 else:
-                    row["state"] = "appending"
+                    if row.get("state") != "landed":
+                        row["state"] = "appending"
                 RUN["seq"] += 1
                 row["row_seq"] = RUN["seq"]
                 RUN["updated_at"] = time.time()
-        def _on_seed(n):
+        def _on_seed(arg):
             with _RUN_LOCK:
                 if RUN.get("id") != run_id:
                     return
-                RUN["landed"] = int(n or 0)
+                if isinstance(arg, list):
+                    n = 0
+                    for e in arg:
+                        if (e or {}).get("outcome") != "landed":
+                            continue
+                        try:
+                            pos = int((e or {}).get("i", 0)) - 1
+                        except Exception:
+                            continue
+                        rk = _row_of_pos(pos)
+                        if rk is None:
+                            continue
+                        try:
+                            RUN["rows"][rk]["state"] = "landed"
+                            RUN["rows"][rk]["status"] = ""
+                            RUN["seq"] += 1
+                            RUN["rows"][rk]["row_seq"] = RUN["seq"]
+                            n += 1
+                        except Exception:
+                            pass
+                    RUN["landed"] = int(n)
+                else:
+                    RUN["landed"] = int(arg or 0)
                 RUN["seq"] += 1
                 RUN["updated_at"] = time.time()
         def _on_phase(ph):
@@ -1323,9 +1371,18 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
             RUN["url"] = res.get("url", RUN.get("url", ""))
             RUN["created"] = True
             RUN["existing"] = bool(res.get("existing", False))
-            RUN["landed"] = int(res.get("added", 0))
-            RUN["refused"] = int(res.get("rejected", 0))
-            RUN["missing"] = int(res.get("missing", 0))
+            # every row must carry a terminal state; reconcile strays as missing
+            for row in RUN["rows"]:
+                if row.get("state") not in ("landed", "skipped", "refused", "missing"):
+                    row["state"] = "missing"
+                    row["status"] = (row.get("status") or "reconciled as missing")[:80]
+                    RUN["seq"] += 1
+                    row["row_seq"] = RUN["seq"]
+            # recount from rows so /api/run always agrees with the ledger chips
+            RUN["landed"] = sum(1 for row in RUN["rows"] if row.get("state") == "landed")
+            RUN["skipped"] = sum(1 for row in RUN["rows"] if row.get("state") == "skipped")
+            RUN["refused"] = sum(1 for row in RUN["rows"] if row.get("state") == "refused")
+            RUN["missing"] = sum(1 for row in RUN["rows"] if row.get("state") == "missing")
             buckets = {}
             for row in RUN["rows"]:
                 if row.get("state") == "skipped":
@@ -1345,11 +1402,12 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                     buckets[b] = buckets.get(b, 0) + 1
             skipped_n = int(RUN.get("skipped", 0))
             parts = ", ".join(f"{buckets[k]} {k}" for k in sorted(buckets) if buckets[k]) if skipped_n else "none"
-            summary = f"done — {res.get('added', 0)} of {RUN.get('total', 0)} added, {skipped_n} skipped ({parts})"
-            if res.get("rejected"):
-                summary += f", {res.get('rejected')} refused"
-            if res.get("missing"):
-                summary += f", {res.get('missing')} missing"
+            dec = int(RUN.get("declared", 0) or RUN.get("total", 0))
+            summary = f"done — {int(RUN.get('landed', 0))} of {dec} on the playlist, {skipped_n} skipped ({parts})"
+            if int(RUN.get("refused", 0)):
+                summary += f", {int(RUN.get('refused', 0))} refused"
+            if int(RUN.get("missing", 0)):
+                summary += f", {int(RUN.get('missing', 0))} missing"
             RUN["summary"] = summary
             RUN["phase"] = "done"
             RUN["error"] = ""
@@ -1377,6 +1435,22 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
             except Exception:
                 pass
         blog("fail", f"run={run_id} {msg}")
+
+def _latest_incomplete():
+    """Most recent incomplete created.json record (process-restart resume)."""
+    try:
+        created = load_created() or {}
+    except Exception:
+        return None
+    for sid, rec in (created or {}).items():
+        try:
+            if isinstance(rec, dict) and rec.get("yt_id") and rec.get("complete") is not True:
+                return {"spotify_id": sid, "playlist_id": rec.get("yt_id", ""),
+                        "url": rec.get("url", ""), "title": rec.get("title", ""),
+                        "expected": int(rec.get("expected", 0) or 0)}
+        except Exception:
+            continue
+    return None
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -1417,7 +1491,7 @@ class H(BaseHTTPRequestHandler):
             rows = snap.get("rows", []) or []
             if since:
                 rows = [r for r in rows if int(r.get("row_seq", 0) or 0) > since]
-            self.send_json({"ok": True, "run_id": snap.get("id", ""), "seq": snap.get("seq", 0),
+            out = {"ok": True, "run_id": snap.get("id", ""), "seq": snap.get("seq", 0),
                             "phase": snap.get("phase", "idle"),
                             "started_at": snap.get("started_at", 0),
                             "updated_at": snap.get("updated_at", 0),
@@ -1441,7 +1515,15 @@ class H(BaseHTTPRequestHandler):
                             "rows": rows,
                             "error": snap.get("error", ""),
                             "hint": snap.get("hint", ""),
-                            "kind": snap.get("kind", "")})
+                            "kind": snap.get("kind", "")}
+            if not snap.get("id") and snap.get("phase") == "idle":
+                try:
+                    inc = _latest_incomplete()
+                except Exception:
+                    inc = None
+                if inc:
+                    out["interrupted"] = inc
+            self.send_json(out)
         else:
             self.send_json({"error": "not found"}, 404)
     def do_POST(self):
