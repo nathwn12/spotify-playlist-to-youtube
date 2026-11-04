@@ -6,7 +6,7 @@ No developer API keys, no Spotify app, no Google Cloud project, no paid transfer
 
 ## How it works
 
-- **Spotify side (read):** fetches the public playlist embed page and parses the embedded track list (`title / artist / duration`). Public links need no login.
+- **Spotify side (read):** keyless web-player token (TOTP from the player bundle’s own secret, memory-only, never stored) + api-partner `fetchPlaylist` query paged 100 at a time past the embed’s 100-track cap; the embed stays the metadata fallback (name/cover). If fetched < Spotify’s declared total the run fails before touching YouTube. Public links need no login.
 - **YouTube Music side (search):** queries the InnerTube `WEB_REMIX` search endpoint (the same one music.youtube.com uses) with the public web client key. No quota, no billing.
 - **YouTube Music side (write):** creates the playlist and adds the matched videos using *your* pasted cookie (`SAPISIDHASH` is derived locally).
 
@@ -41,7 +41,7 @@ then open `http://127.0.0.1:8787`. Requires Python 3.10+. No dependencies — st
 | `POST` | `/api/search` | `{query}` → top YTM match |
 | `POST` | `/api/search-batch` | `{queries[], workers}` → matches in order (max 25/batch, 8 threads) |
 | `POST` | `/api/create-playlist` | `{yt_cookie, title, description, videoIds[], privacy}` → playlist URL |
-| `POST` | `/api/transfer` | `{url, yt_cookie, title, privacy}` → `{run_id}` immediately; worker runs spotify → search (10s/8 workers) → create → append → verify, rows stream via `/api/run` |
+| `POST` | `/api/transfer` | `{url, yt_cookie, title, privacy}` → `{run_id}` immediately; worker runs full spotify fetch (100/page to declared total) → search (10s/8 workers, transport retries, ambiguous ties skipped with reason) → create → append → verify, rows stream via `/api/run` |
 | `GET` | `/api/run?since=N` | `{run_id, seq, phase, total/matched/sent/landed/refused/skipped/missing, url, created, rows(changed), age}` polled every 700ms; `since=0` returns full rows |
 | `GET`/`POST` | `/api/settings` | `{privacy}` persisted server-side in `settings.json`; POST merges, unknown keys ignored, privacy clamped to `PRIVATE\|PUBLIC\|UNLISTED` |
 

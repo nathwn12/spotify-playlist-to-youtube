@@ -135,7 +135,7 @@ async function autoDetectTitle(){
  try{const r=await post('/api/spotify',{url:u,spotify_cookie:''},25000);
   if(my!==detectToken||!r.ok)return;
   setAutoTitle(r.playlist_name,r.cover_url);
-  progEl.textContent=`detected: ${r.playlist_name} — ${r.tracks.length} tracks. Ready.`;
+  progEl.textContent=`detected: ${r.playlist_name} — ${r.tracks.length} of ${r.declared_total||r.tracks.length} tracks. Ready.`;
  }catch(e){}
 }
 async function post(p,b,ms=25000){const c=new AbortController();const t=setTimeout(()=>c.abort(),ms);try{const r=await fetch(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b),signal:c.signal});return r.json();}finally{clearTimeout(t);}}
@@ -146,7 +146,7 @@ document.getElementById('copylog').onclick=async()=>{const rows=[...window._rowM
 document.getElementById('step1').onclick=async()=>{
  logEl.textContent=''; workOn('loading spotify…'); setBarStrict(0);
  const r=await post('/api/spotify',{url:sp_url.value,spotify_cookie:''});
- if(!r.ok){log('SPOTIFY FAIL: '+r.error);workOff('failed.');return;} log(`SPOTIFY OK: ${r.playlist_name} — ${r.tracks.length} tracks`);
+ if(!r.ok){log('SPOTIFY FAIL: '+r.error);workOff('failed.');return;} log(`SPOTIFY OK: ${r.playlist_name} — ${r.tracks.length} of ${r.declared_total||r.tracks.length} tracks`);
  setAutoTitle(r.playlist_name,r.cover_url);
  r.tracks.slice(0,5).forEach(t=>log(` - ${t.title} — ${t.artist}`)); setBarStrict(100); workOff('spotify loaded.');
  window._tracks=r.tracks; window._plname=r.playlist_name;
@@ -163,12 +163,13 @@ function renderPlcard(d){
  const a=document.createElement('a');a.href=d.url;a.textContent=d.url;a.target='_blank';a.rel='noopener';
  plcard.innerHTML='';const s=document.createElement('span');s.textContent=head+' ';
  plcard.appendChild(s);plcard.appendChild(a);
+ if(d.summary){const sm=document.createElement('div');sm.style.cssText='color:#a9a9b2;font-size:12px;margin-top:4px';sm.textContent=d.summary;plcard.appendChild(sm);}
 }
 function renderRows(full){
  const all=[...window._rowMap.values()].sort((a,b)=>a.i-b.i);
- const total=all.length, cap=500;
- const vis=total>cap?all.slice(-cap):all;
- showingEl.textContent=total>cap?`showing last ${cap} of ${total}`:'';
+ const total=all.length;
+ const vis=all;
+ showingEl.textContent='';
  const stick=nearBottom(rowsEl);
  rowsEl.innerHTML='';
  for(const r of vis){
@@ -189,21 +190,23 @@ function applyRun(d){
  else if(nearBottom(rowsEl)){window._pendingNew=0;newBtn.style.display='none';}
  renderPlcard(d);
  // status line
- const tot=d.total||0, sent=d.sent||d.matched||0;
+ const tot=d.total||0, sent=d.sent||d.matched||0, dec=d.declared||tot;
  let msg=phaseWord(d.phase);
- if(d.phase==='search')msg=`Searching — ${d.matched} of ${tot} matched`;
- else if(d.phase==='append'||d.phase==='create')msg=`Adding tracks — ${d.landed} of ${sent||tot} on the playlist`;
- else if(d.phase==='verify')msg=`Verifying — ${d.landed} of ${sent||tot} on the playlist`;
- else if(d.phase==='done')msg=d.existing?`exists — ${d.landed} of ${sent} tracks from this playlist are on it`:`Done — ${d.landed} of ${sent} on the playlist`;
+ if(d.phase==='search')msg=`Searching — ${d.matched} of ${dec} matched`;
+ else if(d.phase==='append'||d.phase==='create')msg=`Adding tracks — ${d.landed} of ${sent||tot} on the playlist (${dec} declared)`;
+ else if(d.phase==='verify')msg=`Verifying — ${d.landed} of ${sent||tot} on the playlist (${dec} declared)`;
+ else if(d.phase==='done')msg=d.summary||(d.existing?`exists — ${d.landed} of ${sent} tracks from this playlist are on it`:`Done — ${d.landed} of ${sent} on the playlist`);
  else if(d.phase==='failed')msg=`Failed: ${d.error||'unknown'}`;
  else if(d.phase==='spotify')msg='Fetching Spotify…';
  progEl.textContent=msg;
  if(d.hint&&(d.phase==='failed'))log('DIAGNOSIS ['+(d.kind||'?')+']: '+d.hint);
  // progress bar monotonic
  let pct=0;
- if(d.phase==='search'&&tot)pct=100*d.matched/tot;
- else if(sent)pct=100*(d.landed||0)/sent;
- else if(tot&&d.phase==='spotify')pct=2;
+ const term=(d.landed||0)+(d.refused||0)+(d.missing||0)+(d.skipped||0);
+ if(tot)pct=100*term/tot;
+ if(d.phase==='search'&&tot)pct=Math.max(pct,100*((d.matched||0)+(d.skipped||0))/tot);
+ if(!tot&&sent)pct=100*(d.landed||0)/sent;
+ else if(tot&&d.phase==='spotify')pct=Math.max(pct,2);
  setBarStrict(pct);
  renderRows();
 }

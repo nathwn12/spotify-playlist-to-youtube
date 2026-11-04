@@ -3,7 +3,7 @@
 Spotify: scrapes public embed __NEXT_DATA__ (optional user Cookie forwarded).
 YTM: InnerTube WEB_REMIX + user-supplied Cookie (SAPISIDHASH derived server-side).
 """
-import json, re, sys, time, base64, hashlib, shutil, sqlite3, subprocess, tempfile, threading, urllib.request, urllib.parse, webbrowser
+import json, re, sys, time, base64, hashlib, hmac, struct, shutil, sqlite3, subprocess, tempfile, threading, urllib.request, urllib.parse, webbrowser
 import ctypes
 from ctypes import wintypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -48,6 +48,8 @@ RUN = {
     "error": "",
     "hint": "",
     "kind": "",
+    "declared": 0,
+    "summary": "",
 }
 
 def _run_touch_locked():
@@ -104,6 +106,8 @@ def run_begin(spotify_id="", title=""):
         RUN["refused"] = 0
         RUN["skipped"] = 0
         RUN["missing"] = 0
+        RUN["declared"] = 0
+        RUN["summary"] = ""
         RUN["rows"] = []
         RUN["error"] = ""
         RUN["hint"] = ""
@@ -269,6 +273,8 @@ def classify(msg: str) -> dict:
         return {"kind": "transient", "hint": "Network blip — auto-retrying once."}
     if "embed parse" in m or "no ytm result" in m:
         return {"kind": "parse", "hint": "Upstream page format changed — run stopped for inspection."}
+    if "partial playlist" in m or "full track list" in m or "declared total" in m:
+        return {"kind": "source", "hint": "Spotify's full list did not arrive — retry once; if it repeats, the upstream route changed and the run stopped before touching YouTube."}
     return {"kind": "unknown", "hint": "Stopped. Copy this error line to the agent for diagnosis."}
 
 YT_KEY = "AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30"
@@ -313,31 +319,223 @@ def extract_playlist_id(url: str) -> str:
         raise ValueError("not a spotify playlist url")
     return m.group(1)
 
-def fetch_spotify_tracks(playlist_url: str, cookie: str = ""):
-    pid = extract_playlist_id(playlist_url)
-    embed = f"https://open.spotify.com/embed/playlist/{pid}"
-    headers = {"User-Agent": "Mozilla/5.0", "Accept-Language": "en-US,en;q=0.9"}
-    cookie = normalize_cookie(cookie)
-    if cookie:
-        headers["Cookie"] = cookie
-    req = urllib.request.Request(embed, headers=headers)
-    raw = urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "ignore")
-    m = re.search(r"__NEXT_DATA__[^>]*>(.*?)</script>", raw, re.S)
+_SP_TOK = {"token": "", "exp_ms": 0}
+_SP_BUNDLE = {"js": "", "qhash": "", "at": 0.0}
+_SP_HASH_FALLBACK = "21ea11a6ac75a5f3e01fd365d29c18e0a4a8b7dc09f89bbb5d73910190c6acaf"
+_SP_UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+         "Accept-Language": "en-US,en;q=0.9"}
+
+def _sp_http(url, data=None, headers=None, timeout=25):
+    """(status, body). HTTP errors return their status — callers quote it, never raise it away."""
+    h = dict(_SP_UA)
+    if headers:
+        h.update(headers)
+    try:
+        req = urllib.request.Request(url, data=data, headers=h)
+        r = urllib.request.urlopen(req, timeout=timeout)
+        return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, e.read()
+        except Exception:
+            return e.code, b""
+    except Exception as e:
+        raise RuntimeError(f"network: {type(e).__name__} {e}")
+
+def _sp_totp(key: bytes, ts_ms: int) -> str:
+    ctr = int(ts_ms // 1000 // 30)
+    d = hmac.new(key, struct.pack(">Q", ctr), hashlib.sha1).digest()
+    o = d[-1] & 0x0F
+    return str((struct.unpack(">I", d[o:o + 4])[0] & 0x7FFFFFFF) % 10 ** 6).zfill(6)
+
+def _sp_bundle():
+    """Web-player JS + fetchPlaylist persisted-query hash. Refreshed every 10 min (bundle name rotates)."""
+    now = time.time()
+    if _SP_BUNDLE["js"] and now - _SP_BUNDLE["at"] < 600:
+        return _SP_BUNDLE["js"], _SP_BUNDLE["qhash"] or _SP_HASH_FALLBACK
+    st, home = _sp_http("https://open.spotify.com/")
+    if st != 200:
+        raise RuntimeError(f"spotify home refused (HTTP {st})")
+    m = re.search(r"https?://open\.spotifycdn\.com/cdn/build/web-player/web-player\.[A-Za-z0-9]+\.js",
+                  home.decode("utf-8", "ignore"))
     if not m:
-        raise RuntimeError("embed parse failed (spotify changed html?)")
-    data = json.loads(m.group(1))
-    entity = data["props"]["pageProps"]["state"]["data"]["entity"]
-    out = []
-    for t in entity.get("trackList", []):
-        out.append({
-            "uri": t.get("uri", ""),
-            "title": t.get("title", ""),
-            "artist": t.get("subtitle", ""),
-            "duration_ms": t.get("duration", 0),
-        })
-    return {"playlist_id": pid, "playlist_name": entity.get("title", ""),
-            "cover_url": ((entity.get("coverArt", {}) or {}).get("sources", [{}])[0] or {}).get("url", ""),
-            "tracks": out}
+        raise RuntimeError("spotify player bundle not found (open.spotify.com layout changed?)")
+    st, jsb = _sp_http(m.group(0), timeout=60)
+    if st != 200:
+        raise RuntimeError(f"spotify player bundle refused (HTTP {st})")
+    js = jsb.decode("utf-8", "ignore")
+    pairs = re.findall(r"secret:(?:\"((?:[^\"\\]|\\.)*)\"|'((?:[^'\\]|\\.)*)')\s*,\s*version:(\d+)", js)
+    if not pairs:
+        raise RuntimeError("spotify totp secrets not found (player bundle changed?)")
+    hm = re.search(r'"fetchPlaylist","query","([0-9a-f]{64})"', js)
+    _SP_BUNDLE["js"] = js
+    _SP_BUNDLE["qhash"] = hm.group(1) if hm else ""
+    _SP_BUNDLE["at"] = now
+    _SP_BUNDLE["_secrets"] = {int(v): (a or b) for a, b, v in pairs}
+    return js, _SP_BUNDLE["qhash"] or _SP_HASH_FALLBACK
+
+def _sp_anon_token():
+    """Keyless web-player token (TOTP from the bundle's own secret). Memory only, never logged or stored."""
+    now_ms = int(time.time() * 1000)
+    if _SP_TOK["token"] and now_ms < _SP_TOK["exp_ms"] - 120000:
+        return _SP_TOK["token"]
+    js, _ = _sp_bundle()
+    secrets = _SP_BUNDLE.get("_secrets", {})
+    if not secrets:
+        raise RuntimeError("spotify totp secrets not found (player bundle changed?)")
+    ver = max(secrets)
+    raw = secrets[ver].encode().decode("unicode_escape")
+    key = "".join(str(ord(c) ^ ((i % 33) + 9)) for i, c in enumerate(raw)).encode()
+    st, sb = _sp_http("https://open.spotify.com/api/server-time")
+    try:
+        server_ms = int(json.loads(sb.decode())["serverTime"]) * 1000
+    except Exception:
+        server_ms = 0
+    qs = urllib.parse.urlencode({"reason": "transport", "productType": "web-player",
+                                 "totp": _sp_totp(key, now_ms), "totpVer": str(ver),
+                                 "ts": str(int(now_ms / 1000)),
+                                 "totpServer": _sp_totp(key, server_ms) if server_ms else "unavailable"})
+    st, tb = _sp_http("https://open.spotify.com/api/token?" + qs)
+    if st != 200:
+        raise RuntimeError(f"spotify keyless token refused (HTTP {st})")
+    try:
+        j = json.loads(tb.decode())
+        tok, exp = j["accessToken"], int(j.get("accessTokenExpirationTimestampMs") or 0)
+    except Exception:
+        raise RuntimeError("spotify keyless token unreadable (player api changed?)")
+    if not tok:
+        raise RuntimeError("spotify keyless token empty (player api changed?)")
+    _SP_TOK["token"] = tok
+    _SP_TOK["exp_ms"] = exp or (now_ms + 3600 * 1000)
+    blog("spotify", f"anon token ok len={len(tok)}")
+    return tok
+
+def _sp_playlist_page(pid, offset, limit, token, qhash):
+    """One pathfinder fetchPlaylist page. Adapts to new required variables (bounded)."""
+    variables = {"uri": f"spotify:playlist:{pid}", "offset": offset, "limit": limit,
+                 "enableWatchFeedEntrypoint": False, "includeEpisodeContentRatingsV2": False}
+    last = "unknown"
+    for _ in range(6):
+        url = ("https://api-partner.spotify.com/pathfinder/v1/query?operationName=fetchPlaylist"
+               "&variables=" + urllib.parse.quote(json.dumps(variables))
+               + "&extensions=" + urllib.parse.quote(json.dumps(
+                   {"persistedQuery": {"version": 1, "sha256Hash": qhash}})))
+        st, sb = _sp_http(url, headers={"Authorization": "Bearer " + token})
+        txt = sb.decode("utf-8", "ignore")
+        if st != 200:
+            last = f"HTTP {st}"
+            if st in (401, 403):
+                raise RuntimeError(f"spotify full-list refused ({last})")
+            time.sleep(1.0)
+            continue
+        try:
+            j = json.loads(txt)
+        except Exception:
+            last = "bad json"
+            time.sleep(1.0)
+            continue
+        errs = j.get("errors") or []
+        missing = []
+        for e in errs:
+            missing += re.findall(r"missing variable `\$(\w+)`: for required GraphQL type `(\S+?)`",
+                                  str(e.get("message", "")))
+        if missing:
+            for vname, vtyp in missing:
+                if "Boolean" in vtyp:
+                    variables[vname] = False
+                elif "Int" in vtyp or "Float" in vtyp:
+                    variables[vname] = 0
+                else:
+                    variables[vname] = ""
+            last = "missing vars: " + ",".join(n for n, _t in missing)
+            continue
+        if errs:
+            raise RuntimeError(f"spotify full-list refused ({str(errs[0].get('message', errs[0]))[:120]})")
+        try:
+            return j["data"]["playlistV2"]
+        except Exception:
+            raise RuntimeError("spotify full-list unreadable (partner shape changed?)")
+    raise RuntimeError(f"spotify full-list refused ({last})")
+
+def _sp_cover(pl):
+    for node in (pl.get("images"), pl.get("coverArt")):
+        srcs = None
+        if isinstance(node, dict):
+            srcs = node.get("sources")
+        elif isinstance(node, list):
+            srcs = node
+        if srcs:
+            for s in srcs:
+                if isinstance(s, dict) and s.get("url"):
+                    return s["url"]
+    return ""
+
+def fetch_spotify_tracks(playlist_url: str, cookie: str = ""):
+    """Full keyless fetch: embed = metadata/fast path, api-partner pathfinder = full track list.
+    api.spotify.com answers anonymous web-player tokens with HTTP 429 (verified live),
+    so the partner pathfinder query is the full-fetch route. stdlib only, token memory-only."""
+    pid = extract_playlist_id(playlist_url)
+    name, cover = "", ""
+    try:
+        embed = f"https://open.spotify.com/embed/playlist/{pid}"
+        req = urllib.request.Request(embed, headers=_SP_UA)
+        raw = urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "ignore")
+        m = re.search(r"__NEXT_DATA__[^>]*>(.*?)</script>", raw, re.S)
+        if m:
+            entity = json.loads(m.group(1))["props"]["pageProps"]["state"]["data"]["entity"]
+            name = entity.get("title", "") or ""
+            cover = (((entity.get("coverArt", {}) or {}).get("sources", [{}]) or [{}])[0] or {}).get("url", "") or ""
+    except Exception as e:
+        blog("spotify", f"embed metadata missed: {type(e).__name__}")
+    token = _sp_anon_token()
+    _js, qhash = _sp_bundle()
+    first = _sp_playlist_page(pid, 0, 100, token, qhash)
+    if not isinstance(first, dict) or first.get("__typename") != "Playlist":
+        typename = first.get("__typename") if isinstance(first, dict) else "no playlist"
+        raise RuntimeError(f"spotify full-list refused ({typename} — private/deleted link?)")
+    name = first.get("name", "") or name
+    cover = _sp_cover(first) or cover
+    declared = int((first.get("content") or {}).get("totalCount") or 0)
+    if not declared:
+        raise RuntimeError("Spotify did not report a declared total — refusing to transfer a possibly partial playlist")
+    tracks = []
+
+    def _take(items):
+        for it in items or []:
+            data = ((it or {}).get("itemV2") or {}).get("data") or {}
+            if data.get("__typename") in ("Track", "Episode"):
+                arts = data.get("artists") or {}
+                tracks.append({
+                    "uri": data.get("uri", ""),
+                    "title": data.get("name", ""),
+                    "artist": ", ".join(a.get("profile", {}).get("name", "") for a in (arts.get("items") or [])),
+                    "duration_ms": int((data.get("trackDuration") or {}).get("totalMilliseconds", 0)),
+                })
+            else:
+                tracks.append({"uri": "", "title": "", "artist": "", "duration_ms": 0})
+
+    _take((first.get("content") or {}).get("items"))
+    if len(tracks) > declared:
+        tracks = tracks[:declared]
+    off = len(tracks)
+    while off < declared:
+        page = _sp_playlist_page(pid, off, 100, token, qhash)
+        items = (page.get("content") or {}).get("items", [])
+        if not items:
+            break
+        _take(items)
+        if len(tracks) > declared:
+            tracks = tracks[:declared]
+            break
+        off += len(items)
+        time.sleep(0.2)
+    if len(tracks) < declared:
+        raise RuntimeError(f"Spotify reports {declared} tracks, fetched {len(tracks)} — refusing to transfer a partial playlist")
+    if not tracks:
+        raise RuntimeError("empty playlist (no tracks in spotify)")
+    return {"playlist_id": pid, "playlist_name": name,
+            "cover_url": cover, "tracks": tracks,
+            "declared_total": declared}
 
 def mrl_video_id(mrl: dict) -> str:
     """videoId from every known nesting (markup drifts; order = most reliable first)."""
@@ -367,14 +565,37 @@ def mrl_texts(mrl: dict):
 
     return col(0), col(1)
 
+_TRANSPORT_HINTS = ("timed out", "timeout", "urlerror", "connection", "reset by peer",
+                     "temporary failure", "gaierror", "unreachable", "dns",
+                     "429", "500", "502", "503", "504")
+
+def _is_transport(err: Exception) -> bool:
+    if isinstance(err, (urllib.error.URLError, TimeoutError)):
+        return True
+    s = f"{type(err).__name__} {getattr(err, 'code', '')} {err}".lower()
+    return any(h in s for h in _TRANSPORT_HINTS)
+
 def yt_search(query: str):
+    """One search. Transport errors retry (bounded, same query), then raise; an
+    ambiguous Song tie raises instead of guessing — callers turn it into a skip with reason."""
     body = json.dumps({"context": {"client": CLIENT}, "query": query,
                        "params": "EgWKAQIIAWoQEAMQBBAJEAkQBRAK"}).encode()
-    req = urllib.request.Request(
-        f"https://music.youtube.com/youtubei/v1/search?key={YT_KEY}&prettyPrint=false",
-        data=body, headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0",
-                            "Origin": YT_ORIGIN, "Referer": YT_ORIGIN + "/"})
-    r = urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "ignore")
+    last = None
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(
+                f"https://music.youtube.com/youtubei/v1/search?key={YT_KEY}&prettyPrint=false",
+                data=body, headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0",
+                                    "Origin": YT_ORIGIN, "Referer": YT_ORIGIN + "/"})
+            r = urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "ignore")
+            break
+        except Exception as e:
+            last = e
+            if not _is_transport(e) or attempt == 2:
+                raise
+            time.sleep(1.0 + attempt)
+    else:
+        raise last
     j = json.loads(r)
     try:
         sections = j["contents"]["tabbedSearchResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"]
@@ -392,17 +613,26 @@ def yt_search(query: str):
                     continue
                 title, typ = mrl_texts(mrl)
                 cands.append({"videoId": pid, "title": title, "type": typ})
-        want_q = query
-        for c in cands:  # Song rows whose title overlaps the query
-            if c["type"] == "Song" and c["title"] and title_overlap(want_q, c["title"]):
-                c.update({"artist": "", "duration": "", "query": query})
-                return c
-        for c in cands:  # any titled overlap (video etc.)
-            if c["title"] and title_overlap(want_q, c["title"]):
-                c.update({"artist": "", "duration": "", "query": query})
-                return c
     except Exception:
         pass
+    want_q = query
+    want = set(re.findall(r"[a-z0-9]{3,}", query.lower()))
+    scored = []
+    for c in cands:
+        if c["type"] == "Song" and c["title"]:
+            scored.append((len(set(re.findall(r"[a-z0-9]{3,}", c["title"].lower())) & want), c))
+    scored.sort(key=lambda x: -x[0])
+    if (len(scored) >= 2 and scored[0][0] > 0 and scored[0][0] == scored[1][0]
+            and scored[0][1]["videoId"] != scored[1][1]["videoId"]):
+        raise RuntimeError(f"ambiguous match ({scored[0][0]}-word tie, {len(scored)} candidates) for: " + query)
+    for c in cands:  # Song rows whose title overlaps the query
+        if c["type"] == "Song" and c["title"] and title_overlap(want_q, c["title"]):
+            c.update({"artist": "", "duration": "", "query": query})
+            return c
+    for c in cands:  # any titled overlap (video etc.)
+        if c["title"] and title_overlap(want_q, c["title"]):
+            c.update({"artist": "", "duration": "", "query": query})
+            return c
     raise RuntimeError("no ytm result for: " + query)
 
 def title_overlap(a: str, b: str) -> bool:
@@ -429,7 +659,10 @@ def yt_match(title: str, artist: str = "", duration_ms: int = 0) -> dict:
             r["via"] = q
             r["alt"] = qi > 0
             return {**{"ok": True}, **r}
-    skip = "no match on any variant" + (f" ({last_err})" if last_err else "")
+    if "ambiguous match" in last_err:
+        skip = last_err[:160]
+    else:
+        skip = "no match on any variant" + (f" ({last_err})" if last_err else "")
     return {"ok": True, "query": want_q, "videoId": None,
             "title": "", "duration": "", "skipped": skip}
 
@@ -881,12 +1114,16 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
         pname = (title or "").strip() or sp.get("playlist_name", "") or "Spotify import"
         tracks = sp.get("tracks", []) or []
         sid = sp.get("playlist_id", "")
+        declared = int(sp.get("declared_total") or 0)
+        if declared and len(tracks) < declared:
+            raise RuntimeError(f"Spotify reports {declared} tracks, fetched {len(tracks)} — refusing to transfer a partial playlist")
         with _RUN_LOCK:
             if RUN.get("id") != run_id:
                 return
             RUN["spotify_id"] = sid
             RUN["title"] = pname
             RUN["total"] = len(tracks)
+            RUN["declared"] = declared or len(tracks)
             RUN["sent"] = 0
             RUN["matched"] = 0
             RUN["skipped"] = 0
@@ -899,6 +1136,12 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
             for r in RUN["rows"]:
                 RUN["seq"] += 1
                 r["row_seq"] = RUN["seq"]
+            for k, t in enumerate(tracks):
+                if not (t.get("title") or "").strip() and not (t.get("uri") or "").strip():
+                    RUN["rows"][k]["state"] = "skipped"
+                    RUN["rows"][k]["status"] = "unavailable on Spotify — no title in source"
+                    RUN["seq"] += 1
+                    RUN["rows"][k]["row_seq"] = RUN["seq"]
             RUN["phase"] = "search" if tracks else "failed"
             RUN["updated_at"] = time.time()
             if not tracks:
@@ -940,6 +1183,9 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                     idx = base + k
                     if idx >= len(RUN["rows"]):
                         break
+                    if not (tracks[idx].get("title") or "").strip() and not (tracks[idx].get("uri") or "").strip():
+                        matched_ids[idx] = ""
+                        continue
                     vid = (res or {}).get("videoId") or ""
                     row = RUN["rows"][idx]
                     row["videoId"] = vid
@@ -1043,6 +1289,11 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                 RUN["error"] = msg[:300]
                 RUN["hint"] = c.get("hint", "")
                 RUN["kind"] = c.get("kind", "unknown")
+                for row in RUN["rows"]:
+                    if row.get("state") not in ("landed", "refused", "missing", "skipped"):
+                        row["state"] = "skipped"
+                        row["status"] = f"stopped: {msg}"[:80]
+                RUN["skipped"] = sum(1 for row in RUN["rows"] if row.get("state") == "skipped")
                 RUN["seq"] += 1
                 RUN["updated_at"] = time.time()
             blog("fail", f"run={run_id} {msg}")
@@ -1075,6 +1326,31 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
             RUN["landed"] = int(res.get("added", 0))
             RUN["refused"] = int(res.get("rejected", 0))
             RUN["missing"] = int(res.get("missing", 0))
+            buckets = {}
+            for row in RUN["rows"]:
+                if row.get("state") == "skipped":
+                    s = (row.get("status") or "no reason").lower()
+                    if "ambigu" in s:
+                        b = "ambiguous"
+                    elif "unavailable" in s:
+                        b = "unavailable"
+                    elif ("transport" in s or "timed out" in s or "timeout" in s or "urlopen" in s
+                          or "urlerror" in s or "connection" in s or " 429" in s or "429 " in s
+                          or "503" in s or "temporary failure" in s or "reset by peer" in s):
+                        b = "transport"
+                    elif "no match" in s:
+                        b = "no match"
+                    else:
+                        b = "other"
+                    buckets[b] = buckets.get(b, 0) + 1
+            skipped_n = int(RUN.get("skipped", 0))
+            parts = ", ".join(f"{buckets[k]} {k}" for k in sorted(buckets) if buckets[k]) if skipped_n else "none"
+            summary = f"done — {res.get('added', 0)} of {RUN.get('total', 0)} added, {skipped_n} skipped ({parts})"
+            if res.get("rejected"):
+                summary += f", {res.get('rejected')} refused"
+            if res.get("missing"):
+                summary += f", {res.get('missing')} missing"
+            RUN["summary"] = summary
             RUN["phase"] = "done"
             RUN["error"] = ""
             RUN["seq"] += 1
@@ -1091,6 +1367,11 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                     RUN["error"] = msg[:300]
                     RUN["hint"] = c.get("hint", "")
                     RUN["kind"] = c.get("kind", "unknown")
+                    for row in RUN["rows"]:
+                        if row.get("state") not in ("landed", "refused", "missing", "skipped"):
+                            row["state"] = "skipped"
+                            row["status"] = f"stopped: {msg}"[:80]
+                    RUN["skipped"] = sum(1 for row in RUN["rows"] if row.get("state") == "skipped")
                     RUN["seq"] += 1
                     RUN["updated_at"] = time.time()
             except Exception:
@@ -1148,9 +1429,12 @@ class H(BaseHTTPRequestHandler):
                             "created": bool(snap.get("created", False)),
                             "existing": bool(snap.get("existing", False)),
                             "total": int(snap.get("total", 0) or 0),
+                            "declared": int(snap.get("declared", 0) or 0),
+                            "summary": snap.get("summary", ""),
                             "matched": int(snap.get("matched", 0) or 0),
                             "sent": int(snap.get("sent", 0) or 0),
                             "landed": int(snap.get("landed", 0) or 0),
+                            "attempted": int(snap.get("landed", 0) or 0) + int(snap.get("refused", 0) or 0) + int(snap.get("missing", 0) or 0) + int(snap.get("skipped", 0) or 0),
                             "refused": int(snap.get("refused", 0) or 0),
                             "skipped": int(snap.get("skipped", 0) or 0),
                             "missing": int(snap.get("missing", 0) or 0),
@@ -1171,7 +1455,7 @@ class H(BaseHTTPRequestHandler):
         try:
             if self.path == "/api/spotify":
                 r = fetch_spotify_tracks(payload.get("url", ""), payload.get("spotify_cookie", ""))
-                blog("spotify", f"ok name={r.get('playlist_name')} n={len(r.get('tracks', []))} {scrub_cookie(payload.get('spotify_cookie', ''))}")
+                blog("spotify", f"ok name={r.get('playlist_name')} n={len(r.get('tracks', []))} declared={r.get('declared_total')} {scrub_cookie(payload.get('spotify_cookie', ''))}")
                 return self.send_json({"ok": True, **r})
             if self.path == "/api/search":
                 q = str(payload.get("query", ""))[:300]
