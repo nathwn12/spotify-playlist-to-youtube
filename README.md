@@ -91,6 +91,18 @@ Two lanes, same repo:
 
 Every build must go green before it ships — no green, no prod.
 
+## Acceptance gate
+
+`build.cmd` replays `tests/fixtures/owner.json` through the real matcher in `backend.py` before compiling. The fixture holds 30 recorded rows — the ten version titles that previously mismatched, plus twenty tracks from the owner playlist — each with its real source row and the real YouTube Music search response. `acceptance.cmd` needs no network, prints `30/30 fixtures`, and exits non-zero with one `FAIL` line per broken expectation; the build then aborts with `ACCEPTANCE RED — not building`. The gate exists because a stub only proves the stub: the owner's real rows are the bar.
+
+Re-record when the matcher or the source playlist changes:
+
+```bat
+python3 tests\record_fixtures.py
+```
+
+It reads the playlist once and issues at most 40 real searches, 300 ms apart; everything after that runs offline. Review the printed `ok`/`skip` lines before committing the new fixture.
+
 ## License
 
 MIT — see `LICENSE`.
