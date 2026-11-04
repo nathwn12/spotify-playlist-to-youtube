@@ -1207,23 +1207,50 @@ def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PR
         if rec and rec.get("yt_id"):
             if rec.get("complete") is True:
                 entries = yt_playlist_entries(rec["yt_id"], yt_cookie)
-                if entries is not None and len(entries) > 0:
-                    ledger = _ledger(ids, entries, {})
-                    added = sum(1 for e in ledger if e["outcome"] == "landed")
-                    missing = sum(1 for e in ledger if e["outcome"] != "landed")
-                    for e in ledger:
-                        if e["outcome"] != "landed":
-                            e["status"] = "exists — not on playlist"
-                    if added < len(ids):
-                        blog("create", f"exists title={title} url={rec.get('url')} {added}/{len(ids)} from this playlist on it — source grew, leaving playlist alone")
-                    else:
+                if entries is not None:
+                    seed = _seed_ledger(ids, entries)
+                    todo = [int(e["i"]) - 1 for e in seed if e["outcome"] != "landed"]
+                    if not todo:
+                        added = sum(1 for e in seed if e["outcome"] == "landed")
+                        missing = sum(1 for e in seed if e["outcome"] != "landed")
+                        for e in seed:
+                            if e["outcome"] != "landed":
+                                e["status"] = "exists — not on playlist"
                         blog("create", f"exists title={title} url={rec.get('url')} tracks={added}")
-                    return {"playlistId": rec["yt_id"], "url": rec.get("url", ""),
-                            "added": added, "sent": len(ids), "rejected": 0, "missing": missing,
-                            "repeats": len(ids) - len(set(ids)), "existing": True, "ledger": ledger,
-                            "playlist_count": len(entries) if isinstance(entries, list) else 0}
-                if entries is None:
-                    blog("create", f"exists-unreadable title={title} url={rec.get('url')} — returning record without new create")
+                        return {"playlistId": rec["yt_id"], "url": rec.get("url", ""),
+                                "added": added, "sent": len(ids), "rejected": 0, "missing": missing,
+                                "repeats": len(ids) - len(set(ids)), "existing": True, "ledger": seed,
+                                "playlist_count": len(entries) if isinstance(entries, list) else 0}
+                    on_phase = (hooks or {}).get("on_phase")
+                    if on_phase:
+                        try:
+                            on_phase("append")
+                        except Exception:
+                            pass
+                    plid = rec["yt_id"]
+                    blog("topup", f"id={plid} have={len(entries)} missing={len(todo)}")
+                    attempts = _append_todo(plid, ids, todo, yt_cookie, hooks)
+                    if on_phase:
+                        try:
+                            on_phase("verify")
+                        except Exception:
+                            pass
+                    entries2 = _read_back_retry(plid, yt_cookie)
+                    if entries2 is None:
+                        raise RuntimeError(f"playlist topped up at {rec.get('url')} — appends sent but the rest could not be verified (final read-back failed)")
+                    ledger = _ledger(ids, entries2, attempts)
+                    added, rejected, missing = _ledger_counts(ledger)
+                    todo_set = set(todo)
+                    newly = sum(1 for e in ledger
+                                if e["outcome"] == "landed" and (int(e["i"]) - 1) in todo_set)
+                    repeats = len(ids) - len(set(ids))
+                    blog("parity", f"topup {added}/{len(ids)} landed, {rejected} refused, {missing} missing")
+                    _persist_final(spotify_id, plid, rec.get("url", ""), title, len(ids), added == len(ids))
+                    return {"playlistId": plid, "url": rec.get("url", ""),
+                            "added": added, "sent": len(ids), "rejected": rejected, "missing": missing,
+                            "repeats": repeats, "existing": True, "ledger": ledger,
+                            "playlist_count": len(entries2) if isinstance(entries2, list) else 0,
+                            "topped_up": newly}
                     return {"playlistId": rec["yt_id"], "url": rec.get("url", ""),
                             "added": rec.get("expected", len(ids)), "sent": len(ids),
                             "rejected": 0, "missing": 0,
@@ -1242,7 +1269,8 @@ def yt_create_playlist(yt_cookie: str, title: str, description: str, video_ids: 
 
 def yt_create_checked(spotify_id: str, yt_cookie: str, title: str, description: str,
                       video_ids: list, privacy: str = "PRIVATE") -> dict:
-    """Dupe-aware create: complete record + live YTM copy -> return it, create nothing.
+    """Dupe-aware create: complete record + full live YTM copy -> return it, create nothing.
+    Complete but short -> top up the same playlist, never a second playlist.
     Incomplete record -> resume the same playlist, never a second playlist."""
     return transfer_create_append(yt_cookie, title, description, video_ids, privacy, spotify_id or "", None)
 
@@ -1548,7 +1576,10 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
             dec = int(RUN.get("declared", 0) or RUN.get("total", 0))
             n_pl = int(res.get("playlist_count", 0) or 0)
             RUN["playlist_count"] = n_pl
-            summary = f"done — {int(RUN.get('landed', 0))} of {dec} on the playlist (playlist holds {n_pl}), {skipped_n} skipped ({parts})"
+            if res.get("topped_up") is not None:
+                summary = f"topped up {int(res.get('topped_up', 0))} of {int(res.get('sent', 0))} — {int(RUN.get('landed', 0))} of {dec} on the playlist (playlist holds {n_pl}), {skipped_n} skipped ({parts})"
+            else:
+                summary = f"done — {int(RUN.get('landed', 0))} of {dec} on the playlist (playlist holds {n_pl}), {skipped_n} skipped ({parts})"
             if int(RUN.get("refused", 0)):
                 summary += f", {int(RUN.get('refused', 0))} refused"
             if int(RUN.get("missing", 0)):
