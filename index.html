@@ -29,7 +29,7 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
   padding:6px 12px;font:600 12px var(--sans);color:var(--grn);text-decoration:none;
   white-space:nowrap;max-width:46vw;min-width:0;overflow:hidden;text-overflow:ellipsis;flex:0 1 auto}
 #ytchip[hidden]{display:none}
-#statepill{font:700 11px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;
+#statepill{font:700 11px/1 var(--mono);letter-spacing:.08em;
   border:1px solid var(--line2);border-radius:99px;padding:6px 10px;color:var(--mut);
   white-space:nowrap;margin-left:auto;flex:0 0 auto}
 #statepill.on{color:var(--grn);border-color:var(--grn)}
@@ -92,7 +92,7 @@ details.adv input[type=text],details.adv input:not([type]){width:100%;background
 .lrow .c1{display:block;grid-column:2;overflow:hidden;color:var(--mut);font-size:12px;
   white-space:pre-line;line-height:1.35;max-height:38px}
 .lrow .c1::first-line{color:var(--tx);font-size:13px}
-.lrow .c3{font:700 10px var(--mono);letter-spacing:.06em;text-transform:uppercase;text-align:right;
+.lrow .c3{font:700 10px var(--mono);letter-spacing:.06em;text-align:right;
   grid-column:3;grid-row:1/span 2}
 .c3.ok{color:var(--grn)} .c3.skip{color:var(--amb)} .c3.deny{color:var(--red)} .c3.wait{color:var(--pend)}
 #zerostate{position:absolute;inset:0;display:grid;place-items:center;padding:24px;
@@ -148,7 +148,7 @@ details.adv input[type=text],details.adv input:not([type]){width:100%;background
 <header class="topbar">
   <span class="brand" aria-hidden="true">Y</span>
   <a id="ytchip" hidden href="" target="_blank" rel="noopener"></a>
-  <span id="statepill" role="status">idle</span>
+  <span id="statepill" role="status">Idle</span>
   <button id="newbtn" type="button" hidden disabled>New transfer</button>
 </header>
 <div class="deck">
@@ -186,7 +186,7 @@ details.adv input[type=text],details.adv input:not([type]){width:100%;background
   </section>
 </div>
 <footer class="actionbar">
-  <span id="phaseline">idle — press Ctrl+Enter to start.</span>
+  <span id="phaseline">Idle — press Ctrl+Enter to start.</span>
   <span class="keys"><kbd>Ctrl K</kbd> palette · <kbd>Ctrl Enter</kbd> start · <kbd>Esc</kbd> stop · <kbd>1–5</kbd> filter · <kbd>/</kbd> url</span>
   <span class="pair"><button class="go ghost" id="stopbtn" type="button" disabled>Stop</button><button class="go" id="startbtn" type="button">Start transfer</button></span>
 </footer>
@@ -210,8 +210,9 @@ const ledger=$("ledger"),pad=$("pad"),zero=$("zerostate"),phaseEl=$("phaseline")
 const startB=$("startbtn"),stopB=$("stopbtn"),pname=$("pname");
 const ROWH=50, POLLMS=700;
 const LIVE=new Set(["spotify","search","create","append","verify"]);
-const HUMAN={idle:"idle",spotify:"reading",search:"reading",create:"creating",append:"adding",verify:"reconciling",done:"done",failed:"stopped",aborted:"stopped"};
+const HUMAN={idle:"Idle",spotify:"Reading playlist",search:"Reading playlist",create:"Creating playlist",append:"Adding",verify:"Reconciling",done:"Done",failed:"Stopped",aborted:"Stopped"};
 const human=p=>HUMAN[p]||p;
+const DISP={added:"Added",skipped:"Skipped",refused:"Refused",pending:"Pending"};
 const bucketsOf=r=>{const s=r.state;
   if(s==="landed")return"added"; if(s==="skipped")return"skipped";
   if(s==="refused"||s==="missing")return"refused"; return"pending";};
@@ -263,6 +264,7 @@ function factsStr(){
   while(S.hist.length&&now-S.hist[0].t>60000)S.hist.shift();
   if(S.hist.length>240)S.hist.splice(0,S.hist.length-240);
   const e=elapsedMs();
+  if(S.phase==="done"||S.phase==="failed"||S.phase==="aborted")return`finished in ${mmss(e)}`;
   if(e<3000||S.hist.length<2)return`${mmss(e)} elapsed · —/min · ~— left`;
   const first=S.hist[0], dt=(now-first.t)/60000;
   if(dt<=0)return`${mmss(e)} elapsed · —/min · ~— left`;
@@ -274,18 +276,18 @@ function factsStr(){
   return`${mmss(e)} elapsed · ${Math.round(rate)}/min · ~${mmss(left)} left`;}
 function liveLabel(){const dec=S.declared||S.total||0, a=landedNow();
   switch(S.phase){
-    case"spotify":return`reading — fetching declared tracks, no rows yet…`;
-    case"search":return`reading — ${S.matched||0} of ${dec} matched`;
-    case"create":return`creating — playlist shell live · ${a} of ${dec} on the playlist`;
-    case"append":return`adding — ${a} of ${dec} on the playlist`;
-    case"verify":return`reconciling — ${a} of ${dec} on the playlist`;
-    case"done":return S.summary||`done — ${a} of ${dec} on the playlist`;
-    case"failed":return`stopped: ${S.error||"unknown"}`;
-    case"aborted":return`stopped at ${a}/${dec||"–"} — partial ledger kept · press Ctrl+Enter to restart.`;
+    case"spotify":return`Reading playlist — fetching declared tracks, no rows yet…`;
+    case"search":return`Reading playlist — ${S.matched||0} of ${dec} matched`;
+    case"create":return`Creating playlist — playlist shell live · ${a} of ${dec} on the playlist`;
+    case"append":return`Adding — ${a} of ${dec} on the playlist`;
+    case"verify":return`Reconciling — ${a} of ${dec} on the playlist`;
+    case"done":return S.summary||`Done — ${a} of ${dec} on the playlist`;
+    case"failed":return`Stopped: ${S.error||"unknown"}`;
+    case"aborted":return`Stopped at ${a}/${dec||"–"} — partial ledger kept · press Ctrl+Enter to restart.`;
     default:return human(S.phase);}}
 function paintFacts(){
   if(S.pin){phaseEl.textContent=S.pin;return;}
-  if(S.phase==="idle"){phaseEl.textContent="idle — press Ctrl+Enter to start.";return;}
+  if(S.phase==="idle"){phaseEl.textContent="Idle — press Ctrl+Enter to start.";return;}
   phaseEl.textContent=`${liveLabel()} · ${factsStr()}`;return;}
 function paintChips(){const t=tally();
   const dec=S.declared||S.total||0, n=dec,labels={all:n,added:t.a,skipped:t.s,refused:t.r,pending:t.p};
@@ -296,11 +298,16 @@ function filtered(){const all=[...S.rows.values()].sort((x,y)=>x.i-y.i);
   if(!all.length)return[];
   if(S.filter==="all")return all;
   return all.filter(r=>bucketsOf(r)===S.filter);}
+/* Pin when the user scrolls up: follow the active row only while the user is at
+   or near the bottom; a scrolled-up position is kept across polls, and
+   following resumes when they return to the bottom. */
+function nearBottom(){try{const gap=ledger.scrollHeight-(ledger.scrollTop+ledger.clientHeight);
+  return gap<ROWH*2+8;}catch(e){return true;}}
 function render(){
   paintNewBtn();
   const list=filtered(),t=tally();
-  // follow the active row while running (filter all only; idle preserves scroll)
-  if(LIVE.has(S.phase)&&S.filter==="all"&&list.length){
+  // follow the active row while running (filter all only, user at bottom; scrolled-up stays pinned)
+  if(LIVE.has(S.phase)&&S.filter==="all"&&list.length&&nearBottom()){
     let act=-1;
     for(let k=0;k<list.length;k++){const st=list[k].state;
       if(st==="appending"||st==="landed")act=k;}
@@ -335,7 +342,7 @@ function render(){
       if(rsn){c.textContent=line1.slice(0,52)+"\n"+rsn.slice(0,64);
         c.title=line1+"\n"+rsn;d.title=rsn;}
       else{c.textContent=line1.slice(0,52);c.title=line1;}
-      const s=document.createElement("span");s.className="c3 "+clsOf(b);s.textContent=b;
+      const s=document.createElement("span");s.className="c3 "+clsOf(b);s.textContent=DISP[b]||b;
       d.append(a,c,s);frag.appendChild(d);}
     pad.appendChild(frag);
   }

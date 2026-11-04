@@ -1671,7 +1671,7 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                 row["row_seq"] = RUN["seq"]
                 RUN["updated_at"] = time.time()
         def _on_one(idx, st):
-            ok = "SUCCEEDED" in (st or "")
+            ok = "SUCCEEDED" in (st or "").upper()
             with _RUN_LOCK:
                 if RUN.get("id") != run_id:
                     return
