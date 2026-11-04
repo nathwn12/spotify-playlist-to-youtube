@@ -491,6 +491,7 @@ async function runCmd(cmd){closePal();
       `sp2yt: ${t.a}/${dec} added, ${t.s} skipped, ${t.r} refused`);}catch(e){}}
   else if(cmd==="top"){S._prog++;ledger.scrollTop=0;noteScroll();S._prog--;}
   else if(cmd==="bottom"){S._prog++;ledger.scrollTop=1e9;noteScroll();S._prog--;}
+}
 palin.addEventListener("input",()=>{const q=palin.value.toLowerCase();
   items=CMDS.filter(c=>c[0].toLowerCase().includes(q));sel=0;drawPal();});
 palin.addEventListener("keydown",e=>{
