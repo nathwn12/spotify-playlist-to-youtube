@@ -3,7 +3,7 @@
 Spotify: scrapes public embed __NEXT_DATA__ (optional user Cookie forwarded).
 YTM: InnerTube WEB_REMIX + user-supplied Cookie (SAPISIDHASH derived server-side).
 """
-import json, re, sys, time, base64, hashlib, hmac, struct, shutil, sqlite3, subprocess, tempfile, threading, urllib.request, urllib.parse, webbrowser
+import json, re, sys, time, base64, hashlib, hmac, struct, shutil, sqlite3, subprocess, tempfile, threading, unicodedata, urllib.request, urllib.parse, webbrowser
 import ctypes
 from ctypes import wintypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -50,6 +50,7 @@ RUN = {
     "kind": "",
     "declared": 0,
     "summary": "",
+    "playlist_count": 0,
 }
 
 def _run_touch_locked():
@@ -108,12 +109,46 @@ def run_begin(spotify_id="", title=""):
         RUN["missing"] = 0
         RUN["declared"] = 0
         RUN["summary"] = ""
+        RUN["playlist_count"] = 0
         RUN["rows"] = []
         RUN["error"] = ""
         RUN["hint"] = ""
         RUN["kind"] = ""
         RUN["seq"] += 1
         return rid
+
+def run_reset() -> bool:
+    """Clear a finished run so a reload stays idle. Refuses while live.
+    Never touches created.json, YTM playlists, or settings."""
+    with _RUN_LOCK:
+        if RUN.get("phase") in ("spotify", "search", "create", "append", "verify"):
+            return False
+        RUN["id"] = ""
+        RUN["phase"] = "idle"
+        RUN["started_at"] = 0.0
+        RUN["updated_at"] = time.time()
+        RUN["spotify_id"] = ""
+        RUN["title"] = ""
+        RUN["playlist_id"] = ""
+        RUN["url"] = ""
+        RUN["created"] = False
+        RUN["existing"] = False
+        RUN["total"] = 0
+        RUN["matched"] = 0
+        RUN["sent"] = 0
+        RUN["landed"] = 0
+        RUN["refused"] = 0
+        RUN["skipped"] = 0
+        RUN["missing"] = 0
+        RUN["declared"] = 0
+        RUN["summary"] = ""
+        RUN["playlist_count"] = 0
+        RUN["rows"] = []
+        RUN["error"] = ""
+        RUN["hint"] = ""
+        RUN["kind"] = ""
+        RUN["seq"] += 1
+        return True
 VAULTF = os.path.join(STATE, "cookie_vault.json")
 WATCHF = os.path.join(STATE, "cookie_watch.json")
 
@@ -553,18 +588,6 @@ def mrl_video_id(mrl: dict) -> str:
     mm = re.search(r'"videoId":\s*"([A-Za-z0-9_-]{11})"', json.dumps(mrl))
     return mm.group(1) if mm else ""
 
-def mrl_texts(mrl: dict):
-    """flexColumns today: [title, type, plays]. Returns (title, type). No durations in search."""
-    flex = mrl.get("flexColumns", [])
-
-    def col(i):
-        try:
-            return flex[i]["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"][0]["text"]
-        except Exception:
-            return ""
-
-    return col(0), col(1)
-
 _TRANSPORT_HINTS = ("timed out", "timeout", "urlerror", "connection", "reset by peer",
                      "temporary failure", "gaierror", "unreachable", "dns",
                      "429", "500", "502", "503", "504")
@@ -575,9 +598,151 @@ def _is_transport(err: Exception) -> bool:
     s = f"{type(err).__name__} {getattr(err, 'code', '')} {err}".lower()
     return any(h in s for h in _TRANSPORT_HINTS)
 
-def yt_search(query: str):
-    """One search. Transport errors retry (bounded, same query), then raise; an
-    ambiguous Song tie raises instead of guessing — callers turn it into a skip with reason."""
+def mrl_parts(mrl: dict):
+    """(title, subtitle, duration, type). subtitle = artist/type/duration blob."""
+    flex = mrl.get("flexColumns", []) or []
+
+    def col_full(i):
+        try:
+            runs = flex[i]["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"] or []
+            return "".join((r or {}).get("text", "") for r in runs if isinstance(r, dict))
+        except Exception:
+            return ""
+
+    title = col_full(0).strip()
+    sub = col_full(1).strip()
+    extra = " ".join(col_full(i) for i in range(2, len(flex))).strip()
+    fixed_texts = []
+    for fc in (mrl.get("fixedColumns", []) or []):
+        try:
+            runs = fc["musicResponsiveListItemFixedColumnRenderer"]["text"]["runs"] or []
+            fixed_texts.append("".join((r or {}).get("text", "") for r in runs if isinstance(r, dict)))
+        except Exception:
+            continue
+    fixed = " ".join(fixed_texts).strip()
+    typ = sub.split("\u2022")[0].strip() if sub else ""
+    m = re.search(r"\b(?:\d+:)?\d{1,2}:\d{2}\b", (fixed + " " + sub + " " + extra).strip())
+    return title, sub, (m.group(0) if m else ""), typ
+
+def mrl_texts(mrl: dict):
+    """Compat: (title, type)."""
+    t, _sub, _dur, typ = mrl_parts(mrl)
+    return t, typ
+
+def _norm_text(s: str) -> str:
+    s = (s or "").lower()
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
+    s = re.sub(r"[\(\[].*?[\)\]]", " ", s)
+    s = re.sub(r"\b(?:feat\.?|ft\.?|featuring)\b.*$", " ", s)
+    for pat in (r"\bremaster\w*\b.*$", r"\bofficial\b.*$", r"\blyric\w*\b.*$",
+                r"\bsped\s*up\b.*$", r"\bslowed\b.*$", r"\baudio\b.*$",
+                r"\bvisualizer\b.*$"):
+        s = re.sub(pat, " ", s)
+    s = re.sub(r"[^a-z0-9\s]", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+def _title_score(want_title: str, cand_title: str) -> float:
+    wn = _norm_text(want_title)
+    cn = _norm_text(cand_title)
+    wt, ct = wn.split(), cn.split()
+    if not wt or not ct:
+        return 0.0
+    sw, sc = set(wt), set(ct)
+    j = len(sw & sc) / len(sw | sc) if (sw | sc) else 0.0
+    bonus = 0.2 if (wn and cn and (wn in cn or cn in wn)) else 0.0
+    return min(1.0, j + bonus)
+
+def _artist_score(want_artist: str, cand_sub: str) -> float:
+    wa = _norm_text(want_artist).split()
+    ca = _norm_text(cand_sub).split()
+    if not wa or not ca:
+        return 0.0
+    swa = set(wa)
+    return len(swa & set(ca)) / len(swa)
+
+def _parse_dur_s(s: str):
+    m = re.search(r"\b(?:(\d+):)?(\d{1,2}):(\d{2})\b", (s or "").strip())
+    if not m:
+        return None
+    h, mn, se = m.groups()
+    try:
+        return (int(h or 0) * 3600 + int(mn) * 60 + int(se))
+    except Exception:
+        return None
+
+def _duration_score(want_ms: int, cand_dur: str):
+    if not want_ms or not cand_dur:
+        return None
+    cs = _parse_dur_s(cand_dur)
+    if cs is None:
+        return None
+    diff = abs(cs * 1000 - int(want_ms)) / 1000.0
+    if diff <= 3:
+        return 1.0
+    if diff <= 8:
+        return 0.5
+    return 0.0
+
+def _combined(t: float, a: float, d):
+    if d is None:
+        return 0.7 * t + 0.3 * a
+    return 0.55 * t + 0.30 * a + 0.15 * d
+
+def _score_candidates(want_title: str, want_artist: str, want_ms: int, cands: list) -> list:
+    out = []
+    for c in cands or []:
+        t = _title_score(want_title, c.get("title", ""))
+        a = _artist_score(want_artist, c.get("artist", ""))
+        d = _duration_score(want_ms, c.get("duration", ""))
+        out.append({**c, "t": round(t, 3), "a": round(a, 3),
+                    "d": (None if d is None else round(d, 3)),
+                    "score": round(_combined(t, a, d), 3)})
+    out.sort(key=lambda x: -x["score"])
+    return out
+
+def _pick_best(query: str, want_title: str, want_artist: str, want_ms: int, cands: list) -> dict:
+    scored = _score_candidates(want_title, want_artist, want_ms, cands)
+    scored = [c for c in scored if c.get("title")]
+    if not scored:
+        raise RuntimeError("no ytm result for: " + query)
+    best = scored[0]
+    if best["score"] >= 0.85:
+        return best
+    if best["score"] >= 0.60 and (len(scored) == 1 or (best["score"] - scored[1]["score"]) >= 0.08):
+        return best
+    second = scored[1]["score"] if len(scored) > 1 else -1.0
+    raise RuntimeError(
+        f"no confident match (best {best['score']:.2f}: '{best.get('title', '')}' | "
+        f"'{best.get('artist', '')}' [{best.get('videoId', '')}], "
+        f"runner-up {second:.2f}) for: " + query)
+
+def _candidates_from_search_json(j: dict) -> list:
+    try:
+        sections = j["contents"]["tabbedSearchResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"]
+    except Exception:
+        return []
+    cands = []
+    for sec in sections or []:
+        items = sec.get("musicShelfRenderer", {}).get("contents", [])
+        if not items and "itemSectionRenderer" in sec:
+            items = sec["itemSectionRenderer"].get("contents", [])
+        for item in items or []:
+            mrl = (item or {}).get("musicResponsiveListItemRenderer", {})
+            if not mrl:
+                continue
+            pid = mrl_video_id(mrl)
+            if not pid:
+                continue
+            title, sub, dur, typ = mrl_parts(mrl)
+            cands.append({"videoId": pid, "title": title or "", "artist": sub or "",
+                          "duration": dur or "", "type": typ or ""})
+    return cands
+
+def yt_search(query: str, title: str = "", artist: str = "", duration_ms: int = 0):
+    """Confident match. Raises with best-candidate + score when nothing clears the bar."""
+    want_title = (title or query or "").strip()
+    want_artist = (artist or "").strip()
+    want_ms = int(duration_ms or 0)
     body = json.dumps({"context": {"client": CLIENT}, "query": query,
                        "params": "EgWKAQIIAWoQEAMQBBAJEAkQBRAK"}).encode()
     last = None
@@ -596,44 +761,10 @@ def yt_search(query: str):
             time.sleep(1.0 + attempt)
     else:
         raise last
-    j = json.loads(r)
-    try:
-        sections = j["contents"]["tabbedSearchResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"]
-        cands = []
-        for sec in sections:
-            items = sec.get("musicShelfRenderer", {}).get("contents", [])
-            if not items and "itemSectionRenderer" in sec:
-                items = sec["itemSectionRenderer"].get("contents", [])
-            for item in items:
-                mrl = item.get("musicResponsiveListItemRenderer", {})
-                if not mrl:
-                    continue
-                pid = mrl_video_id(mrl)
-                if not pid:
-                    continue
-                title, typ = mrl_texts(mrl)
-                cands.append({"videoId": pid, "title": title, "type": typ})
-    except Exception:
-        pass
-    want_q = query
-    want = set(re.findall(r"[a-z0-9]{3,}", query.lower()))
-    scored = []
-    for c in cands:
-        if c["type"] == "Song" and c["title"]:
-            scored.append((len(set(re.findall(r"[a-z0-9]{3,}", c["title"].lower())) & want), c))
-    scored.sort(key=lambda x: -x[0])
-    if (len(scored) >= 2 and scored[0][0] > 0 and scored[0][0] == scored[1][0]
-            and scored[0][1]["videoId"] != scored[1][1]["videoId"]):
-        raise RuntimeError(f"ambiguous match ({scored[0][0]}-word tie, {len(scored)} candidates) for: " + query)
-    for c in cands:  # Song rows whose title overlaps the query
-        if c["type"] == "Song" and c["title"] and title_overlap(want_q, c["title"]):
-            c.update({"artist": "", "duration": "", "query": query})
-            return c
-    for c in cands:  # any titled overlap (video etc.)
-        if c["title"] and title_overlap(want_q, c["title"]):
-            c.update({"artist": "", "duration": "", "query": query})
-            return c
-    raise RuntimeError("no ytm result for: " + query)
+    cands = _candidates_from_search_json(json.loads(r))
+    best = _pick_best(query, want_title, want_artist, want_ms, cands)
+    best.update({"query": query})
+    return best
 
 def title_overlap(a: str, b: str) -> bool:
     wa = set(re.findall(r"[a-z0-9]{3,}", (a or "").lower()))
@@ -641,16 +772,16 @@ def title_overlap(a: str, b: str) -> bool:
     return bool(wa & wb)
 
 def yt_match(title: str, artist: str = "", duration_ms: int = 0) -> dict:
-    """One song, isolated. Query variants in order; search ranks Song+overlap first.
+    """One song, isolated. Up to three query variants; first confident match wins.
     Never raises: no match -> videoId None (skip), never a batch failure."""
     title, artist = (title or "").strip(), (artist or "").strip()
     want_q = f"{title} {artist}".strip()
     last_err = ""
     for qi, q in enumerate([want_q, title, f"{artist} - {title}".strip()]):
-        if not q:
+        if not q or qi >= 3:
             continue
         try:
-            r = yt_search(q)
+            r = yt_search(q, title=title, artist=artist, duration_ms=int(duration_ms or 0))
         except Exception as e:
             last_err = f"{type(e).__name__}: {e}"
             continue
@@ -659,16 +790,15 @@ def yt_match(title: str, artist: str = "", duration_ms: int = 0) -> dict:
             r["via"] = q
             r["alt"] = qi > 0
             return {**{"ok": True}, **r}
-    if "ambiguous match" in last_err:
-        skip = last_err[:160]
-    else:
-        skip = "no match on any variant" + (f" ({last_err})" if last_err else "")
+    skip = (last_err[:220] if last_err else "no match on any variant")
+    if "no confident match" not in skip and "no ytm result" not in skip:
+        skip = "no match on any variant" + (f" ({skip})" if skip else "")
     return {"ok": True, "query": want_q, "videoId": None,
-            "title": "", "duration": "", "skipped": skip}
+            "title": "", "duration": "", "skipped": skip[:220]}
 
 def yt_search_safe(query: str):
     try:
-        r = yt_search(query)
+        r = yt_search(query, title=query)
         return {"ok": True, **r}
     except Exception as e:
         return {"ok": False, "query": query, "error": f"{type(e).__name__}: {e}"}
@@ -836,10 +966,8 @@ def yt_add_one(plid: str, vid: str, yt_cookie: str) -> str:
 def _ledger(video_ids: list, entries, attempts: dict) -> list:
     """One outcome per requested copy, in send order. A copy counts as landed while the
     playlist still holds an unclaimed entry for that videoId — 4 copies need 4 entries.
-    Honest outcomes: only an explicit YTM STATUS_FAILED is 'rejected' (YTM said so);
-    STATUS_SUCCEEDED-but-absent and transport errors are 'missing' (asked, not on the
-    playlist), with the raw status kept verbatim — no line claims a refusal that did
-    not happen."""
+    STATUS_SUCCEEDED is landed immediately (the append was accepted) and never renders
+    as a refusal reason; only an explicit YTM STATUS_FAILED is 'rejected'."""
     left = {}
     for v in entries or []:
         left[v] = left.get(v, 0) + 1
@@ -851,7 +979,9 @@ def _ledger(video_ids: list, entries, attempts: dict) -> list:
         else:
             st = (attempts.get(i, "") or "")
             su = st.upper()
-            if "FAILED" in su:
+            if "SUCCEEDED" in su:
+                out.append({"i": i + 1, "videoId": v, "outcome": "landed", "status": ""})
+            elif "FAILED" in su:
                 out.append({"i": i + 1, "videoId": v,
                             "outcome": "rejected", "status": st[:80]})
             elif st:
@@ -884,11 +1014,19 @@ def _persist_final(spotify_id, plid, url, title, expected, complete):
     except Exception:
         pass
 
-def _read_back_retry(plid, yt_cookie):
-    first = yt_playlist_entries(plid, yt_cookie)
-    if first is None:
-        first = yt_playlist_entries(plid, yt_cookie)
-    return first
+def _read_back_retry(plid, yt_cookie, tries: int = 3):
+    last = None
+    for a in range(max(1, tries)):
+        try:
+            entries = yt_playlist_entries(plid, yt_cookie)
+        except Exception:
+            entries = None
+        if entries is not None:
+            return entries
+        last = entries
+        if a < tries - 1:
+            time.sleep(1.5)
+    return last
 
 def _append_todo(plid, video_ids, todo, yt_cookie, hooks=None):
     attempts = {}
@@ -1000,7 +1138,8 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
                            f"({rejected} refused by YTM, {missing} missing — see server.log add lines)")
     return {"playlistId": plid, "url": url,
             "added": added, "sent": len(video_ids), "rejected": rejected,
-            "missing": missing, "repeats": repeats, "ledger": ledger}
+            "missing": missing, "repeats": repeats, "ledger": ledger,
+            "playlist_count": len(entries) if isinstance(entries, list) else 0}
 
 def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None):
     on_created = (hooks or {}).get("on_created")
@@ -1052,7 +1191,8 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None)
                            f"({rejected} refused by YTM, {missing} missing — see server.log add lines)")
     return {"playlistId": plid, "url": url,
             "added": added, "sent": len(video_ids), "rejected": rejected,
-            "missing": missing, "repeats": repeats, "ledger": ledger, "resumed": True}
+            "missing": missing, "repeats": repeats, "ledger": ledger, "resumed": True,
+            "playlist_count": len(entries2) if isinstance(entries2, list) else 0}
 
 def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PRIVATE",
                            spotify_id="", hooks=None):
@@ -1080,13 +1220,15 @@ def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PR
                         blog("create", f"exists title={title} url={rec.get('url')} tracks={added}")
                     return {"playlistId": rec["yt_id"], "url": rec.get("url", ""),
                             "added": added, "sent": len(ids), "rejected": 0, "missing": missing,
-                            "repeats": len(ids) - len(set(ids)), "existing": True, "ledger": ledger}
+                            "repeats": len(ids) - len(set(ids)), "existing": True, "ledger": ledger,
+                            "playlist_count": len(entries) if isinstance(entries, list) else 0}
                 if entries is None:
                     blog("create", f"exists-unreadable title={title} url={rec.get('url')} — returning record without new create")
                     return {"playlistId": rec["yt_id"], "url": rec.get("url", ""),
                             "added": rec.get("expected", len(ids)), "sent": len(ids),
                             "rejected": 0, "missing": 0,
-                            "repeats": len(ids) - len(set(ids)), "existing": True, "ledger": []}
+                            "repeats": len(ids) - len(set(ids)), "existing": True, "ledger": [],
+                            "playlist_count": 0}
             else:
                 return _resume_incomplete(rec, yt_cookie, title, ids, spotify_id, hooks)
     r = _create_new(yt_cookie, title, description, ids, privacy, spotify_id, hooks)
@@ -1276,12 +1418,13 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                     row = RUN["rows"][rk]
                 except Exception:
                     return
-                row["status"] = (st or "")[:80]
                 if ok:
+                    row["status"] = ""
                     if row.get("state") != "landed":
                         row["state"] = "landed"
                         RUN["landed"] = int(RUN.get("landed", 0)) + 1
                 else:
+                    row["status"] = (st or "")[:80]
                     if row.get("state") != "landed":
                         row["state"] = "appending"
                 RUN["seq"] += 1
@@ -1395,7 +1538,7 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                           or "urlerror" in s or "connection" in s or " 429" in s or "429 " in s
                           or "503" in s or "temporary failure" in s or "reset by peer" in s):
                         b = "transport"
-                    elif "no match" in s:
+                    elif "no match" in s or "confident" in s or "no ytm result" in s:
                         b = "no match"
                     else:
                         b = "other"
@@ -1403,7 +1546,9 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
             skipped_n = int(RUN.get("skipped", 0))
             parts = ", ".join(f"{buckets[k]} {k}" for k in sorted(buckets) if buckets[k]) if skipped_n else "none"
             dec = int(RUN.get("declared", 0) or RUN.get("total", 0))
-            summary = f"done — {int(RUN.get('landed', 0))} of {dec} on the playlist, {skipped_n} skipped ({parts})"
+            n_pl = int(res.get("playlist_count", 0) or 0)
+            RUN["playlist_count"] = n_pl
+            summary = f"done — {int(RUN.get('landed', 0))} of {dec} on the playlist (playlist holds {n_pl}), {skipped_n} skipped ({parts})"
             if int(RUN.get("refused", 0)):
                 summary += f", {int(RUN.get('refused', 0))} refused"
             if int(RUN.get("missing", 0)):
@@ -1512,6 +1657,7 @@ class H(BaseHTTPRequestHandler):
                             "refused": int(snap.get("refused", 0) or 0),
                             "skipped": int(snap.get("skipped", 0) or 0),
                             "missing": int(snap.get("missing", 0) or 0),
+                            "playlist_count": int(snap.get("playlist_count", 0) or 0),
                             "rows": rows,
                             "error": snap.get("error", ""),
                             "hint": snap.get("hint", ""),
@@ -1543,7 +1689,7 @@ class H(BaseHTTPRequestHandler):
                 q = str(payload.get("query", ""))[:300]
                 if not q.strip():
                     return self.send_json({"ok": False, "error": "empty query"}, 400)
-                r = yt_search(q)
+                r = yt_search(q, title=q)
                 return self.send_json({"ok": True, **r})
             if self.path == "/api/search-batch":
                 items = payload.get("tracks") or payload.get("queries", [])
@@ -1594,6 +1740,12 @@ class H(BaseHTTPRequestHandler):
                 yt = check_yt_cookie(payload.get("yt_cookie", ""))
                 blog("check", f"spotify={sp['ok']} ytm={yt['ok']}")
                 return self.send_json({"ok": True, "spotify": sp, "ytm": yt})
+            if self.path == "/api/reset":
+                if run_is_live():
+                    return self.send_json({"ok": False, "error": "a transfer is already running"}, 409)
+                run_reset()
+                blog("reset", "finished run cleared; created.json kept")
+                return self.send_json({"ok": True})
             if self.path == "/api/vault":
                 v = vault_load()
                 return self.send_json({"ok": True, "has_sp": bool(v["sp_cookie"]),

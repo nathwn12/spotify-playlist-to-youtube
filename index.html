@@ -33,6 +33,11 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
   border:1px solid var(--line2);border-radius:99px;padding:6px 10px;color:var(--mut);
   white-space:nowrap;margin-left:auto;flex:0 0 auto}
 #statepill.on{color:var(--grn);border-color:var(--grn)}
+#newbtn{font:600 11px var(--sans);letter-spacing:.04em;background:transparent;color:var(--mut);
+  border:1px solid var(--line2);border-radius:99px;padding:6px 12px;cursor:pointer;
+  white-space:nowrap;flex:0 0 auto}
+#newbtn[hidden]{display:none}
+#newbtn:disabled{opacity:.45;cursor:default}
 /* body: 280px rail + fluid ledger; strip below 1024px */
 .deck{display:grid;grid-template-columns:280px minmax(0,1fr);min-height:0}
 .side{border-right:1px solid var(--line);background:var(--panel);padding:14px;
@@ -144,6 +149,7 @@ details.adv input[type=text],details.adv input:not([type]){width:100%;background
   <span class="brand" aria-hidden="true">Y</span>
   <a id="ytchip" hidden href="" target="_blank" rel="noopener"></a>
   <span id="statepill" role="status">idle</span>
+  <button id="newbtn" type="button" hidden disabled>New transfer</button>
 </header>
 <div class="deck">
   <aside class="side" aria-label="Source and options">
@@ -199,7 +205,7 @@ details.adv input[type=text],details.adv input:not([type]){width:100%;background
    row states: queued|matched|appending|landed|skipped|refused|missing
    GET/POST /api/settings {privacy} (server-persisted; only persisted field) */
 const $=id=>document.getElementById(id);
-const chip=$("ytchip"),pill=$("statepill"),big=$("bignum"),brk=$("breakdown"),rule=$("rule");
+const chip=$("ytchip"),pill=$("statepill"),newbtn=$("newbtn"),big=$("bignum"),brk=$("breakdown"),rule=$("rule");
 const ledger=$("ledger"),pad=$("pad"),zero=$("zerostate"),phaseEl=$("phaseline");
 const startB=$("startbtn"),stopB=$("stopbtn"),pname=$("pname");
 const ROWH=50, POLLMS=700;
@@ -219,7 +225,10 @@ const mmss=ms=>{const s=Math.max(0,Math.round(ms/1000));
 function elapsedMs(){if(S.phase==="idle")return 0;
   if(window.__t0srv)return Math.max(0,Date.now()-window.__t0srv);return Date.now()-S.localT0;}
 function setPhase(p){S.phase=p;pill.textContent=human(p);
-  pill.classList.toggle("on",LIVE.has(p)||p==="created");}
+  pill.classList.toggle("on",LIVE.has(p)||p==="created");paintNewBtn();}
+function paintNewBtn(){
+  const show=(S.phase==="done"||S.phase==="failed"||S.phase==="aborted")&&!LIVE.has(S.phase);
+  newbtn.hidden=!show; newbtn.disabled=!show||LIVE.has(S.phase);}
 function setRunning(on){
   startB.disabled=on; stopB.disabled=!on;
   startB.classList.toggle("ghost",on); stopB.classList.toggle("ghost",!on);
@@ -288,6 +297,7 @@ function filtered(){const all=[...S.rows.values()].sort((x,y)=>x.i-y.i);
   if(S.filter==="all")return all;
   return all.filter(r=>bucketsOf(r)===S.filter);}
 function render(){
+  paintNewBtn();
   const list=filtered(),t=tally();
   // follow the active row while running (filter all only; idle preserves scroll)
   if(LIVE.has(S.phase)&&S.filter==="all"&&list.length){
@@ -345,7 +355,7 @@ function mergeRun(d,full){
   if(d.seq!=null)S.since=d.seq;
   for(const r of(d.rows||[]))S.rows.set(r.i,r);
   for(const k of["total","declared","matched","sent","landed","refused","skipped",
-    "missing","attempted","created","existing","url","title","summary",
+    "missing","attempted","created","existing","url","title","summary","playlist_count",
     "error","hint","kind"]){
     if(d[k]!==undefined)S[k]=d[k];}
   if(d.phase)S.phase=d.phase;
@@ -423,10 +433,26 @@ async function startTransfer(){
 }
 function abortRun(){if(!LIVE.has(S.phase))return;
   unpoll();S.aborted=true;S.pin=null;setRunning(false);setPhase("aborted");render();}
+async function doNewTransfer(){
+  if(LIVE.has(S.phase))return;
+  unpoll();
+  try{await postJSON("/api/reset",{},15000);}catch(e){}
+  S.runId="";S.since=0;S.phase="idle";S.total=0;S.declared=0;S.matched=0;S.sent=0;
+  S.landed=0;S.refused=0;S.skipped=0;S.missing=0;S.attempted=0;S.playlist_count=0;
+  S.created=false;S.existing=false;S.url="";S.title="";S.summary="";
+  S.rows=new Map();S.filter="all";S.fails=0;S.lastOk=Date.now();S.deadNoted=false;
+  S.ceil=0;S.hist=[];S.localT0=0;S.aborted=false;S.pin=null;S.interrupted=null;
+  window.__t0srv=0;
+  $("srcurl").value="";pname.textContent="Not resolved yet — press Start.";pname.dataset.custom="";
+  setRunning(false);setPhase("idle");paintChip();ledger.scrollTop=0;render();
+  $("srcurl").focus();
+}
+newbtn.addEventListener("click",doNewTransfer);
 startB.addEventListener("click",startTransfer);
 stopB.addEventListener("click",abortRun);
-/* command palette: 10 commands, options rendered only while open */
+/* command palette: 11 commands, options rendered only while open */
 const CMDS=[["Start transfer","Ctrl+Enter","start"],["Stop run","Esc","stop"],
+  ["Clear and start a new transfer","Ctrl+Shift+N","new"],
   ["Filter: all","1","f-all"],["Filter: added","2","f-added"],
   ["Filter: skipped","3","f-skipped"],["Filter: refused","4","f-refused"],
   ["Filter: pending","5","f-pending"],["Copy summary","Ctrl+C","copy"],
@@ -443,6 +469,7 @@ function drawPal(){palbox.querySelectorAll(".cmdopt").forEach(o=>o.remove());
     palbox.appendChild(b);});}
 async function runCmd(cmd){closePal();
   if(cmd==="start")startTransfer();else if(cmd==="stop")abortRun();
+  else if(cmd==="new")doNewTransfer();
   else if(cmd.startsWith("f-"))setFilter(cmd.slice(2));
   else if(cmd==="copy"){const t=tally(), dec=S.declared||S.total||0;
     try{await navigator.clipboard.writeText(
@@ -461,6 +488,8 @@ document.addEventListener("keydown",e=>{
     pal.classList.contains("show")?closePal():openPal();}
   else if((e.ctrlKey||e.metaKey)&&e.key==="Enter"){e.preventDefault();
     if(pal.classList.contains("show"))closePal();else startTransfer();}
+  else if((e.ctrlKey||e.metaKey)&&e.shiftKey&&(e.key.toLowerCase()==="n")){e.preventDefault();
+    if(pal.classList.contains("show"))closePal();else doNewTransfer();}
   else if(e.key==="Escape"){if(pal.classList.contains("show"))closePal();else abortRun();}
   else if(!inField&&["1","2","3","4","5"].includes(e.key))
     setFilter(["all","added","skipped","refused","pending"][+e.key-1]);
