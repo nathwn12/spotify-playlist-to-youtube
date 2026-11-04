@@ -220,7 +220,8 @@ const clsOf=b=>b==="added"?"ok":b==="skipped"?"skip":b==="refused"?"deny":"wait"
 const S={runId:"",since:0,phase:"idle",total:0,declared:0,landed:0,refused:0,skipped:0,
   missing:0,attempted:0,created:false,existing:false,url:"",title:"",summary:"",
   rows:new Map(),filter:"all",timer:null,fails:0,lastOk:Date.now(),ceil:0,
-  localT0:0,aborted:false,privacy:"PRIVATE",deadNoted:false,hist:[],interrupted:null};
+  localT0:0,aborted:false,privacy:"PRIVATE",deadNoted:false,hist:[],interrupted:null,
+  follow:true,_prog:0};
 const mmss=ms=>{const s=Math.max(0,Math.round(ms/1000));
   return String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");};
 function elapsedMs(){if(S.phase==="idle")return 0;
@@ -298,22 +299,27 @@ function filtered(){const all=[...S.rows.values()].sort((x,y)=>x.i-y.i);
   if(!all.length)return[];
   if(S.filter==="all")return all;
   return all.filter(r=>bucketsOf(r)===S.filter);}
-/* Pin when the user scrolls up: follow the active row only while the user is at
-   or near the bottom; a scrolled-up position is kept across polls, and
-   following resumes when they return to the bottom. */
+/* Pin when the user scrolls up: S.follow records the user's intent at scroll
+   time (sticky across polls). A stateless nearBottom() check at render time
+   goes stale the moment new rows extend scrollHeight: after returning to the
+   bottom, the first growth leaves a gap of N*ROWH and follow never resumes.
+   So the scroll handler latches intent, render follows while S.follow is set,
+   and programmatic scrolls (_prog) never overwrite the latch. */
 function nearBottom(){try{const gap=ledger.scrollHeight-(ledger.scrollTop+ledger.clientHeight);
   return gap<ROWH*2+8;}catch(e){return true;}}
+function noteScroll(){try{S.follow=nearBottom();}catch(e){S.follow=true;}}
 function render(){
   paintNewBtn();
   const list=filtered(),t=tally();
-  // follow the active row while running (filter all only, user at bottom; scrolled-up stays pinned)
-  if(LIVE.has(S.phase)&&S.filter==="all"&&list.length&&nearBottom()){
+  // follow the active row while running (filter all only; pinned when scrolled up)
+  if(LIVE.has(S.phase)&&S.filter==="all"&&list.length&&(S.follow||nearBottom())){
     let act=-1;
     for(let k=0;k<list.length;k++){const st=list[k].state;
       if(st==="appending"||st==="landed")act=k;}
     if(act>=0){
       const vh0=ledger.clientHeight||392, top=act*ROWH, cur=ledger.scrollTop;
-      if(top<cur||top+ROWH>cur+vh0)ledger.scrollTop=Math.max(0,top-Math.floor(vh0/2));
+      if(top<cur||top+ROWH>cur+vh0){const nt=Math.max(0,top-Math.floor(vh0/2));
+        if(nt!==cur){S._prog++;ledger.scrollTop=nt;}}
     }
   }
   paintCounter();paintFacts();
@@ -348,8 +354,10 @@ function render(){
   }
   ledger.scrollTop=st;
 }
-ledger.addEventListener("scroll",()=>requestAnimationFrame(render));
-function setFilter(f){S.filter=f;ledger.scrollTop=0;render();}
+ledger.addEventListener("scroll",()=>{
+  if(S._prog>0){S._prog--;requestAnimationFrame(render);return;}
+  noteScroll();requestAnimationFrame(render);});
+function setFilter(f){S.filter=f;S._prog++;ledger.scrollTop=0;noteScroll();S._prog--;render();}
 document.querySelectorAll(".fbtn").forEach(b=>b.addEventListener("click",()=>setFilter(b.dataset.f)));
 function paintChip(){
   if(S.created&&S.url){chip.hidden=false;chip.href=S.url;
@@ -435,7 +443,7 @@ async function startTransfer(){
   S.aborted=false;S.ceil=0;S.hist=[];window.__t0srv=0;S.localT0=Date.now();
   S.runId=t.run_id;S.created=false;S.url="";S.title="";S.summary="";
   S.total=0;S.declared=0;S.attempted=0;S.landed=0;S.refused=0;S.skipped=0;S.missing=0;
-  paintChip();ledger.scrollTop=0;render();
+  paintChip();S._prog++;ledger.scrollTop=0;S.follow=true;S._prog--;render();
   poll();pollOnce();
 }
 function abortRun(){if(!LIVE.has(S.phase))return;
@@ -451,7 +459,7 @@ async function doNewTransfer(){
   S.ceil=0;S.hist=[];S.localT0=0;S.aborted=false;S.pin=null;S.interrupted=null;
   window.__t0srv=0;
   $("srcurl").value="";pname.textContent="Not resolved yet — press Start.";pname.dataset.custom="";
-  setRunning(false);setPhase("idle");paintChip();ledger.scrollTop=0;render();
+  setRunning(false);setPhase("idle");paintChip();S._prog++;ledger.scrollTop=0;S.follow=true;S._prog--;render();
   $("srcurl").focus();
 }
 newbtn.addEventListener("click",doNewTransfer);
@@ -481,7 +489,8 @@ async function runCmd(cmd){closePal();
   else if(cmd==="copy"){const t=tally(), dec=S.declared||S.total||0;
     try{await navigator.clipboard.writeText(
       `sp2yt: ${t.a}/${dec} added, ${t.s} skipped, ${t.r} refused`);}catch(e){}}
-  else if(cmd==="top")ledger.scrollTop=0;else if(cmd==="bottom")ledger.scrollTop=1e9;}
+  else if(cmd==="top"){S._prog++;ledger.scrollTop=0;noteScroll();S._prog--;}
+  else if(cmd==="bottom"){S._prog++;ledger.scrollTop=1e9;noteScroll();S._prog--;}
 palin.addEventListener("input",()=>{const q=palin.value.toLowerCase();
   items=CMDS.filter(c=>c[0].toLowerCase().includes(q));sel=0;drawPal();});
 palin.addEventListener("keydown",e=>{
