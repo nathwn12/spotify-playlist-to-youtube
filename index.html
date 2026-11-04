@@ -1,266 +1,510 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>sp2yt — keyless spotify→ytmusic (personal use)</title>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="data:,">
+<title>sp2yt — transfer deck</title>
 <style>
+:root{
+  --bg:#0B0D0B; --panel:#111411; --panel2:#0E110E; --line:#232823; --line2:#2E352E;
+  --tx:#EDF2EC; --mut:#A9B7AA; --dim:#7E8A7F;
+  --grn:#3DDC84; --grn-dk:#0E2A1A; --amb:#E3C15C; --red:#F08080; --pend:#93A093;
+  --r:10px; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
 *{box-sizing:border-box}
-body{font-family:"Segoe UI",system-ui,-apple-system,Roboto,sans-serif;max-width:720px;margin:0 auto;padding:32px 20px 0;background:radial-gradient(1200px 400px at 50% -80px,#1f5133 0%,#141417 60%);color:#e8e8ea;line-height:1.45;min-height:100vh}
-h2{margin:0 0 4px;font-size:22px;letter-spacing:.2px}
-h2 .dot{color:#1db954}
-p.sub{color:#a9a9b2;margin:0 0 20px;font-size:14px}
-.card{background:rgba(29,29,34,.96);border:1px solid #2c2c34;border-radius:12px;padding:16px;margin:0 0 14px;box-shadow:0 6px 24px rgba(0,0,0,.35)}
-label{display:block;font-size:13px;font-weight:600;color:#cfcfd8;margin:12px 0 6px}
-label:first-child{margin-top:0}
-.hint{font-weight:400;color:#8e8e98;font-size:12px}
-input[type=text],input:not([type]),textarea,select{width:100%;max-width:100%;padding:9px 10px;margin:0;background:#101014;color:#e8e8ea;border:1px solid #3a3a44;border-radius:7px;font-size:13px}
-textarea{display:block;resize:vertical;min-height:56px;overflow:auto}
-input[type=file]{width:100%;max-width:100%;margin:8px 0 0;padding:0;font-size:12px;color:#a9a9b2;overflow:hidden;text-overflow:ellipsis}
-.row{display:flex;gap:12px}
-.row>div{flex:1;min-width:0}
-.btns{display:flex;gap:10px;margin:14px 0}
-button{flex:1;padding:12px;font-size:15px;font-weight:700;border:0;border-radius:10px;cursor:pointer;transition:transform .06s,filter .15s}
-button:hover{filter:brightness(1.12)}
-button:active{transform:scale(.98)}
-button:disabled{filter:grayscale(.6) brightness(.7);cursor:wait}
-#go{background:linear-gradient(180deg,#23d664,#159a46);color:#fff;box-shadow:0 4px 16px rgba(29,185,84,.35);width:100%}
-#step1{background:#33333b;color:#fff}
-#log{background:#0c0f0c;color:#7dffa8;border:1px solid #2c2c34;border-radius:8px;padding:12px;font:12px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;max-height:160px;overflow-y:auto;overflow-x:hidden;margin:10px 0 0}
-#progrow{display:flex;gap:10px;align-items:center;font-size:13px;font-weight:700;color:#ffd866;margin:0}
-#spin{width:14px;height:14px;flex:0 0 14px;border:2px solid #3a3a44;border-top-color:#1db954;border-radius:50%;display:none}
-#spin.on{display:inline-block;animation:rot .7s linear infinite}
-@keyframes rot{to{transform:rotate(360deg)}}
-#bar{height:10px;background:#101014;border:1px solid #3a3a44;border-radius:6px;overflow:hidden;margin:8px 0 0}
-#fill{height:100%;width:0%;background:#1db954;transition:width .3s}
-#bar.live #fill{background-image:linear-gradient(45deg,rgba(255,255,255,.28) 25%,transparent 25%,transparent 50%,rgba(255,255,255,.28) 50%,rgba(255,255,255,.28) 75%,transparent 75%);background-size:16px 16px;animation:slide .6s linear infinite}
-@keyframes slide{to{background-position:16px 0}}
-#plcard{display:none;margin:10px 0 0;padding:10px 12px;border:1px solid #1db954;border-radius:8px;background:#0e1a12;font-size:13px}
-#plcard.show{display:block}
-#plcard a{color:#1db954;word-break:break-all}
-#rows{list-style:none;margin:10px 0 0;padding:0;max-height:320px;overflow-y:auto;font-size:12px}
-#rows li{display:flex;gap:8px;align-items:baseline;padding:3px 0;border-top:1px solid #222}
-#rows .n{flex:0 0 40px;color:#8e8e98}
-#rows .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#rows .v{flex:0 0 90px;color:#8e8e98;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.chip{flex:0 0 auto;font-size:10px;font-weight:700;padding:1px 7px;border-radius:20px;background:#33333b;color:#cfcfd8}
-.chip.matched{background:#123a22;color:#7dffa8}.chip.landed{background:#123a22;color:#7dffa8}
-.chip.appending{background:#3a2f10;color:#ffd866}.chip.skipped{background:#33333b;color:#a9a9b2}
-.chip.refused{background:#3a1515;color:#ff8a8a}.chip.missing{background:#3a1515;color:#ff8a8a}
-#newbtn{display:none;margin:8px auto 0;padding:6px 14px;font-size:12px;background:#33333b;color:#fff}
-#showing{font-size:11px;color:#8e8e98;margin:6px 0 0}
-details{margin:0 0 14px}
-details summary{cursor:pointer;font-size:13px;font-weight:700;color:#cfcfd8}
-</style></head><body>
-<h2><span class="dot">●</span> sp2yt — 1-click, keyless, cookies are yours</h2>
-<p class="sub">Paste playlist + your cookies. Nothing leaves your machine except direct Spotify / YT Music calls.</p>
-<div class="card">
-<label>Spotify playlist URL</label>
-<input id="sp_url" value="" placeholder="paste playlist link — title fills in">
-<label>Load cookies <span class="hint">(one upload — select both .txt files, auto-sorts Spotify vs YouTube)</span></label>
-<input type="file" id="cookie_files" accept=".txt,text/plain,*/*" multiple>
-<div class="row"><div><label>New YTM playlist title</label><input id="pl_title" value="" placeholder="auto from link"></div>
-<div style="flex:0 0 64px"><label>Cover</label><img id="cover" alt="" style="width:56px;height:56px;border-radius:8px;object-fit:cover;display:none;border:1px solid #3a3a44"></div>
-<div style="flex:0 0 170px"><label>Privacy</label><select id="privacy"><option>PRIVATE</option><option>PUBLIC</option><option>UNLISTED</option></select></div></div>
+html,body{margin:0;padding:0}
+body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px;line-height:1.45;
+  height:100dvh;display:grid;grid-template-rows:auto minmax(0,1fr) auto}
+:focus{outline:none}
+:focus-visible{outline:2px solid var(--grn);outline-offset:2px;border-radius:4px}
+/* top command bar: brand, created-playlist chip, state pill */
+.topbar{display:flex;align-items:center;gap:12px;padding:12px 16px;
+  border-bottom:1px solid var(--line);background:var(--panel2);min-width:0}
+.brand{width:26px;height:26px;border-radius:7px;background:#060706;border:1px solid var(--line2);
+  display:grid;place-items:center;flex:0 0 26px;font:800 14px/1 var(--sans);color:var(--tx);position:relative}
+.brand::after{content:"\25B6";font-size:8px;color:var(--grn);position:absolute;right:2px;top:1px}
+#ytchip{display:flex;align-items:center;gap:8px;border:1px solid var(--grn);border-radius:99px;
+  padding:6px 12px;font:600 12px var(--sans);color:var(--grn);text-decoration:none;
+  white-space:nowrap;max-width:46vw;min-width:0;overflow:hidden;text-overflow:ellipsis;flex:0 1 auto}
+#ytchip[hidden]{display:none}
+#statepill{font:700 11px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;
+  border:1px solid var(--line2);border-radius:99px;padding:6px 10px;color:var(--mut);
+  white-space:nowrap;margin-left:auto;flex:0 0 auto}
+#statepill.on{color:var(--grn);border-color:var(--grn)}
+/* body: 280px rail + fluid ledger; strip below 1024px */
+.deck{display:grid;grid-template-columns:280px minmax(0,1fr);min-height:0}
+.side{border-right:1px solid var(--line);background:var(--panel);padding:14px;
+  display:flex;flex-direction:column;gap:10px;overflow-y:auto;min-height:0}
+.flab{font:700 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+#srcurl{background:#060706;border:1px solid var(--line2);color:var(--tx);border-radius:8px;
+  padding:9px 10px;font-size:13px;font-family:var(--sans);width:100%}
+.pident{display:flex;gap:10px;align-items:center;border:1px solid var(--line);border-radius:8px;
+  padding:10px;background:var(--panel2);min-width:0}
+.pcover{width:44px;height:44px;border-radius:6px;flex:0 0 44px;
+  background:linear-gradient(135deg,#3DDC84 0 25%,#0E2A1A 25% 50%,#E3C15C 50% 75%,#111411 75%);
+  border:1px solid var(--line2)}
+#pname{font:600 12.5px var(--sans);color:var(--tx);min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.privseg{display:flex;border:1px solid var(--line2);border-radius:8px;overflow:hidden}
+.privseg button{flex:1;background:transparent;border:0;color:var(--mut);
+  font:600 12px var(--sans);padding:8px 4px;cursor:pointer}
+.privseg button[aria-pressed="true"]{background:var(--grn-dk);color:var(--grn)}
+details.adv{margin-top:2px}
+details.adv summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--mut)}
+details.adv textarea{width:100%;background:#060706;border:1px solid var(--line2);color:var(--tx);
+  border-radius:8px;padding:8px 10px;font-size:12.5px;font-family:var(--sans);min-height:56px;resize:vertical}
+details.adv input[type=text],details.adv input:not([type]){width:100%;background:#060706;
+  border:1px solid var(--line2);color:var(--tx);border-radius:8px;padding:8px 10px;font-size:12.5px}
+.minirow{display:flex;gap:8px;align-items:center;margin-top:8px}
+.minibtn{flex:0 0 auto;background:transparent;border:1px solid var(--line2);color:var(--tx);
+  border-radius:7px;padding:5px 12px;font:600 12px var(--sans);cursor:pointer}
+#latchstat{font-size:12px;color:var(--dim)}
+#filelist{font-size:12px;color:var(--dim)}
+/* workspace: counter, counts, hairline, filters, virtual ledger */
+.work{display:flex;flex-direction:column;min-height:0;min-width:0;background:var(--panel)}
+.totals{display:flex;align-items:baseline;gap:18px;padding:14px 16px 10px;flex-wrap:wrap}
+#bignum{font:700 34px/1 var(--mono);font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+#bignum::after{content:" / " attr(data-den);font-size:16px;color:var(--mut);font-weight:600}
+#breakdown{font:600 12px/1.4 var(--mono);color:var(--mut);font-variant-numeric:tabular-nums}
+#breakdown b{color:var(--tx)}
+.rule{height:3px;background:#060706;border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+  background-image:linear-gradient(90deg,var(--grn) var(--fill,0%),transparent var(--fill,0%))}
+.rule.live{animation:sweep 1.1s linear infinite}
+@keyframes sweep{0%{--fill:0%}50%{--fill:60%}100%{--fill:0%}}
+.fbar{display:flex;gap:8px;padding:12px 16px;border-bottom:1px solid var(--line);
+  flex-wrap:wrap;align-items:center}
+.fbtn{background:transparent;border:1px solid var(--line2);color:var(--mut);border-radius:99px;
+  padding:6px 12px;font:600 12px var(--sans);cursor:pointer;font-variant-numeric:tabular-nums}
+.fbtn[aria-pressed="true"]{background:var(--grn-dk);color:var(--grn);border-color:var(--grn)}
+#ledger{flex:1;min-height:0;overflow-y:auto;position:relative;background:var(--panel2);
+  padding:0 0 28px}
+#pad{position:relative}
+.lrow{position:absolute;left:0;right:0;display:grid;grid-template-columns:40px minmax(0,1fr) 86px;
+  column-gap:10px;align-items:center;padding:6px 16px;border-bottom:1px solid #161916}
+.lrow .c0{font:600 11px var(--mono);color:var(--dim);font-variant-numeric:tabular-nums;grid-row:1/span 2}
+.lrow .c1{display:block;grid-column:2;overflow:hidden;color:var(--mut);font-size:12px;
+  white-space:pre-line;line-height:1.35;max-height:38px}
+.lrow .c1::first-line{color:var(--tx);font-size:13px}
+.lrow .c3{font:700 10px var(--mono);letter-spacing:.06em;text-transform:uppercase;text-align:right;
+  grid-column:3;grid-row:1/span 2}
+.c3.ok{color:var(--grn)} .c3.skip{color:var(--amb)} .c3.deny{color:var(--red)} .c3.wait{color:var(--pend)}
+#zerostate{position:absolute;inset:0;display:grid;place-items:center;padding:24px;
+  text-align:center;color:var(--mut);font-size:13px}
+#zerostate[hidden]{display:none}
+#zerostate strong{color:var(--tx)}
+/* sticky footer: phase + elapsed/rate/remaining, key hints, Stop/Start pair */
+.actionbar{display:flex;align-items:center;gap:12px;padding:12px 16px;
+  border-top:1px solid var(--line);background:var(--panel);flex-wrap:wrap}
+#phaseline{font:600 12px var(--mono);color:var(--mut);font-variant-numeric:tabular-nums;
+  flex:1 1 auto;min-width:0}
+.keys{font:500 11.5px var(--sans);color:var(--dim);flex:0 1 auto}
+.keys kbd{font:600 10.5px var(--mono);border:1px solid var(--line2);border-radius:5px;
+  padding:1px 6px;color:var(--mut);background:#060706}
+.pair{display:flex;gap:8px;flex:0 0 auto;flex-wrap:nowrap;margin-left:auto}
+.go{background:var(--grn);color:#06110A;border:0;border-radius:8px;padding:9px 16px;
+  font:700 13px var(--sans);cursor:pointer;white-space:nowrap;flex:0 0 auto}
+.go.ghost{background:transparent;color:var(--tx);border:1px solid var(--line2)}
+.go:disabled{opacity:.45;cursor:default}
+#cmdpal{position:fixed;inset:0;display:none;place-items:start center;padding-top:12vh;
+  background:rgba(0,0,0,.55);z-index:20}
+#cmdpal.show{display:grid}
+.palcard{width:min(560px,92vw);background:var(--panel);border:1px solid var(--line2);
+  border-radius:12px;overflow:hidden}
+.palcard input{width:100%;background:transparent;border:0;border-bottom:1px solid var(--line);
+  color:var(--tx);padding:12px 14px;font-size:14px}
+.cmdopt{display:flex;gap:10px;align-items:center;width:100%;text-align:left;background:transparent;
+  border:0;color:var(--tx);padding:10px 14px;font-size:13px;cursor:pointer}
+.cmdopt[aria-selected="true"]{background:var(--grn-dk)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+@media (max-width:1023px){
+  .deck{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
+  .work{min-height:0;min-width:0}
+  .side{flex-direction:row;flex-wrap:wrap;align-items:center;border-right:0;
+    border-bottom:1px solid var(--line);overflow:visible}
+  .side .flab{flex:0 0 auto}
+  #srcurl{flex:1 1 220px}
+  .pident{flex:1 1 200px}
+  .privseg{flex:0 1 260px}
+  details.adv{flex:1 1 100%}
+  #bignum{font-size:27px}
+}
+@media (max-width:480px){
+  .keys{display:none}
+  .actionbar{gap:8px;padding:10px 12px}
+  .go{padding:8px 12px;font-size:12.5px}
+  #phaseline{flex:1 1 100%}
+  .pair{margin-left:auto}
+}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <span class="brand" aria-hidden="true">Y</span>
+  <a id="ytchip" hidden href="" target="_blank" rel="noopener"></a>
+  <span id="statepill" role="status">idle</span>
+</header>
+<div class="deck">
+  <aside class="side" aria-label="Source and options">
+    <input id="srcurl" aria-label="Source: Spotify playlist URL" autofocus
+      value="" placeholder="Paste Spotify playlist link">
+    <div class="pident"><span class="pcover" aria-hidden="true"></span><span id="pname">Not resolved yet — press Start.</span></div>
+    <span class="flab" id="privcap">Privacy</span>
+    <div class="privseg" role="group" aria-labelledby="privcap">
+      <button type="button" data-priv="PUBLIC" aria-pressed="false">Public</button><button type="button" data-priv="UNLISTED" aria-pressed="false">Unlisted</button><button type="button" data-priv="PRIVATE" aria-pressed="true">Private</button>
+    </div>
+    <details class="adv">
+      <summary>advanced</summary>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">
+        <label class="flab" for="ytcookie">YouTube Music cookie</label>
+        <textarea id="ytcookie" rows="3" placeholder="__Secure-3PAPISID=...; SAPISID=...; ..."></textarea>
+        <input type="file" id="ckfile" accept=".txt,text/plain,*/*" multiple aria-label="Upload cookie files">
+        <div class="minirow"><button class="minibtn" id="forgetbtn" type="button">forget saved cookies</button><span id="latchstat"></span></div>
+        <div class="minirow"><input type="text" id="watchdir" placeholder="extra folder to watch (optional)" aria-label="Extra folder to watch"><button class="minibtn" id="watchbtn" type="button">watch</button></div>
+        <div id="filelist"></div>
+        <div class="minirow"><button class="minibtn" id="copybtn" type="button">copy rows</button></div>
+      </div>
+    </details>
+  </aside>
+  <section class="work" aria-label="Transfer ledger">
+    <div class="totals">
+      <div id="bignum" data-den="–" aria-live="polite">–</div>
+      <div id="breakdown">nothing resolved yet — paste a link</div>
+    </div>
+    <div class="rule" id="rule" aria-hidden="true"></div>
+    <div class="fbar" role="group" aria-label="Outcome filter">
+      <button class="fbtn" type="button" data-f="all" aria-pressed="true">all 0</button><button class="fbtn" type="button" data-f="added" aria-pressed="false">added 0</button><button class="fbtn" type="button" data-f="skipped" aria-pressed="false">skipped 0</button><button class="fbtn" type="button" data-f="refused" aria-pressed="false">refused 0</button><button class="fbtn" type="button" data-f="pending" aria-pressed="false">pending 0</button>
+    </div>
+    <div id="ledger" tabindex="0" role="log" aria-label="Track ledger"><div id="pad"></div><div id="zerostate">No playlist loaded. Paste a Spotify link in the source field and press Ctrl+Enter — the ledger fills here as tracks resolve.</div></div>
+  </section>
 </div>
-<div class="btns"><button id="go">Transfer to YouTube Music</button></div>
-<div class="card"><div id="progrow"><span id="spin"></span><span id="prog">idle.</span></div><div id="bar"><div id="fill"></div></div><div id="plcard"></div><ol id="rows"></ol><button id="newbtn" type="button"></button><div id="showing"></div></div>
-<details><summary>advanced</summary><div class="card" style="margin-top:10px">
-<label>YouTube Music cookie <span class="hint">(the only login you need — auto-filled from upload, or type)</span></label>
-<textarea id="yt_cookie" rows="3" placeholder="__Secure-3PAPISID=...; SAPISID=...; ..."></textarea>
-<div style="margin:6px 0 0"><button id="forget" type="button" style="flex:none;padding:4px 12px;font-size:12px;background:#33333b;color:#fff">forget saved cookies</button> <span id="latchstat" style="font-size:12px;color:#8e8e98"></span></div>
-<div style="margin:6px 0 0;display:flex;gap:8px"><input id="watchdir" placeholder="extra folder to watch (optional)" style="flex:1"><button id="watchsave" type="button" style="flex:none;padding:4px 12px;font-size:12px;background:#33333b;color:#fff">watch</button></div>
-<div id="watchlist" style="font-size:12px;color:#8e8e98"></div>
-<div style="display:flex;gap:10px;margin-top:10px"><button id="step1" type="button" style="font-size:12px;padding:8px">load spotify only (dev)</button><button id="copylog" type="button" style="font-size:12px;padding:8px">copy rows</button></div>
-<div id="log">ready. Transfer = fetch spotify → search ytm → create playlist. No dev keys. Cookies stay localhost-only.</div>
-</div></details>
+<footer class="actionbar">
+  <span id="phaseline">idle — press Ctrl+Enter to start.</span>
+  <span class="keys"><kbd>Ctrl K</kbd> palette · <kbd>Ctrl Enter</kbd> start · <kbd>Esc</kbd> stop · <kbd>1–5</kbd> filter · <kbd>/</kbd> url</span>
+  <span class="pair"><button class="go ghost" id="stopbtn" type="button" disabled>Stop</button><button class="go" id="startbtn" type="button">Start transfer</button></span>
+</footer>
+<div id="cmdpal" role="dialog" aria-modal="true" aria-label="Command palette"><div class="palcard" id="palcard">
+  <input id="palinput" placeholder="Type a command…" aria-label="Command palette">
+</div></div>
 <script>
-const logEl=document.getElementById('log'),progEl=document.getElementById('prog'),spinEl=document.getElementById('spin'),barEl=document.getElementById('bar'),fillEl=document.getElementById('fill');
-const rowsEl=document.getElementById('rows'),newBtn=document.getElementById('newbtn'),showingEl=document.getElementById('showing'),plcard=document.getElementById('plcard');
-const log=(m)=>{const lines=(logEl.textContent+m+"\n").split("\n");if(lines.length>100)logEl.textContent=lines.slice(-100).join("\n");else logEl.textContent+=m+"\n";logEl.scrollTop=logEl.scrollHeight;};
-const workOn=(label)=>{spinEl.classList.add('on');barEl.classList.add('live');window._busy=true;document.getElementById('go').disabled=true;if(label)progEl.textContent=label;};
-const workOff=(label)=>{spinEl.classList.remove('on');barEl.classList.remove('live');window._busy=false;document.getElementById('go').disabled=false;if(label)progEl.textContent=label;};
-const setBarStrict=(pct)=>{pct=Math.max(0,Math.min(100,pct));window._maxBar=Math.max(window._maxBar||0,pct);fillEl.style.width=window._maxBar+'%';};
-const setAutoTitle=(name,cover)=>{const auto=String(name||'').trim();const el=document.getElementById('pl_title');
- if(!el.value.trim()||el.value===window._autoTitle||/ \(from spotify\)$/.test(el.value))el.value=auto;window._autoTitle=auto;
- const im=document.getElementById('cover'); if(cover){im.src=cover;im.style.display='block';}};
-function guessTarget(fname,text){const n=(fname||'').toLowerCase(),t=String(text||'').slice(0,4000);
- let yt=0,sp=0;
- if(n.includes('youtube'))yt+=3; if(n.includes('music.youtube'))yt+=3; if(n.includes('ytm'))yt+=2;
- if(n.includes('spotify'))sp+=3; if(n.includes('open.spotify'))sp+=3;
- if(t.includes('SAPISID'))yt+=4; if(t.includes('__Secure-3PAPISID'))yt+=4; if(t.includes('music.youtube'))yt+=2;
- if(t.includes('sp_dc'))sp+=4; if(t.includes('sp_key'))sp+=4; if(t.includes('open.spotify'))sp+=2; if(t.includes('spotify'))sp+=1;
- if(yt>sp)return 'yt'; if(sp>yt)return 'sp'; return 'unknown';}
-document.getElementById('cookie_files').onchange=()=>{const files=[...document.getElementById('cookie_files').files];if(!files.length)return;
- files.forEach(f=>{const r=new FileReader();r.onload=()=>{const text=String(r.result||'').trim();const g=guessTarget(f.name,text);
-  if(g==='sp'){log(`loaded ${f.name} — spotify cookies not needed for public links, ignored.`);return;}
-  yt_cookie.value=text;
-  log(`loaded ${f.name} (${text.length} chars) → YouTube`);
-  post('/api/check',{spotify_cookie:'',yt_cookie:text},30000).then(k=>{if(k.ok)log(`cookie check: ytm ${k.ytm.ok?'OK':'STALE — re-export!'}`);}).catch(()=>{});
-  post('/api/latch',{spotify_cookie:'',yt_cookie:text}).catch(()=>{});
- };r.readAsText(f);});};
-document.getElementById('forget').onclick=async()=>{await post('/api/forget',{}).catch(()=>{});
- yt_cookie.value='';document.getElementById('watchdir').value='';document.getElementById('watchlist').textContent='';
- document.getElementById('latchstat').textContent='vault cleared.';
- log('saved cookies + watch folder forgotten.');};
-async function showWatch(){try{const w=await post('/api/watch',{},15000);
- if(w.ok)document.getElementById('watchlist').textContent='watching: '+w.dirs.join(' · ');}catch(e){}}
-document.getElementById('watchsave').onclick=async()=>{const d=document.getElementById('watchdir').value.trim();
- if(!d)return; const w=await post('/api/watch',{extra:d}).catch(e=>({ok:false}));
- if(w&&w.ok){document.getElementById('watchlist').textContent='watching: '+w.dirs.join(' · ');log('watching extra folder.');}
- else log('watch failed: folder not found.');};
-showWatch();
-async function lastSession(){
- sp_url.value='';pl_title.value='';window._autoTitle='';
- try{const v=await post('/api/vault',{},15000);
-  if(v.has_yt)yt_cookie.value=v.yt_cookie;
-  document.getElementById('latchstat').textContent=v.has_yt?'cookies latched from last session.':'no saved cookies.';
-  if(v.has_yt)log('latched YouTube cookie'+((v.refreshed||[]).some(x=>x.startsWith('yt'))?' (fresh file from disk)':' from last session')+'.');
- }catch(e){document.getElementById('latchstat').textContent='';}
+"use strict";
+/* sp2yt transfer deck. Same-origin backend only (no CDN, no third party).
+   Contract (backend.py HEAD 7afcd26):
+   POST /api/transfer {url,yt_cookie,title,privacy} -> {ok,run_id} | {ok:false,error,run_id?}
+   GET  /api/run?since=N -> {ok,run_id,seq,phase,started_at,updated_at,age,spotify_id,title,
+     playlist_id,url,created,existing,total,declared,summary,matched,sent,landed,
+     attempted,refused,skipped,missing,rows[changed only],error,hint,kind}
+   row -> {i,title,artist,videoId,state,status,row_seq}
+   row states: queued|matched|appending|landed|skipped|refused|missing
+   GET/POST /api/settings {privacy} (server-persisted; only persisted field) */
+const $=id=>document.getElementById(id);
+const chip=$("ytchip"),pill=$("statepill"),big=$("bignum"),brk=$("breakdown"),rule=$("rule");
+const ledger=$("ledger"),pad=$("pad"),zero=$("zerostate"),phaseEl=$("phaseline");
+const startB=$("startbtn"),stopB=$("stopbtn"),pname=$("pname");
+const ROWH=50, POLLMS=700;
+const LIVE=new Set(["spotify","search","create","append","verify"]);
+const bucketsOf=r=>{const s=r.state;
+  if(s==="landed")return"added"; if(s==="skipped")return"skipped";
+  if(s==="refused"||s==="missing")return"refused"; return"pending";};
+const clsOf=b=>b==="added"?"ok":b==="skipped"?"skip":b==="refused"?"deny":"wait";
+const S={runId:"",since:0,phase:"idle",total:0,declared:0,landed:0,refused:0,skipped:0,
+  missing:0,attempted:0,created:false,existing:false,url:"",title:"",summary:"",
+  rows:new Map(),filter:"all",timer:null,fails:0,lastOk:Date.now(),ceil:0,
+  localT0:0,aborted:false,privacy:"PRIVATE",deadNoted:false};
+const mmss=ms=>{const s=Math.max(0,Math.round(ms/1000));
+  return String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");};
+function elapsedMs(){if(S.phase==="idle")return 0;
+  if(window.__t0srv)return Math.max(0,Date.now()-window.__t0srv);return Date.now()-S.localT0;}
+function setPhase(p){S.phase=p;pill.textContent=p;
+  pill.classList.toggle("on",LIVE.has(p)||p==="created");}
+function setRunning(on){
+  startB.disabled=on; stopB.disabled=!on;
+  startB.classList.toggle("ghost",on); stopB.classList.toggle("ghost",!on);
 }
-lastSession();
-const privacySel=document.getElementById('privacy');
-(async()=>{try{
- const r=await fetch('/api/settings').then(r=>r.json());
- if(r.ok&&r.privacy&&[...privacySel.options].some(o=>o.value===r.privacy)){privacySel.value=r.privacy;}
- else{const lp=localStorage.getItem('sp2yt.privacy');
-  if(lp&&[...privacySel.options].some(o=>o.value===lp)){privacySel.value=lp;
-   fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({privacy:lp})}).catch(()=>{});}}
-}catch(e){try{const lp=localStorage.getItem('sp2yt.privacy');
- if(lp&&[...privacySel.options].some(o=>o.value===lp))privacySel.value=lp;}catch(_){}}})();
-privacySel.onchange=()=>{fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({privacy:privacySel.value})}).catch(()=>{});};
-let detectToken=0,detectTimer=null;
-document.getElementById('sp_url').addEventListener('input',()=>{clearTimeout(detectTimer);detectTimer=setTimeout(autoDetectTitle,600);});
-async function autoDetectTitle(){
- if(window._busy)return;
- const u=document.getElementById('sp_url').value.trim();
- if(!/open\.spotify\.com\/playlist\/[A-Za-z0-9]+/.test(u))return;
- const my=++detectToken; progEl.textContent='detecting playlist title…';
- try{const r=await post('/api/spotify',{url:u,spotify_cookie:''},25000);
-  if(my!==detectToken||!r.ok)return;
-  setAutoTitle(r.playlist_name,r.cover_url);
-  progEl.textContent=`detected: ${r.playlist_name} — ${r.tracks.length} of ${r.declared_total||r.tracks.length} tracks. Ready.`;
- }catch(e){}
+function tally(){let a=0,s=0,r=0,p=0;
+  for(const row of S.rows.values()){const b=bucketsOf(row);
+    if(b==="added")a++;else if(b==="skipped")s++;else if(b==="refused")r++;else p++;}
+  return{a,s,r,p};}
+function countsLine(){const t=tally();
+  if(!S.total&&!S.declared)return"nothing resolved yet — paste a link";
+  return`${t.a} added · ${t.s} skipped · ${t.r} refused · ${t.p} pending`;}
+/* Counter: attempted/declared, monotonic, never full on a short fetch. */
+function paintCounter(){
+  if(!S.total&&!S.declared){big.textContent="–";big.dataset.den="–";return;}
+  const att=S.attempted, dec=S.declared||S.total;
+  S.ceil=Math.max(S.ceil,att);
+  big.textContent=String(S.ceil); big.dataset.den=String(dec);
 }
-async function post(p,b,ms=25000){const c=new AbortController();const t=setTimeout(()=>c.abort(),ms);try{const r=await fetch(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b),signal:c.signal});return r.json();}finally{clearTimeout(t);}}
-document.getElementById('copylog').onclick=async()=>{const rows=[...window._rowMap.values()].sort((a,b)=>a.i-b.i);
- const t=rows.map(r=>`${r.i}. ${r.title} — ${r.artist} [${r.videoId||'-'}] ${r.state}`).join("\n");
- try{await navigator.clipboard.writeText(t);progEl.textContent='rows copied ('+t.length+' chars).';}
- catch(e){const ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();try{document.execCommand('copy');progEl.textContent='rows copied ('+t.length+' chars).';}catch(_){progEl.textContent='copy failed — select manually.';}ta.remove();}};
-document.getElementById('step1').onclick=async()=>{
- logEl.textContent=''; workOn('loading spotify…'); setBarStrict(0);
- const r=await post('/api/spotify',{url:sp_url.value,spotify_cookie:''});
- if(!r.ok){log('SPOTIFY FAIL: '+r.error);workOff('failed.');return;} log(`SPOTIFY OK: ${r.playlist_name} — ${r.tracks.length} of ${r.declared_total||r.tracks.length} tracks`);
- setAutoTitle(r.playlist_name,r.cover_url);
- r.tracks.slice(0,5).forEach(t=>log(` - ${t.title} — ${t.artist}`)); setBarStrict(100); workOff('spotify loaded.');
- window._tracks=r.tracks; window._plname=r.playlist_name;
-};
-// ---- live run model ----
-window._rowMap=new Map(); window._since=0; window._pollTimer=null; window._fail=0; window._lastOk=Date.now(); window._maxBar=0; window._pendingNew=0; window._reconcile=0;
-const phaseWord=(ph)=>({idle:'idle.',spotify:'Fetching Spotify…',search:'Searching YouTube Music…',create:'Creating playlist…',append:'Adding tracks…',verify:'Verifying…',done:'Done.',failed:'Failed.'}[ph]||ph);
-function nearBottom(el){return (el.scrollHeight-el.scrollTop-el.clientHeight)<80;}
-function renderPlcard(d){
- if(!d.created||!d.url){plcard.className='';plcard.innerHTML='';return;}
- const n=d.landed||0,m=d.sent||d.total||0;
- const head=d.existing?`Exists — ${n} of ${m} tracks from this playlist are on it`:`Playlist created — ${n} of ${m} added`;
- plcard.className='show';
- const a=document.createElement('a');a.href=d.url;a.textContent=d.url;a.target='_blank';a.rel='noopener';
- plcard.innerHTML='';const s=document.createElement('span');s.textContent=head+' ';
- plcard.appendChild(s);plcard.appendChild(a);
- if(d.summary){const sm=document.createElement('div');sm.style.cssText='color:#a9a9b2;font-size:12px;margin-top:4px';sm.textContent=d.summary;plcard.appendChild(sm);}
+function factsStr(){const e=elapsedMs(),mins=e/60000,rate=mins>0?S.ceil/mins:0;
+  const left=rate>0?(Math.max(0,(S.declared||S.total)-S.ceil))/rate*60000:0;
+  return`${mmss(e)} elapsed · ${Math.round(rate)}/min · ~${mmss(left)} left`;}
+function liveLabel(){const d=S,dec=d.declared||d.total||0;
+  switch(d.phase){
+    case"spotify":return"reading playlist — fetching declared tracks, no rows yet…";
+    case"search":return`searching — ${d.matched||0} of ${dec} matched`;
+    case"create":return`created — playlist shell live · adding ${d.landed||0} of ${d.sent||d.total||0}`;
+    case"append":return`adding — ${d.landed||0} of ${d.sent||d.total||0} on the playlist (${dec} declared)`;
+    case"verify":return`verifying — ${d.landed||0} of ${d.sent||d.total||0} on the playlist (${dec} declared)`;
+    case"done":return d.summary||`done — ${d.landed||0} of ${d.sent||0} on the playlist`;
+    case"failed":return`failed: ${d.error||"unknown"}`;
+    case"aborted":return`aborted at ${d.ceil}/${dec||"–"} — partial ledger kept · press Ctrl+Enter to restart.`;
+    default:return d.phase;}}
+function paintFacts(){
+  if(S.pin){phaseEl.textContent=S.pin;return;}
+  if(S.phase==="idle"){phaseEl.textContent="idle — press Ctrl+Enter to start.";return;}
+  phaseEl.textContent=`${liveLabel()} · ${factsStr()}`;return;}
+function paintChips(){const t=tally();
+  const n=S.total||0,labels={all:n,added:t.a,skipped:t.s,refused:t.r,pending:t.p};
+  document.querySelectorAll(".fbtn").forEach(b=>{
+    b.textContent=`${b.dataset.f} ${S.total?labels[b.dataset.f]:0}`;
+    b.setAttribute("aria-pressed",String(S.filter===b.dataset.f));});}
+function filtered(){const all=[...S.rows.values()].sort((x,y)=>x.i-y.i);
+  if(!all.length)return[];
+  if(S.filter==="all")return all;
+  return all.filter(r=>bucketsOf(r)===S.filter);}
+function render(){
+  const list=filtered(),t=tally();
+  paintCounter();paintFacts();
+  brk.innerHTML="";brk.textContent=countsLine();
+  paintChips();
+  const done=S.total>0;
+  rule.style.setProperty("--fill",(done?100*S.ceil/Math.max(1,S.declared||S.total):0)+"%");
+  rule.classList.toggle("live",S.phase==="spotify"||S.phase==="search");
+  pad.style.height=(list.length*ROWH)+"px";
+  zero.hidden=list.length>0;
+  const st=ledger.scrollTop;
+  pad.textContent="";
+  if(list.length){
+    const vh=ledger.clientHeight||392;
+    const want=Math.min(12,Math.ceil(vh/ROWH)+2);
+    const start=Math.max(0,Math.min(list.length-1,Math.floor(st/ROWH)-1));
+    const end=Math.min(list.length,start+want);
+    const frag=document.createDocumentFragment();
+    for(let k=start;k<end;k++){const r=list[k],b=bucketsOf(r);
+      const d=document.createElement("div");d.className="lrow";
+      d.style.top=(k*ROWH)+"px";d.style.height=ROWH+"px";
+      const rsn=(b==="skipped"||b==="refused")?(r.status||""):"";
+      const a=document.createElement("span");a.className="c0";a.textContent=String(r.i).padStart(3,"0");
+      const c=document.createElement("span");c.className="c1";
+      const line1=`${r.title||"—"} — ${r.artist||"?"}`;
+      if(rsn){c.textContent=line1.slice(0,52)+"\n"+rsn.slice(0,64);
+        c.title=line1+"\n"+rsn;d.title=rsn;}
+      else{c.textContent=line1.slice(0,52);c.title=line1;}
+      const s=document.createElement("span");s.className="c3 "+clsOf(b);s.textContent=b;
+      d.append(a,c,s);frag.appendChild(d);}
+    pad.appendChild(frag);
+  }
+  ledger.scrollTop=st;
 }
-function renderRows(full){
- const all=[...window._rowMap.values()].sort((a,b)=>a.i-b.i);
- const total=all.length;
- const vis=all;
- showingEl.textContent='';
- const stick=nearBottom(rowsEl);
- rowsEl.innerHTML='';
- for(const r of vis){
-  const li=document.createElement('li');
-  const n=document.createElement('span');n.className='n';n.textContent=r.i;
-  const t=document.createElement('span');t.className='t';t.textContent=`${r.title} — ${r.artist}`;
-  const v=document.createElement('span');v.className='v';v.textContent=r.videoId||'';
-  const c=document.createElement('span');c.className='chip '+r.state;c.textContent=r.state;
-  li.append(n,t,v,c);rowsEl.appendChild(li);
- }
- if(stick)rowsEl.scrollTop=rowsEl.scrollHeight;
-}
-newBtn.onclick=()=>{rowsEl.scrollTop=rowsEl.scrollHeight;window._pendingNew=0;newBtn.style.display='none';};
-function applyRun(d){
- window._since=d.seq;
- for(const r of (d.rows||[])){window._rowMap.set(r.i,r);}
- if((d.rows||[]).length&&!nearBottom(rowsEl)){window._pendingNew+=(d.rows||[]).length;newBtn.style.display='block';newBtn.textContent=window._pendingNew+' new ↓';}
- else if(nearBottom(rowsEl)){window._pendingNew=0;newBtn.style.display='none';}
- renderPlcard(d);
- // status line
- const tot=d.total||0, sent=d.sent||d.matched||0, dec=d.declared||tot;
- let msg=phaseWord(d.phase);
- if(d.phase==='search')msg=`Searching — ${d.matched} of ${dec} matched`;
- else if(d.phase==='append'||d.phase==='create')msg=`Adding tracks — ${d.landed} of ${sent||tot} on the playlist (${dec} declared)`;
- else if(d.phase==='verify')msg=`Verifying — ${d.landed} of ${sent||tot} on the playlist (${dec} declared)`;
- else if(d.phase==='done')msg=d.summary||(d.existing?`exists — ${d.landed} of ${sent} tracks from this playlist are on it`:`Done — ${d.landed} of ${sent} on the playlist`);
- else if(d.phase==='failed')msg=`Failed: ${d.error||'unknown'}`;
- else if(d.phase==='spotify')msg='Fetching Spotify…';
- progEl.textContent=msg;
- if(d.hint&&(d.phase==='failed'))log('DIAGNOSIS ['+(d.kind||'?')+']: '+d.hint);
- // progress bar monotonic
- let pct=0;
- const term=(d.landed||0)+(d.refused||0)+(d.missing||0)+(d.skipped||0);
- if(tot)pct=100*term/tot;
- if(d.phase==='search'&&tot)pct=Math.max(pct,100*((d.matched||0)+(d.skipped||0))/tot);
- if(!tot&&sent)pct=100*(d.landed||0)/sent;
- else if(tot&&d.phase==='spotify')pct=Math.max(pct,2);
- setBarStrict(pct);
- renderRows();
+ledger.addEventListener("scroll",()=>requestAnimationFrame(render));
+function setFilter(f){S.filter=f;ledger.scrollTop=0;render();}
+document.querySelectorAll(".fbtn").forEach(b=>b.addEventListener("click",()=>setFilter(b.dataset.f)));
+function paintChip(){
+  if(S.created&&S.url){chip.hidden=false;chip.href=S.url;
+    const nm=S.title||"YouTube Music playlist";
+    chip.textContent=`${nm} · Open on YouTube Music ↗`;chip.title=`Open on YouTube Music — ${S.url}`;}
+  else{chip.hidden=true;chip.removeAttribute("href");chip.textContent="";chip.title="";}}
+function mergeRun(d,full){
+  if(full){S.rows=new Map();S.ceil=0;}
+  if(d.run_id)S.runId=d.run_id;
+  if(d.seq!=null)S.since=d.seq;
+  for(const r of(d.rows||[]))S.rows.set(r.i,r);
+  for(const k of["total","declared","matched","sent","landed","refused","skipped",
+    "missing","attempted","created","existing","url","title","summary",
+    "error","hint","kind"]){
+    if(d[k]!==undefined)S[k]=d[k];}
+  if(d.phase)S.phase=d.phase;
+  if(d.started_at&&!window.__t0srv)window.__t0srv=d.started_at*1000;
+  if(S.created)paintChip();
 }
 async function pollOnce(){
- let c=null,t=null;
- try{
-  c=new AbortController();t=setTimeout(()=>c.abort(),10000);
-  const r=await fetch('/api/run?since='+window._since,{signal:c.signal});
-  const d=await r.json();
-  window._fail=0;window._lastOk=Date.now();
-  if(d.ok){
-   if(d.phase==='done'){
-    if(!window._reconcile){window._reconcile=1;applyRun(d);return;}
-    applyRun(d);stopPoll();workOff(d.existing?`exists — ${d.landed} of ${d.sent} tracks from this playlist are on it`:`Done — ${d.landed} of ${d.sent} on the playlist`);
-    log(d.existing?`EXISTS: ${d.url} — ${d.landed} of ${d.sent} tracks from this playlist are on it`:`DONE: ${d.url} — confirmed ${d.landed}/${d.sent} on YTM`);
-    return;
-   }
-   window._reconcile=0;
-   applyRun(d);
-   if(d.phase==='failed'){stopPoll();workOff('failed.');log('FAILED: '+(d.error||'unknown'));if(d.hint)log('DIAGNOSIS ['+(d.kind||'?')+']: '+d.hint);}
-   else workOn(null);
-  }
- }catch(e){
-  window._fail++;
-  if(window._fail>=3){const s=Math.round((Date.now()-window._lastOk)/1000);progEl.textContent=`Server stopped answering ${s}s ago — the playlist link above may still be real.`;document.getElementById('go').disabled=false;window._busy=false;spinEl.classList.remove('on');barEl.classList.remove('live');}
- }finally{if(t)clearTimeout(t);}
+  let t=null;
+  try{
+    const c=new AbortController();t=setTimeout(()=>c.abort(),10000);
+    const r=await fetch("/api/run?since="+S.since,{signal:c.signal});
+    const d=await r.json();clearTimeout(t);t=null;
+    S.fails=0;S.lastOk=Date.now();S.deadNoted=false;
+    if(!d.ok)return;
+    mergeRun(d,false);render();
+    if(LIVE.has(d.phase)){setRunning(true);setPhase(d.phase);S.pin=null;paintChip();render();}
+    else if(d.phase==="done"){halt();setPhase("done");S.pin=null;paintChip();render();}
+    else if(d.phase==="failed"){halt();setPhase("failed");S.pin=
+      d.kind==="source"||/partial playlist|declared total/i.test(d.error||"")
+        ?`refused: ${d.error} — nothing was created.`
+        :`failed: ${d.error||"unknown"}`+(d.hint?` (${d.hint})`:"");render();}
+  }catch(e){
+    S.fails++;
+    if(S.fails>=3&&!S.deadNoted){S.deadNoted=true;halt();setRunning(false);
+      const s=Math.round((Date.now()-S.lastOk)/1000);
+      S.pin=`Server stopped answering ${s}s ago — the playlist link above (if any) is still valid; press Start to re-attach.`;
+      render();}
+  }finally{if(t)clearTimeout(t);}}
+function poll(){unpoll();S.timer=setInterval(pollOnce,POLLMS);}
+function unpoll(){if(S.timer){clearInterval(S.timer);S.timer=null;}}
+function halt(){unpoll();setRunning(false);}
+async function postJSON(p,b,ms=25000){const c=new AbortController();
+  const t=setTimeout(()=>c.abort(),ms);
+  try{const r=await fetch(p,{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify(b),signal:c.signal});return r.json();}
+  finally{clearTimeout(t);}}
+async function startTransfer(){
+  const url=$("srcurl").value.trim(),ck=$("ytcookie").value;
+  if(LIVE.has(S.phase)){poll();pollOnce();return;}
+  if(!url){S.pin="paste a Spotify playlist URL first.";render();return;}
+  if(!ck.trim()){S.pin="need YTM cookie — upload or paste it in advanced.";render();return;}
+  setRunning(true);setPhase("spotify");S.pin=null;
+  postJSON("/api/latch",{spotify_cookie:"",yt_cookie:ck}).catch(()=>{});
+  let t;
+  try{t=await postJSON("/api/transfer",{url,yt_cookie:ck,
+    title:pname.dataset.custom||"",privacy:S.privacy});}
+  catch(e){setRunning(false);
+    S.pin="server did not answer — the playlist link shown stays valid; press Start to re-attach.";
+    render();poll();pollOnce();return;}
+  if(!t.ok){
+    if(t.run_id){S.pin="still running on the server — re-attached; the playlist link shown stays valid.";
+      S.runId=t.run_id;render();poll();pollOnce();}
+    else{setRunning(false);S.pin="transfer not started: "+(t.error||"unknown");render();}
+    return;}
+  S.rows=new Map();S.since=0;S.fails=0;S.lastOk=Date.now();S.deadNoted=false;
+  S.pin=null;
+  S.aborted=false;S.ceil=0;window.__t0srv=0;S.localT0=Date.now();
+  S.runId=t.run_id;S.created=false;S.url="";S.title="";S.summary="";
+  S.total=0;S.declared=0;S.attempted=0;S.landed=0;S.refused=0;S.skipped=0;S.missing=0;
+  paintChip();ledger.scrollTop=0;render();
+  poll();pollOnce();
 }
-function startPoll(){stopPoll();window._pollTimer=setInterval(pollOnce,700);}
-function stopPoll(){if(window._pollTimer){clearInterval(window._pollTimer);window._pollTimer=null;}}
-document.getElementById('go').onclick=async()=>{
- if(window._busy)return;
- const url=sp_url.value.trim();
- if(!url){progEl.textContent='paste a Spotify playlist URL first.';return;}
- if(!yt_cookie.value.trim()){progEl.textContent='need YTM cookie — upload or paste it in advanced.';return;}
- workOn('starting transfer…');
- post('/api/latch',{spotify_cookie:'',yt_cookie:yt_cookie.value}).catch(()=>{});
- let t;
- try{t=await fetch('/api/transfer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url,yt_cookie:yt_cookie.value,title:pl_title.value||'',privacy:privacy.value})}).then(r=>r.json());}
- catch(e){workOff('server did not answer — the playlist link shown stays valid; click again to re-attach if the run is alive.');log('transfer attempt failed ('+e+') — server did not answer; the playlist link shown stays valid. Click again to re-attach if the run is alive. Polling for truth…');startPoll();pollOnce();return;}
- if(!t.ok){if(t.run_id){workOn('still running on the server — re-attached; the playlist link shown stays valid.');log('transfer not started ('+(t.error||'unknown')+') — server did not answer for a new run; the playlist link shown stays valid; re-attached to the live run. Click again to re-attach if needed.');startPoll();pollOnce();}else{workOff(t.error||'transfer not started.');log('transfer not started ('+(t.error||'unknown')+').');}return;}
- window._rowMap=new Map();window._since=0;window._fail=0;window._lastOk=Date.now();window._maxBar=0;window._reconcile=0;window._pendingNew=0;newBtn.style.display='none';
- rowsEl.innerHTML='';showingEl.textContent='';plcard.className='';plcard.innerHTML='';fillEl.style.width='0%';
- log('transfer started ('+t.run_id+'). Polling every 700ms…');
- startPoll();pollOnce();
-};
+function abortRun(){if(!LIVE.has(S.phase))return;
+  unpoll();S.aborted=true;S.pin=null;setRunning(false);setPhase("aborted");render();}
+startB.addEventListener("click",startTransfer);
+stopB.addEventListener("click",abortRun);
+/* command palette: 10 commands, options rendered only while open */
+const CMDS=[["Start transfer","Ctrl+Enter","start"],["Stop run","Esc","stop"],
+  ["Filter: all","1","f-all"],["Filter: added","2","f-added"],
+  ["Filter: skipped","3","f-skipped"],["Filter: refused","4","f-refused"],
+  ["Filter: pending","5","f-pending"],["Copy summary","Ctrl+C","copy"],
+  ["Jump to top","g","top"],["Jump to bottom","G","bottom"]];
+const pal=$("cmdpal"),palbox=$("palcard"),palin=$("palinput");
+let sel=0,items=CMDS.slice();
+function openPal(){pal.classList.add("show");palin.value="";items=CMDS.slice();sel=0;drawPal();palin.focus();}
+function closePal(){pal.classList.remove("show");
+  palbox.querySelectorAll(".cmdopt").forEach(o=>o.remove());startB.focus();}
+function drawPal(){palbox.querySelectorAll(".cmdopt").forEach(o=>o.remove());
+  items.forEach((c,i)=>{const b=document.createElement("button");b.type="button";
+    b.className="cmdopt";b.setAttribute("aria-selected",String(i===sel));
+    b.textContent=`${c[0]} — ${c[1]}`;b.addEventListener("click",()=>runCmd(c[2]));
+    palbox.appendChild(b);});}
+async function runCmd(cmd){closePal();
+  if(cmd==="start")startTransfer();else if(cmd==="stop")abortRun();
+  else if(cmd.startsWith("f-"))setFilter(cmd.slice(2));
+  else if(cmd==="copy"){const t=tally();
+    try{await navigator.clipboard.writeText(
+      `sp2yt: ${t.a}/${S.total} added, ${t.s} skipped, ${t.r} refused`);}catch(e){}}
+  else if(cmd==="top")ledger.scrollTop=0;else if(cmd==="bottom")ledger.scrollTop=1e9;}
+palin.addEventListener("input",()=>{const q=palin.value.toLowerCase();
+  items=CMDS.filter(c=>c[0].toLowerCase().includes(q));sel=0;drawPal();});
+palin.addEventListener("keydown",e=>{
+  if(e.key==="ArrowDown"){e.preventDefault();sel=Math.min(items.length-1,sel+1);drawPal();}
+  else if(e.key==="ArrowUp"){e.preventDefault();sel=Math.max(0,sel-1);drawPal();}
+  else if(e.key==="Enter"){e.preventDefault();if(items[sel])runCmd(items[sel][2]);}});
+document.addEventListener("keydown",e=>{
+  const tag=(document.activeElement&&document.activeElement.tagName)||"";
+  const inField=/INPUT|TEXTAREA/.test(tag);
+  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="k"){e.preventDefault();
+    pal.classList.contains("show")?closePal():openPal();}
+  else if((e.ctrlKey||e.metaKey)&&e.key==="Enter"){e.preventDefault();
+    if(pal.classList.contains("show"))closePal();else startTransfer();}
+  else if(e.key==="Escape"){if(pal.classList.contains("show"))closePal();else abortRun();}
+  else if(!inField&&["1","2","3","4","5"].includes(e.key))
+    setFilter(["all","added","skipped","refused","pending"][+e.key-1]);
+  else if(!inField&&e.key==="/"){e.preventDefault();$("srcurl").focus();}
+  else if(!inField&&e.key==="j")ledger.scrollTop+=ROWH*3;
+  else if(!inField&&e.key==="k"&&!e.ctrlKey&&!e.metaKey)ledger.scrollTop-=ROWH*3;
+});
+/* rail: privacy segmented (server-persisted; URL/title/cookie never persisted) */
+document.querySelectorAll(".privseg button").forEach(b=>b.addEventListener("click",()=>{
+  S.privacy=b.dataset.priv;
+  document.querySelectorAll(".privseg button").forEach(x=>
+    x.setAttribute("aria-pressed",String(x===b)));
+  postJSON("/api/settings",{privacy:S.privacy}).catch(()=>{});
+  try{localStorage.setItem("sp2yt.privacy",S.privacy);}catch(e){}}));
+(async()=>{try{const r=await(await fetch("/api/settings")).json();
+    if(r.ok&&r.privacy)setPriv(r.privacy);
+    else{const lp=localStorage.getItem("sp2yt.privacy");if(lp)setPriv(lp);}}
+  catch(e){try{const lp=localStorage.getItem("sp2yt.privacy");if(lp)setPriv(lp);}catch(_){}}})();
+function setPriv(p){if(!["PRIVATE","PUBLIC","UNLISTED"].includes(p))return;S.privacy=p;
+  document.querySelectorAll(".privseg button").forEach(x=>
+    x.setAttribute("aria-pressed",String(x.dataset.priv===p)));}
+/* advanced drawer: cookie upload auto-sorts; values never logged, lengths only */
+function guessTarget(fn,text){const n=(fn||"").toLowerCase(),t=String(text||"").slice(0,4000);
+  let yt=0,sp=0;
+  if(n.includes("youtube"))yt+=3;if(n.includes("music.youtube"))yt+=3;if(n.includes("ytm"))yt+=2;
+  if(n.includes("spotify"))sp+=3;if(n.includes("open.spotify"))sp+=3;
+  if(t.includes("SAPISID"))yt+=4;if(t.includes("__Secure-3PAPISID"))yt+=4;
+  if(t.includes("music.youtube"))yt+=2;
+  if(t.includes("sp_dc"))sp+=4;if(t.includes("sp_key"))sp+=4;
+  if(t.includes("open.spotify"))sp+=2;if(t.includes("spotify"))sp+=1;
+  if(yt>sp)return"yt";if(sp>yt)return"sp";return"unknown";}
+$("ckfile").addEventListener("change",()=>{
+  const files=[...$("ckfile").files];if(!files.length)return;
+  files.forEach(f=>{const r=new FileReader();
+    r.onload=()=>{const text=String(r.result||"").trim(),g=guessTarget(f.name,text);
+      if(g==="sp"){$("latchstat").textContent=`${f.name}: spotify login not needed for public links.`;return;}
+      $("ytcookie").value=text;
+      $("latchstat").textContent=`latched ${f.name} (${text.length} chars).`;
+      postJSON("/api/check",{spotify_cookie:"",yt_cookie:text},30000)
+        .then(k=>{if(k.ok)$("latchstat").textContent+=k.ytm.ok?" YTM OK.":" YTM stale — re-export.";})
+        .catch(()=>{});
+      postJSON("/api/latch",{spotify_cookie:"",yt_cookie:text}).catch(()=>{});};
+    r.readAsText(f);});});
+$("forgetbtn").addEventListener("click",async()=>{
+  await postJSON("/api/forget",{}).catch(()=>{});
+  $("ytcookie").value="";$("watchdir").value="";$("filelist").textContent="";
+  $("latchstat").textContent="vault cleared.";});
+async function showWatch(){try{const w=await postJSON("/api/watch",{},15000);
+    if(w.ok)$("filelist").textContent="watching: "+w.dirs.join(" · ");}catch(e){}}
+$("watchbtn").addEventListener("click",async()=>{
+  const d=$("watchdir").value.trim();if(!d)return;
+  const w=await postJSON("/api/watch",{extra:d}).catch(()=>({ok:false}));
+  $("filelist").textContent=w&&w.ok?"watching: "+w.dirs.join(" · "):"watch failed: folder not found.";});
+showWatch();
+(async()=>{try{const v=await postJSON("/api/vault",{},15000);
+    if(v.has_yt){$("ytcookie").value=v.yt_cookie||"";
+      $("latchstat").textContent="cookie latched from last session.";}
+    else $("latchstat").textContent="no saved cookies.";}catch(e){}})();
+$("copybtn").addEventListener("click",async()=>{
+  const txt=[...S.rows.values()].sort((a,b)=>a.i-b.i)
+    .map(r=>`${r.i}. ${r.title||"—"} — ${r.artist||"?"} [${r.videoId||"-"}] ${r.state}`).join("\n");
+  try{await navigator.clipboard.writeText(txt);
+    phaseEl.textContent=`rows copied (${txt.length} chars).`;}catch(e){}});
+/* title auto-detect: same-origin spotify metadata only; never blocks start */
+let detTok=0,detT=null;
+$("srcurl").addEventListener("input",()=>{clearTimeout(detT);detT=setTimeout(autoTitle,600);});
+async function autoTitle(){
+  if(LIVE.has(S.phase))return;
+  const u=$("srcurl").value.trim();
+  if(!/open\.spotify\.com\/playlist\/[A-Za-z0-9]+/.test(u))return;
+  const my=++detTok;
+  try{const r=await postJSON("/api/spotify",{url:u,spotify_cookie:""},25000);
+    if(my!==detTok||!r.ok||!r.playlist_name)return;
+    pname.textContent=`${r.playlist_name} — ${r.tracks.length} of ${r.declared_total||r.tracks.length} tracks`;
+    pname.dataset.custom="";}catch(e){}}
+/* reload re-attach: full rows once, then live deltas; never reset a live run */
 (async()=>{try{
- const c=new AbortController();const t=setTimeout(()=>c.abort(),10000);
- const r=await fetch('/api/run?since=0',{signal:c.signal});clearTimeout(t);
- const d=await r.json();
- if(d.ok&&d.run_id){
-  for(const row of (d.rows||[]))window._rowMap.set(row.i,row);
-  window._since=d.seq;renderPlcard(d);renderRows();
-  if(['spotify','search','create','append','verify'].includes(d.phase)){applyRun({ ...d, rows:[] });window._since=d.seq;startPoll();}
-  else if(d.phase==='done'||d.phase==='failed'){applyRun({ ...d, rows:[] });window._since=d.seq;workOff(d.phase==='done'?`Done — ${d.landed} of ${d.sent} on the playlist`:'failed.');}
- }
-}catch(e){}})();
-</script></body></html>
+    const c=new AbortController();const t=setTimeout(()=>c.abort(),10000);
+    const r=await fetch("/api/run?since=0",{signal:c.signal});clearTimeout(t);
+    const d=await r.json();if(!d.ok||!d.run_id)return;
+    mergeRun(d,true);
+    if(d.title)pname.textContent=`${d.title} — ${d.total} tracks`;
+    paintChip();render();
+    if(LIVE.has(d.phase)){S.localT0=Date.now();
+      if(d.started_at)window.__t0srv=d.started_at*1000;
+      setRunning(true);setPhase(d.phase);S.pin=null;poll();}
+    else if(d.phase==="done"||d.phase==="failed"){halt();setPhase(d.phase);
+      if(d.phase==="failed")S.pin=`failed: ${d.error||"unknown"}`+(d.hint?` (${d.hint})`:"");
+      else S.pin=null;}
+  }catch(e){}})();
+window.__sp2yt={get phase(){return S.phase;},get attempted(){return S.ceil;}};
+</script>
+</body>
+</html>

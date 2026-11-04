@@ -26,9 +26,11 @@ then open `http://127.0.0.1:8787`. Requires Python 3.10+. No dependencies — st
 ## Usage
 
 1. Export your `music.youtube.com` cookie to a `.txt` file (cookie-export extension or DevTools → Network → copy `Cookie`). Spotify needs no login — public links only.
-2. Click the single upload button and select the file — it latches automatically. Typing/pasting works too. The app watches Desktop + Downloads (plus one optional custom folder) for regenerated exports and re-latches by content.
-3. Paste the Spotify playlist URL, set title + privacy, click **1-CLICK TRANSFER**.
-4. Watch the spinner + progress bar. Ends with the new `music.youtube.com/playlist?list=…` link.
+2. Click the single upload button in **advanced** and select the file — it latches automatically. Typing/pasting works too. The app watches Desktop + Downloads (plus one optional custom folder) for regenerated exports and re-latches by content.
+3. Paste the Spotify playlist URL, set title + privacy, click **Start transfer** (or `Ctrl+Enter`).
+4. Watch the counter (`attempted / declared`), filter chips and ledger rows. Ends with the created-playlist chip in the top bar linking the new `music.youtube.com/playlist?list=…`.
+
+`Ctrl/⌘+K` command palette (start, stop, filters, copy, jump) · `Ctrl/⌘+Enter` start · `Esc` stop · `1–5` outcome filter · `/` focus URL · `j/k` scroll. Reloading mid-run re-attaches to the live run; the counter never moves backwards.
 
 ## API
 
@@ -78,7 +80,7 @@ sp2yt/
 
 ## Icons
 
-Live mark: `assets/icon.ico` (built from `assets/icon-src.png`). Candidate shelf lives beside it — swap the winner in, rebuild the `.exe`, then run `refresh-shortcut.cmd`: it rebuilds the Desktop shortcut and refreshes the Windows icon cache automatically. No manual cache clearing.
+Live mark: `assets/icon.ico` (direction **D-yplay** — bold white Y whose right arm ends in a joined green play triangle; verified legible at a true 16px bitmap) built from `assets/icon-src.png`. Candidate shelf lives beside it (`icon-alt-*`) — swap the winner in, rebuild the `.exe`, then run `refresh-shortcut.cmd`: it rebuilds the Desktop shortcut and refreshes the Windows icon cache automatically. No manual cache clearing.
 
 ## Build
 
