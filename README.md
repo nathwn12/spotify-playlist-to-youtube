@@ -3,6 +3,7 @@
 </p>
 <h1 align="center">sp2yt</h1>
 <p align="center"><strong>Copy a public Spotify playlist into YouTube Music without an API key.</strong></p>
+
 <p align="center">
   <img src="assets/app.png" width="520" alt="The sp2yt transfer deck at rest: a Spotify link field, the privacy selector, an empty track ledger and a Start transfer button." />
 </p>
@@ -88,12 +89,10 @@ Four files: `backend.py` (server and transfer logic), `index.html` (page), `app.
 
 ## Status
 
-```
 Experimental and still moving. It works today, but it is not a finished product:
 interfaces may change, features may be improved or removed, and a release can
 break the one before it. This is maintained by one person, not a team. If it
 breaks, open an issue with the command you ran and what you saw.
-```
 
 ## Links
 
