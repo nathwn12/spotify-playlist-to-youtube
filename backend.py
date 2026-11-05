@@ -1075,14 +1075,22 @@ def save_settings(d: dict):
     except Exception:
         pass
 
-def clear_created() -> None:
-    """Delete the local created-playlist store (created.json).
+def clear_created(spotify_id: str = "") -> None:
+    """Forget the local created-playlist record(s) (created.json).
 
     LOCAL ONLY: this forgets which YTM playlist ids belong to which
     Spotify ids. It never calls any YTM endpoint, so the remote
     playlists are untouched — a later transfer of the same Spotify
     link simply creates fresh instead of resuming/topping up.
-    Missing file is success (already clear)."""
+    When spotify_id is given, only that key is dropped; other
+    playlists keep their resume record. Missing file is success
+    (already clear)."""
+    if spotify_id:
+        created = load_created()
+        if created.pop(spotify_id, None) is None:
+            return
+        save_created(created)
+        return
     try:
         os.remove(CREATEDF)
     except FileNotFoundError:
@@ -2035,7 +2043,7 @@ class H(BaseHTTPRequestHandler):
                 if run_is_live():
                     return self.send_json({"ok": False, "error": "a transfer is already running"}, 409)
                 run_reset()
-                clear_created()
+                clear_created(str(payload.get("spotify_id", "") or "").strip())
                 blog("reset", "run + created link cleared; settings/vault/watch kept")
                 return self.send_json({"ok": True})
             if self.path == "/api/vault":

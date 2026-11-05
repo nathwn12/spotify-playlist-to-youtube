@@ -175,6 +175,68 @@ def test_cover_wiring():
         backend.run_reset()
 
 
+def test_scoped_clear():
+    """Clear drops only the box's playlist key; other playlists keep theirs.
+
+    Seeds created.json with two incomplete records, resets with one
+    spotify_id, and asserts the other survives. An empty payload still
+    clears the whole file (the test_clear path).
+    """
+    import tempfile
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    tmp = tempfile.mkdtemp(prefix="sp2yt-scope-")
+    real_created, real_setting = backend.CREATEDF, backend.SETTINGF
+    backend.CREATEDF = os.path.join(tmp, "created.json")
+    backend.SETTINGF = os.path.join(tmp, "settings.json")
+    try:
+        backend._persist_incomplete("AAAA", "PLAAAA",
+                                    "https://music.youtube.com/playlist?list=PLAAAA",
+                                    "Playlist A", 10)
+        backend._persist_incomplete("BBBB", "PLBBBB",
+                                    "https://music.youtube.com/playlist?list=PLBBBB",
+                                    "Playlist B", 20)
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), backend.H)
+        port = srv.server_address[1]
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            base = "http://127.0.0.1:%d" % port
+
+            def post_reset(payload):
+                req = urllib.request.Request(base + "/api/reset",
+                                             data=json.dumps(payload).encode(),
+                                             headers={"Content-Type": "application/json"})
+                return json.loads(urllib.request.urlopen(req, timeout=10).read())
+
+            def get_run():
+                return json.loads(urllib.request.urlopen(base + "/api/run?since=0",
+                                                         timeout=10).read())
+            r = post_reset({"spotify_id": "BBBB"})
+            assert r.get("ok"), "scoped reset not ok: %r" % (r,)
+            kept = backend.load_created()
+            assert "AAAA" in kept, "unrelated playlist A lost on scoped clear"
+            assert "BBBB" not in kept, "playlist B survived its own clear"
+            assert get_run().get("interrupted", {}).get("spotify_id") == "AAAA", \
+                "interrupted restore should name the surviving playlist"
+            r = post_reset({})
+            assert r.get("ok"), "unscoped reset not ok: %r" % (r,)
+            assert backend.load_created() == {}, "unscoped reset kept keys"
+            assert "interrupted" not in get_run(), "ghost survived unscoped clear"
+        finally:
+            srv.shutdown()
+            srv.server_close()
+        print("scope: box playlist cleared, unrelated playlist kept, empty payload clears all")
+        return None
+    except AssertionError as e:
+        return "FAIL scope: %s" % (e,)
+    except Exception as e:
+        return "FAIL scope: %s: %s" % (type(e).__name__, e)
+    finally:
+        backend.CREATEDF, backend.SETTINGF = real_created, real_setting
+        backend.run_reset()
+
+
 def main():
     try:
         data = fixture_lib.load()
@@ -307,6 +369,10 @@ def main():
     cover_err = test_cover_wiring()
     if cover_err:
         failures.append(cover_err)
+
+    scope_err = test_scoped_clear()
+    if scope_err:
+        failures.append(scope_err)
 
     for line in failures:
         print(line)

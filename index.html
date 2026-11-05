@@ -187,20 +187,20 @@ details.adv input[type=text],details.adv input:not([type]){width:100%;background
   </aside>
   <section class="work" aria-label="Transfer ledger">
     <div class="totals">
-      <div id="bignum" data-den="–" aria-live="polite">–</div>
-      <div id="breakdown">nothing resolved yet — paste a link</div>
+      <div id="bignum" data-den="?" aria-live="polite" title="0 added — total not read yet">0</div>
+      <div id="breakdown">paste a link to begin</div>
     </div>
     <div class="rule" id="rule" aria-hidden="true"></div>
     <div class="fbar" role="group" aria-label="Outcome filter">
       <button class="fbtn" type="button" data-f="all" aria-pressed="true">all 0</button><button class="fbtn" type="button" data-f="added" aria-pressed="false">added 0</button><button class="fbtn" type="button" data-f="skipped" aria-pressed="false">skipped 0</button><button class="fbtn" type="button" data-f="refused" aria-pressed="false">refused 0</button><button class="fbtn" type="button" data-f="pending" aria-pressed="false">pending 0</button>
     </div>
-    <div id="ledger" tabindex="0" role="log" aria-label="Track ledger"><div id="pad"></div><div id="zerostate">No playlist loaded. Paste a Spotify link in the source field and press Ctrl+Enter — the ledger fills here as tracks resolve.</div></div>
+    <div id="ledger" tabindex="0" role="log" aria-label="Track ledger"><div id="pad"></div><div id="zerostate"><strong>Paste a Spotify playlist link, then press Ctrl+Enter.</strong><br>Tracks land here as they resolve; anything that fails says why.</div></div>
   </section>
 </div>
 <footer class="actionbar">
-  <span id="phaseline">Idle — press Ctrl+Enter to start.</span>
-  <span class="keys"><kbd>Ctrl K</kbd> palette · <kbd>Ctrl Enter</kbd> start · <kbd>Esc</kbd> stop · <kbd>1–5</kbd> filter · <kbd>/</kbd> url</span>
-  <span class="pair"><button class="go ghost" id="stopbtn" type="button" disabled>Stop</button><button class="go ghost" id="clearbtn" type="button">Clear</button><button class="go" id="startbtn" type="button">Start transfer</button></span>
+  <span id="phaseline">paste a Spotify link, then Ctrl+Enter</span>
+  <span class="keys"><kbd>Ctrl K</kbd> palette · <kbd>Ctrl Enter</kbd> start · <kbd>Esc</kbd> detach · <kbd>Alt 1–5</kbd> filter · <kbd>/</kbd> link</span>
+  <span class="pair"><button class="go ghost" id="stopbtn" type="button" disabled>Detach</button><button class="go ghost" id="clearbtn" type="button">Clear</button><button class="go" id="startbtn" type="button">Start transfer</button></span>
 </footer>
 <div id="cmdpal" role="dialog" aria-modal="true" aria-label="Command palette"><div class="palcard" id="palcard">
   <input id="palinput" placeholder="Type a command…" aria-label="Command palette">
@@ -223,7 +223,7 @@ const startB=$("startbtn"),stopB=$("stopbtn"),clearB=$("clearbtn"),pname=$("pnam
 new MutationObserver(()=>{pname.title=pname.textContent;}).observe(pname,{childList:true,characterData:true,subtree:true});
 const ROWH=50, POLLMS=700;
 const LIVE=new Set(["spotify","search","create","append","verify"]);
-const HUMAN={idle:"Idle",spotify:"Reading playlist",search:"Reading playlist",create:"Creating playlist",append:"Adding",verify:"Reconciling",done:"Done",failed:"Stopped",aborted:"Stopped"};
+const HUMAN={idle:"Idle",spotify:"Reading playlist",search:"Reading playlist",create:"Creating playlist",append:"Adding",verify:"Reconciling",done:"Done",failed:"Stopped",aborted:"Detached"};
 const human=p=>HUMAN[p]||p;
 const DISP={added:"Added",skipped:"Skipped",refused:"Refused",pending:"Pending"};
 const bucketsOf=r=>{const s=r.state;
@@ -256,14 +256,16 @@ function tally(){let a=0,s=0,r=0,p=0;
    Chips, big counter and footer all read this one number. */
 function landedNow(){return tally().a;}
 function countsLine(){const t=tally();
-  if(!S.total&&!S.declared)return"nothing resolved yet — paste a link";
+  if(!S.total&&!S.declared)return $("srcurl").value.trim()?"link loaded — Ctrl+Enter to start":"paste a link to begin";
   return`${t.a} added · ${t.s} skipped · ${t.r} refused · ${t.p} pending`;}
 /* Counter: landed/declared, monotonic, never full on a short fetch. */
 function paintCounter(){
-  if(!S.total&&!S.declared){big.textContent="–";big.dataset.den="–";return;}
+  if(!S.total&&!S.declared){big.textContent="0";big.dataset.den="?";
+    big.title="0 added — total not read yet";return;}
   const a=landedNow(), dec=S.declared||S.total;
   S.ceil=Math.max(S.ceil,a);
   big.textContent=String(a); big.dataset.den=String(dec);
+  big.title=`${a} of ${dec} added`;
 }
 function factsStr(){
   const now=Date.now(), a=landedNow();
@@ -296,12 +298,13 @@ function liveLabel(){const dec=S.declared||S.total||0, a=landedNow();
     case"append":return`Adding — ${a} of ${dec} on the playlist`;
     case"verify":return`Reconciling — ${a} of ${dec} on the playlist`;
     case"done":return S.summary||`Done — ${a} of ${dec} on the playlist`;
-    case"failed":return`Stopped: ${S.error||"unknown"}`;
-    case"aborted":return`Stopped at ${a}/${dec||"–"} — partial ledger kept · press Ctrl+Enter to restart.`;
+    case"failed":return S.hint?`Stopped — ${S.hint}`:`Stopped: ${S.error||"unknown"}`;
+    case"aborted":return`Detached at ${a} of ${dec||"?"} — still running on the server · press Ctrl+Enter to re-attach.`;
     default:return human(S.phase);}}
 function paintFacts(){
-  if(S.pin){phaseEl.textContent=S.pin;return;}
-  if(S.phase==="idle"){phaseEl.textContent="Idle — press Ctrl+Enter to start.";return;}
+  if(S.pin){phaseEl.textContent=S.pin;phaseEl.title=S.pinTitle||"";return;}
+  phaseEl.title="";
+  if(S.phase==="idle"){phaseEl.textContent=$("srcurl").value.trim()?"link loaded — Ctrl+Enter to start":"paste a Spotify link, then Ctrl+Enter";return;}
   phaseEl.textContent=`${liveLabel()} · ${factsStr()}`;return;}
 function paintChips(){const t=tally();
   const dec=S.declared||S.total||0, n=dec,labels={all:n,added:t.a,skipped:t.s,refused:t.r,pending:t.p};
@@ -402,7 +405,7 @@ function showInterrupted(inc){
   if(inc.title)pname.textContent=`${inc.title} — interrupted, playlist linked`;
   autoTitle();
   if(inc.title)pname.textContent=`${inc.title} — interrupted, playlist linked`;
-  S.pin=`previous run was interrupted — playlist exists and is linked; press Start to resume the same playlist (no second create).`;
+  S.pin=`previous run was interrupted — playlist exists and is linked; press Ctrl+Enter to resume the same playlist (no second create).`;
   render();
 }
 async function pollOnce(){
@@ -415,18 +418,19 @@ async function pollOnce(){
     if(!d.ok)return;
     if(d.interrupted&&!d.run_id&&S.phase==="idle"){showInterrupted(d.interrupted);return;}
     mergeRun(d,false);render();
-    if(LIVE.has(d.phase)){setRunning(true);setPhase(d.phase);S.pin=null;S.interrupted=null;paintChip();render();}
-    else if(d.phase==="done"){halt();setPhase("done");S.pin=null;paintChip();render();}
+    if(LIVE.has(d.phase)){setRunning(true);setPhase(d.phase);S.pin=null;S.pinTitle="";S.interrupted=null;paintChip();render();}
+    else if(d.phase==="done"){halt();setPhase("done");S.pin=null;S.pinTitle="";paintChip();render();}
     else if(d.phase==="failed"){halt();setPhase("failed");S.pin=
       d.kind==="source"||/partial playlist|declared total/i.test(d.error||"")
         ?`refused: ${d.error} — nothing was created.`
-        :`stopped: ${d.error||"unknown"}`+(d.hint?` (${d.hint})`:"");render();}
+        :d.hint?`stopped — ${d.hint}`:`stopped — copy the error from the title`;
+      S.pinTitle=d.error||"";render();}
   }catch(e){
     S.fails++;
     if(S.fails>=3&&!S.deadNoted){S.deadNoted=true;halt();setRunning(false);
       const s=Math.round((Date.now()-S.lastOk)/1000);
-      S.pin=`Server stopped answering ${s}s ago — the playlist link above (if any) is still valid; press Start to re-attach.`;
-      render();}
+      S.pin=`Server stopped answering ${s}s ago — the playlist link above still works; press Ctrl+Enter to re-attach.`;
+      S.pinTitle="";render();}
   }finally{if(t)clearTimeout(t);}}
 function poll(){unpoll();S.timer=setInterval(pollOnce,POLLMS);}
 function unpoll(){if(S.timer){clearInterval(S.timer);S.timer=null;}}
@@ -441,13 +445,13 @@ async function startTransfer(){
   if(LIVE.has(S.phase)){poll();pollOnce();return;}
   if(!url){S.pin="paste a Spotify playlist URL first.";render();return;}
   if(!ck.trim()){S.pin="need YTM cookie — upload or paste it in advanced.";render();return;}
-  setRunning(true);setPhase("spotify");S.pin=null;
+  setRunning(true);setPhase("spotify");S.pin=null;S.pinTitle="";
   postJSON("/api/latch",{spotify_cookie:"",yt_cookie:ck}).catch(()=>{});
   let t;
   try{t=await postJSON("/api/transfer",{url,yt_cookie:ck,
     title:pname.dataset.custom||"",privacy:S.privacy});}
   catch(e){setRunning(false);
-    S.pin="server did not answer — the playlist link shown stays valid; press Start to re-attach.";
+    S.pin="server did not answer — the playlist link shown stays valid; press Ctrl+Enter to re-attach.";
     render();poll();pollOnce();return;}
   if(!t.ok){
     if(t.run_id){S.pin="still running on the server — re-attached; the playlist link shown stays valid.";
@@ -455,15 +459,21 @@ async function startTransfer(){
     else{setRunning(false);S.pin="transfer not started: "+(t.error||"unknown");render();}
     return;}
   S.rows=new Map();S.since=0;S.fails=0;S.lastOk=Date.now();S.deadNoted=false;
-  S.pin=null;S.interrupted=null;
+  S.pin=null;S.pinTitle="";S.interrupted=null;
   S.aborted=false;S.ceil=0;S.hist=[];window.__t0srv=0;S.localT0=Date.now();
   S.runId=t.run_id;S.created=false;S.url="";S.title="";S.summary="";
   S.total=0;S.declared=0;S.attempted=0;S.landed=0;S.refused=0;S.skipped=0;S.missing=0;
   paintChip();S._prog++;ledger.scrollTop=0;S.follow=true;S._prog--;render();
   poll();pollOnce();
 }
+/* Detach only, not Stop: there is no POST here because the server has no
+   abort route (run_reset() refuses while live; /api/transfer 409s while
+   live), so the worker keeps appending and the remote playlist survives.
+   Pressing Start re-attaches via the 409 run_id path. Real fix: POST
+   /api/abort setting RUN["abort"], checked in _transfer_thread before each
+   append; only then may this be called "Stop" again. */
 function abortRun(){if(!LIVE.has(S.phase))return;
-  unpoll();S.aborted=true;S.pin=null;setRunning(false);setPhase("aborted");render();}
+  unpoll();S.aborted=true;S.pin=null;S.pinTitle="";setRunning(false);setPhase("aborted");render();}
 /* Cover: real art when the backend has it, gradient only as fallback/pre-resolve. */
 function setCover(url,name){
   const im=$("pcover");if(!im||im.tagName!=="IMG")return;
@@ -484,7 +494,7 @@ function clearLocal(){
   S.landed=0;S.refused=0;S.skipped=0;S.missing=0;S.attempted=0;S.playlist_count=0;
   S.created=false;S.existing=false;S.url="";S.title="";S.summary="";
   S.rows=new Map();S.filter="all";S.fails=0;S.lastOk=Date.now();S.deadNoted=false;
-  S.ceil=0;S.hist=[];S.localT0=0;S.aborted=false;S.pin=null;S.interrupted=null;
+  S.ceil=0;S.hist=[];S.localT0=0;S.aborted=false;S.pin=null;S.pinTitle="";S.interrupted=null;
   window.__t0srv=0;
   $("srcurl").value="";wipeDetect();paintSrcX();
   setCover("","");
@@ -493,15 +503,18 @@ function clearLocal(){
 }
 async function doClear(){
   if(LIVE.has(S.phase))return;
+  const sid=spotifyIdOf($("srcurl").value.trim())||(S.interrupted&&S.interrupted.spotify_id)||"";
   unpoll();
-  try{await postJSON("/api/reset",{},15000);}catch(e){}
   clearLocal();
+  try{await postJSON("/api/reset",{spotify_id:sid},15000);}catch(e){}
   $("srcurl").focus();
 }
 async function doNewTransfer(){
   if(LIVE.has(S.phase))return;
+  const sid=spotifyIdOf($("srcurl").value.trim())||(S.interrupted&&S.interrupted.spotify_id)||"";
   unpoll();
-  try{await postJSON("/api/reset",{},15000);}catch(e){}
+  clearLocal();
+  try{await postJSON("/api/reset",{spotify_id:sid},15000);}catch(e){}
   clearLocal();
   $("srcurl").focus();
 }
@@ -511,12 +524,12 @@ newbtn.addEventListener("click",doNewTransfer);
 startB.addEventListener("click",startTransfer);
 stopB.addEventListener("click",abortRun);
 /* command palette: 11 commands, options rendered only while open */
-const CMDS=[["Start transfer","Ctrl+Enter","start"],["Stop run","Esc","stop"],
-  ["Clear and start a new transfer","Ctrl+Shift+N","new"],
-  ["Filter: all","1","f-all"],["Filter: added","2","f-added"],
-  ["Filter: skipped","3","f-skipped"],["Filter: refused","4","f-refused"],
-  ["Filter: pending","5","f-pending"],["Copy summary","Ctrl+C","copy"],
-  ["Jump to top","g","top"],["Jump to bottom","G","bottom"]];
+const CMDS=[["Start transfer","Ctrl+Enter","start"],["Detach from run","Esc","stop"],
+  ["New transfer — clears the ledger and the link","Ctrl+Shift+N","new"],
+  ["Filter: all","Alt+1","f-all"],["Filter: added","Alt+2","f-added"],
+  ["Filter: skipped","Alt+3","f-skipped"],["Filter: refused","Alt+4","f-refused"],
+  ["Filter: pending","Alt+5","f-pending"],["Copy summary","","copy"],
+  ["Jump to top","","top"],["Jump to bottom","","bottom"]];
 const pal=$("cmdpal"),palbox=$("palcard"),palin=$("palinput");
 let sel=0,items=CMDS.slice();
 function openPal(){pal.classList.add("show");palin.value="";items=CMDS.slice();sel=0;drawPal();palin.focus();}
@@ -525,7 +538,7 @@ function closePal(){pal.classList.remove("show");
 function drawPal(){palbox.querySelectorAll(".cmdopt").forEach(o=>o.remove());
   items.forEach((c,i)=>{const b=document.createElement("button");b.type="button";
     b.className="cmdopt";b.setAttribute("aria-selected",String(i===sel));
-    b.textContent=`${c[0]} — ${c[1]}`;b.addEventListener("click",()=>runCmd(c[2]));
+    b.textContent=c[1]?`${c[0]} — ${c[1]}`:c[0];b.addEventListener("click",()=>runCmd(c[2]));
     palbox.appendChild(b);});}
 async function runCmd(cmd){closePal();
   if(cmd==="start")startTransfer();else if(cmd==="stop")abortRun();
@@ -553,8 +566,8 @@ document.addEventListener("keydown",e=>{
   else if((e.ctrlKey||e.metaKey)&&e.shiftKey&&(e.key.toLowerCase()==="n")){e.preventDefault();
     if(pal.classList.contains("show"))closePal();else doNewTransfer();}
   else if(e.key==="Escape"){if(pal.classList.contains("show"))closePal();else abortRun();}
-  else if(!inField&&["1","2","3","4","5"].includes(e.key))
-    setFilter(["all","added","skipped","refused","pending"][+e.key-1]);
+  else if(e.altKey&&!e.ctrlKey&&!e.metaKey&&/^[1-5]$/.test(e.key)){e.preventDefault();
+    setFilter(["all","added","skipped","refused","pending"][+e.key-1]);}
   else if(!inField&&e.key==="/"){e.preventDefault();$("srcurl").focus();}
   else if(!inField&&e.key==="j")ledger.scrollTop+=ROWH*3;
   else if(!inField&&e.key==="k"&&!e.ctrlKey&&!e.metaKey)ledger.scrollTop-=ROWH*3;
@@ -641,10 +654,10 @@ async function autoTitle(){
     paintChip();render();
     if(LIVE.has(d.phase)){S.localT0=Date.now();
       if(d.started_at)window.__t0srv=d.started_at*1000;
-      setRunning(true);setPhase(d.phase);S.pin=null;S.interrupted=null;poll();}
+      setRunning(true);setPhase(d.phase);S.pin=null;S.pinTitle="";S.interrupted=null;poll();}
     else if(d.phase==="done"||d.phase==="failed"){halt();setPhase(d.phase);
-      if(d.phase==="failed")S.pin=`stopped: ${d.error||"unknown"}`+(d.hint?` (${d.hint})`:"");
-      else S.pin=null;}
+      if(d.phase==="failed"){S.pin=d.hint?`stopped — ${d.hint}`:`stopped — copy the error from the title`;S.pinTitle=d.error||"";}
+      else{S.pin=null;S.pinTitle="";}}
   }catch(e){}})();
 window.__sp2yt={get phase(){return human(S.phase);},get rawPhase(){return S.phase;},get attempted(){return landedNow();},get landed(){return landedNow();}};
 </script>
