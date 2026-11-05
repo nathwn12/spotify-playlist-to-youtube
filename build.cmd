@@ -17,7 +17,7 @@ if exist sp2yt.exe (
 echo [3/6] killing running instances...
 rem dev never runs as an exe (sp2yt-start.cmd runs backend.py), so only the prod exe is killed
 taskkill /f /im sp2yt.exe >nul 2>&1
-timeout /t 1 /nobreak >nul
+ping -n 2 127.0.0.1 >nul
 echo [4/6] compiling...
 python3 -m PyInstaller --noconsole --onefile --name sp2yt --icon assets\icon.ico --add-data "index.html;." app.py > build.log 2>&1
 if errorlevel 1 (
