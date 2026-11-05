@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Record the owner-data acceptance fixtures from the real services.
+"""Record a playlist's acceptance fixture rows from the real services.
 
 Budget: at most 40 real YouTube Music searches, 300 ms apart. The playlist
 read is one keyless Spotify fetch. Everything the gate later does is offline.
 
-Run from the repo root:  python3 tests\\record_fixtures.py
+The version rows at the top are tied to the recorded playlist, so re-recording
+a different playlist means editing VERSION_ROWS.
+
+Run from the repo root:  python3 tests\\record_fixtures.py <public spotify playlist url>
 """
 import json
 import os
@@ -21,7 +24,6 @@ sys.path.insert(0, HERE)
 import backend  # noqa: E402
 import fixture_lib  # noqa: E402
 
-PLAYLIST_URL = "https://open.spotify.com/playlist/0RpUj3uJ5DhWDSUTUeq2k6"
 MAX_SEARCHES = 40  # hard cap; this pass spent two probe searches before recording
 SPACING_S = 0.3
 OUT = fixture_lib.FIXTURE
@@ -150,8 +152,11 @@ def sections_of(raw):
 
 
 def main():
-    print("spotify: reading", PLAYLIST_URL)
-    sp = backend.fetch_spotify_tracks(PLAYLIST_URL)
+    url = sys.argv[1] if len(sys.argv) > 1 else ""
+    if not url.startswith("https://open.spotify.com/playlist/"):
+        raise SystemExit("usage: python3 tests/record_fixtures.py <public spotify playlist url>")
+    print("spotify: reading", url)
+    sp = backend.fetch_spotify_tracks(url)
     tracks = sp.get("tracks") or []
     if not tracks:
         raise SystemExit("record: spotify returned no tracks")

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline acceptance gate: replay the owner's recorded data through backend.py.
+"""Offline acceptance gate: replay the recorded playlist data through backend.py.
 
 Each fixture row is the real Spotify source row and the real InnerTube search
 responses seen for it. Nothing here reaches the network: urlopen is replaced
@@ -238,7 +238,7 @@ def test_scoped_clear():
 
 
 def test_reconcile_present_but_refused():
-    """Owner run r1: 25 refused rows whose videos were on the playlist.
+    """Recorded run r1: 25 refused rows whose videos were on the playlist.
     Reconcile flips present-but-refused to landed; the done line then reads
     landed == holds instead of 48 beside 73."""
     try:

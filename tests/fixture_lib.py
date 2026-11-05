@@ -8,7 +8,7 @@ import json
 import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-FIXTURE = os.path.join(HERE, "fixtures", "owner.json")
+FIXTURE = os.path.join(HERE, "fixtures", "playlist.json")
 
 
 def envelope(sections):

@@ -3,6 +3,7 @@
 Spotify: scrapes public embed __NEXT_DATA__ (optional user Cookie forwarded).
 YTM: InnerTube WEB_REMIX + user-supplied Cookie (SAPISIDHASH derived server-side).
 """
+APP_VERSION = "0.1.0"
 import json, re, sys, time, base64, hashlib, hmac, struct, shutil, sqlite3, subprocess, tempfile, threading, unicodedata, urllib.request, urllib.parse, webbrowser
 import ctypes
 from ctypes import wintypes
@@ -2012,14 +2013,14 @@ class H(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b)
         elif self.path == "/health":
-            self.send_json({"ok": True})
+            self.send_json({"ok": True, "version": APP_VERSION})
         elif self.path == "/api/status":
             with _HIST_LOCK:
                 recent = list(HISTORY[-20:])
             self.send_json({"ok": True, "recent": recent})
         elif self.path == "/api/settings":
             cur = load_settings()
-            self.send_json({"ok": True, **{k: cur.get(k, "") for k in _SETTING_KEYS}})
+            self.send_json({"ok": True, **{k: (cur.get(k) or ("PRIVATE" if k == "privacy" else "")) for k in _SETTING_KEYS}})
         elif self.path == "/api/run" or self.path.startswith("/api/run?"):
             try:
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -2174,7 +2175,7 @@ class H(BaseHTTPRequestHandler):
                         cur[k] = payload.get(k)
                 save_settings(cur)
                 blog("settings", "saved")
-                return self.send_json({"ok": True, **{k: cur.get(k, "") for k in _SETTING_KEYS}})
+                return self.send_json({"ok": True, **{k: (cur.get(k) or ("PRIVATE" if k == "privacy" else "")) for k in _SETTING_KEYS}})
             if self.path == "/api/watch":
                 if not payload.get("extra"):
                     return self.send_json({"ok": True, "dirs": cookie_dirs()})

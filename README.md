@@ -1,108 +1,110 @@
-# sp2yt
+<p align="center">
+  <img src="assets/icon-src.png" width="120" height="120" alt="sp2yt icon" />
+</p>
+<h1 align="center">sp2yt</h1>
+<p align="center"><strong>Copy a public Spotify playlist into YouTube Music without an API key.</strong></p>
+<p align="center">
+  <img src="assets/app.png" width="520" alt="The sp2yt transfer deck at rest: a Spotify link field, the privacy selector, an empty track ledger and a Start transfer button." />
+</p>
 
-Keyless Spotify → YouTube Music playlist transfer. A small local app for personal use: point it at a public Spotify playlist, give it your YouTube cookie, one click, done.
+## Install
 
-No developer API keys, no Spotify app, no Google Cloud project, no paid transfer service. It rides the same free endpoints the official web players use.
+Download `sp2yt.exe` from the [latest release](https://github.com/nathwn12/spotify-playlist-to-youtube/releases/latest) and run it. One portable executable — no installer, no Python, no console window.
+
+Windows 10/11 x64, with the Microsoft Edge WebView2 runtime (it ships with Edge). The exe is not code-signed, so the first launch trips SmartScreen ("Windows protected your PC"): choose More info, then Run anyway.
+
+### Offline or pinned
+
+`python3 backend.py`, then open http://127.0.0.1:8787. Python 3.10+ with the standard library only — nothing to install.
+
+Pin an exact version:
+
+```bat
+git clone https://github.com/nathwn12/spotify-playlist-to-youtube
+cd spotify-playlist-to-youtube
+git checkout v0.1.0
+```
+
+## Use it
+
+1. Export your `music.youtube.com` cookie: open DevTools on music.youtube.com, go to Network, copy the `Cookie` request header — or save a cookie-export extension's `.txt` file.
+2. Open advanced and select the file or paste the header. The app also watches Desktop, Downloads and one extra folder, and re-latches a regenerated export by content.
+3. Paste a public playlist link. The title fills in; choose the privacy (Private is the default).
+4. Press Start transfer (or `Ctrl+Enter`). The counter moves against Spotify's declared track count.
+5. The new playlist appears as a chip in the top bar, linked to its `music.youtube.com/playlist?list=` page.
+
+`Ctrl+K` palette (start, stop, filters, copy, jump) · `Ctrl+Enter` start · `Esc` stop · `Alt+1…5` outcome filter · `/` focus the link field · `j`/`k` scroll the ledger · `Ctrl+Shift+N` new transfer. Reloading mid-run re-attaches and the counter never moves backwards.
+
+## What you get
+
+- A ledger row per track, each with its reason.
+- A landed count read back from YouTube Music and reconciled against the playlist's entries.
+- Repeats preserved: three copies in, three entries out.
+- Resume instead of duplicates when the same playlist runs again.
+- No keys and no cloud: everything on 127.0.0.1.
+
+## Configure it
+
+| Setting | Where | Default | Notes |
+|---|---|---|---|
+| Privacy | Side rail | Private (`PRIVATE`/`UNLISTED`/`PUBLIC`) | Persisted server-side in the app's per-user data folder as `sp2yt/settings.json` |
+| YouTube Music cookie | Advanced | Unset | Pasted or uploaded, then held DPAPI-encrypted so it survives a restart; forget saved cookies clears it |
+| Watch folder | Advanced | Desktop and Downloads | One extra folder; regenerated exports re-latch by content |
+| Port | Fixed | `8787` | Bound to 127.0.0.1 only |
+| Settings API | `GET`/`POST /api/settings` | `{"privacy": "PRIVATE"}` | Only privacy is persisted; unknown keys are ignored |
+
+The cookie is never logged — audit lines record lengths and flags only. `python3 watchdog.py` reads that audit trail and prints the fix for the latest failure (`--watch` repeats every 15 seconds).
 
 ## How it works
 
-- **Spotify side (read):** keyless web-player token (TOTP from the player bundle’s own secret, memory-only, never stored) + api-partner `fetchPlaylist` query paged 100 at a time past the embed’s 100-track cap; the embed stays the metadata fallback (name/cover). If fetched < Spotify’s declared total the run fails before touching YouTube. Public links need no login.
-- **YouTube Music side (search):** queries the InnerTube `WEB_REMIX` search endpoint (the same one music.youtube.com uses) with the public web client key. No quota, no billing.
-- **YouTube Music side (write):** creates the playlist and adds the matched videos using *your* pasted cookie (`SAPISIDHASH` is derived locally).
+- Spotify read runs through the web player's keyless token (TOTP from the player bundle, memory only) plus the api-partner playlist query, paged 100 at a time past the embed cap. Fewer tracks than Spotify declares fails the run before YouTube is touched.
+- YouTube Music search runs through InnerTube `WEB_REMIX` with the public web client key — no quota, no billing.
+- YouTube Music write creates the playlist and appends with your cookie (`SAPISIDHASH` derived locally per call, never stored).
 
-## Quick start
+Both surfaces are unofficial: a shape change stops the run with a parse or auth diagnosis and a hint, instead of writing a wrong playlist.
 
-- **DEV (localhost server):** double-click `sp2yt-start.cmd` (or the `sp2yt-dev` desktop shortcut). Runs the Python source at `http://127.0.0.1:8787`. Iterate here, no build.
-- **PROD (portable app):** run `build.cmd`, then launch `sp2yt.exe` (or copy it to Desktop). Self-contained WebView2 window, no browser tab. Needs the WebView2 runtime (ships with Edge).
+## Requirements
 
-Manual dev:
+- Windows 10/11 x64 for the exe, with WebView2 from Edge.
+- Python 3.10+ standard library only for the source route.
+- A `music.youtube.com` cookie for the account that should own the playlist.
+- A public Spotify playlist.
 
-```bat
-python3 backend.py
-```
+## Development
 
-then open `http://127.0.0.1:8787`. Requires Python 3.10+. No dependencies — standard library only.
+Four files: `backend.py` (server and transfer logic), `index.html` (page), `app.py` (WebView2 shell), `watchdog.py` (diagnosis).
 
-## Usage
+- Dev lane: `sp2yt-start.cmd` serves the source at `http://127.0.0.1:8787`.
+- Build lane: `build.cmd` (needs `pyinstaller` and `pywebview`) backs up the exe, compiles one portable exe, smoke-tests `/health`, keeps green and restores on red.
+- Acceptance gate: `acceptance.cmd` must print `30/30 fixtures` and parse-check the page script.
+- Re-record: `python3 tests\record_fixtures.py <public playlist url>` — at most 40 real searches, 300 ms apart; everything after runs offline.
 
-1. Export your `music.youtube.com` cookie to a `.txt` file (cookie-export extension or DevTools → Network → copy `Cookie`). Spotify needs no login — public links only.
-2. Click the single upload button in **advanced** and select the file — it latches automatically. Typing/pasting works too. The app watches Desktop + Downloads (plus one optional custom folder) for regenerated exports and re-latches by content.
-3. Paste the Spotify playlist URL, set title + privacy, click **Start transfer** (or `Ctrl+Enter`).
-4. Watch the counter (`attempted / declared`), filter chips and ledger rows. Ends with the created-playlist chip in the top bar linking the new `music.youtube.com/playlist?list=…`.
+## Limits
 
-`Ctrl/⌘+K` command palette (start, stop, filters, copy, jump) · `Ctrl/⌘+Enter` start · `Esc` stop · `1–5` outcome filter · `/` focus URL · `j/k` scroll. Reloading mid-run re-attaches to the live run; the counter never moves backwards.
-
-## API
-
-| Method | Endpoint | Purpose |
-|---|---|---|
-| `GET` | `/` | Web UI |
-| `GET` | `/health` | Liveness |
-| `GET` | `/api/status` | Recent server events (audit trail) |
-| `POST` | `/api/spotify` | `{url, spotify_cookie}` → track list |
-| `POST` | `/api/search` | `{query}` → top YTM match |
-| `POST` | `/api/search-batch` | `{queries[], workers}` → matches in order (max 25/batch, 8 threads) |
-| `POST` | `/api/create-playlist` | `{yt_cookie, title, description, videoIds[], privacy}` → playlist URL |
-| `POST` | `/api/transfer` | `{url, yt_cookie, title, privacy}` → `{run_id}` immediately; worker runs full spotify fetch (100/page to declared total) → search (10s/8 workers, transport retries, ambiguous ties skipped with reason) → create → append → verify, rows stream via `/api/run` |
-| `GET` | `/api/run?since=N` | `{run_id, seq, phase, total/matched/sent/landed/refused/skipped/missing, url, created, rows(changed), age}` polled every 700ms; `since=0` returns full rows |
-| `GET`/`POST` | `/api/settings` | `{privacy}` persisted server-side in `settings.json`; POST merges, unknown keys ignored, privacy clamped to `PRIVATE\|PUBLIC\|UNLISTED` |
-
-Errors carry a `kind` (`auth`, `throttle`, `transient`, `parse`, `user`, `unknown`) plus a `hint`. Transient/throttled batches auto-retry once at reduced workers; fatal errors stop the run with a diagnosis line.
-
-`python3 watchdog.py` inspects the audit log and names the fix for the latest failure (`--watch` loops every 15 s).
-
-## Privacy
-
-- Everything runs on `127.0.0.1`. The only outbound traffic is the app → Spotify / YouTube Music directly.
-- The YouTube cookie is latched in a DPAPI-encrypted local vault (`%APPDATA%\sp2yt`) so it survives restarts. Logs record flags and counts only, never values. `forget` clears vault + watch folder.
-- Runtime state (`server.log`, vault, watch path, playlist record, `settings.json`) is machine-local and git-ignored. No secrets are committed.
-- Settings persist server-side only: `privacy` in `%APPDATA%\sp2yt\settings.json` via `/api/settings` (survives WebView2 profile resets; shared by DEV and PROD). Deliberately never persisted: Spotify URL, playlist title, cookie (cookie lives DPAPI-encrypted in the vault).
-
-## Limits & notes
-
-- Public Spotify playlists only.
+- Public Spotify playlists only — no Spotify login.
 - YouTube Music caps playlists at 5,000 tracks.
-- Auto-match is typically ~90%; misses are listed in the log for manual add.
-- Embed scraping and InnerTube are unofficial surfaces — if either changes format, transfers fail with a `parse` diagnosis until the parser is updated.
+- Auto-match ran at about 90% on the playlist this was built against; every miss is listed with its reason.
+- The cookie expires: a 401 stops the run and asks for a fresh export.
 
-## Layout
+## Status
 
-```text
-sp2yt/
-├── app.py            # WebView2 desktop shell (PROD entry)
-├── backend.py        # stdlib-only server (ThreadingHTTPServer)
-├── index.html        # single-page UI
-├── watchdog.py       # log monitor / failure diagnosis
-├── sp2yt-start.cmd   # DEV launcher (localhost server)
-├── build.cmd         # PROD build: single portable sp2yt.exe + smoke test
-└── server.log        # local audit log (git-ignored, in %APPDATA%\sp2yt)
+```
+Experimental and still moving. It works today, but it is not a finished product:
+interfaces may change, features may be improved or removed, and a release can
+break the one before it. This is maintained by one person, not a team. If it
+breaks, open an issue with the command you ran and what you saw.
 ```
 
-## Icons
+## Links
 
-Live mark: `assets/icon.ico` (direction **D-yplay** — bold white Y whose right arm ends in a joined green play triangle; verified legible at a true 16px bitmap) built from `assets/icon-src.png`. Candidate shelf lives beside it (`icon-alt-*`) — swap the winner in, rebuild the `.exe`, then run `refresh-shortcut.cmd`: it rebuilds the Desktop shortcut and refreshes the Windows icon cache automatically. No manual cache clearing.
+- [Releases](https://github.com/nathwn12/spotify-playlist-to-youtube/releases) — the portable `sp2yt.exe`.
+- [Issues](https://github.com/nathwn12/spotify-playlist-to-youtube/issues) — report a break with the command you ran and what you saw.
+- [MIT licence](LICENSE)
 
-## Build
-
-Two lanes, same repo:
-
-- **DEV** — double-click `sp2yt-start.cmd` (or the `sp2yt-dev` desktop shortcut). Runs the Python source directly at `http://127.0.0.1:8787`, no build. Iterate here.
-- **PROD** — run `build.cmd`. Backs up the current exe, kills running instances, compiles a single portable `sp2yt.exe` (WebView2 window, no browser tab), then smoke-tests it (health). Green? The backup is deleted and prod is live. Red? The previous exe is restored automatically.
-
-Every build must go green before it ships — no green, no prod.
-
-## Acceptance gate
-
-`build.cmd` replays `tests/fixtures/owner.json` through the real matcher in `backend.py` before compiling. The fixture holds 30 recorded rows — the ten version titles that previously mismatched, plus twenty tracks from the owner playlist — each with its real source row and the real YouTube Music search response. `acceptance.cmd` needs no network, prints `30/30 fixtures`, and exits non-zero with one `FAIL` line per broken expectation; the build then aborts with `ACCEPTANCE RED — not building`. The gate exists because a stub only proves the stub: the owner's real rows are the bar.
-
-Re-record when the matcher or the source playlist changes:
-
-```bat
-python3 tests\record_fixtures.py
-```
-
-It reads the playlist once and issues at most 40 real searches, 300 ms apart; everything after that runs offline. Review the printed `ok`/`skip` lines before committing the new fixture.
-
-## License
-
-MIT — see `LICENSE`.
+<!-- nathwn12 house footer: identical in every repo. Do not edit. -->
+<p align="center">
+  <a href="https://github.com/nathwn12"><img src="assets/signature.svg" width="96" alt="nathwn12" /></a>
+</p>
+<p align="center">
+  <sub>Built by <a href="https://github.com/nathwn12">nathwn12</a> · <a href="https://github.com/nathwn12?tab=repositories">All projects</a></sub>
+</p>

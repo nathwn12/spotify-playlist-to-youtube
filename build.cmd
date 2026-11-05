@@ -27,7 +27,7 @@ if errorlevel 1 (
 move /y dist\sp2yt.exe sp2yt.exe >nul
 echo [5/6] smoke test...
 start "" /min sp2yt.exe
-python3 -c "import json,urllib.request,time;time.sleep(5);h=json.loads(urllib.request.urlopen('http://127.0.0.1:8787/health',timeout=15).read());assert h.get('ok');print('smoke: health ok (webview shell serving)')"
+python3 -c "import json,urllib.request,time;time.sleep(5);h=json.loads(urllib.request.urlopen('http://127.0.0.1:8787/health',timeout=15).read());assert h.get('ok') and h.get('version');print('smoke: health ok', h['version'], '(webview shell serving)')"
 if errorlevel 1 (
   echo SMOKE FAILED — restoring previous exe...
   if exist sp2yt.prev.exe move /y sp2yt.prev.exe sp2yt.exe >nul
