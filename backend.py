@@ -1167,21 +1167,53 @@ def yt_playlist_count(plid: str, yt_cookie: str) -> int:
     entries = yt_playlist_entries(plid, yt_cookie)
     return len(entries) if entries is not None else 0
 
+def _is_transport_text(s: str) -> bool:
+    t = (s or "").lower()
+    return any(h in t for h in _TRANSPORT_HINTS)
+
+_ALREADY_HINTS = ("already", "duplicate")
+
+def _is_already_text(s: str) -> bool:
+    """Retry came back saying the video is already on the playlist."""
+    low = (s or "").lower()
+    if "succeed" in low:
+        return True
+    if "fail" in low:
+        return False
+    if "already" in low or "duplicate" in low:
+        return True
+    return "exist" in low and "not " not in low and "no " not in low
+
 def yt_add_one(plid: str, vid: str, yt_cookie: str) -> str:
     """Append one entry. -> YTM's status string ("STATUS_SUCCEEDED"/"STATUS_FAILED"),
-    or the exception text. Fresh SAPISIDHASH per call: it goes stale within minutes."""
+    or the exception text. Fresh SAPISIDHASH per call: it goes stale within minutes.
+    One retry on transport failure: if the retry comes back as already-exists /
+    duplicate, the video is on the playlist, so record STATUS_SUCCEEDED — the
+    final read-back reconciliation confirms it before anything prints."""
     b2 = json.dumps({"context": {"client": CLIENT}, "playlistId": plid, "actions": [
         {"action": "ACTION_ADD_VIDEO", "addedVideoId": vid}]}).encode()
-    try:
-        er = urllib.request.urlopen(urllib.request.Request(
-            f"https://music.youtube.com/youtubei/v1/browse/edit_playlist?key={YT_KEY}&prettyPrint=false",
-            data=b2, headers=yt_headers(yt_cookie)), timeout=25).read().decode("utf-8", "ignore")
-    except Exception as e:
-        return f"{type(e).__name__} {getattr(e, 'code', '')}".strip()
-    try:
-        return str(json.loads(er).get("status", ""))
-    except Exception:
-        return er[:120]
+
+    def once() -> str:
+        try:
+            er = urllib.request.urlopen(urllib.request.Request(
+                f"https://music.youtube.com/youtubei/v1/browse/edit_playlist?key={YT_KEY}&prettyPrint=false",
+                data=b2, headers=yt_headers(yt_cookie)), timeout=25).read().decode("utf-8", "ignore")
+        except Exception as e:
+            return f"{type(e).__name__} {getattr(e, 'code', '')}".strip()
+        try:
+            return str(json.loads(er).get("status", ""))
+        except Exception:
+            return er[:120]
+
+    st = once()
+    if _is_transport_text(st):
+        time.sleep(1.5)
+        st2 = once()
+        blog("add", f"retry {vid} first={st[:60]} second={st2[:60]}")
+        if _is_already_text(st2):
+            return "STATUS_SUCCEEDED"
+        return st2
+    return st
 
 def _repeat_count(video_ids: list, version_sigs=None) -> int:
     """Genuine repeats only: the same version, same videoId, twice in the source.
@@ -1263,19 +1295,80 @@ def _persist_final(spotify_id, plid, url, title, expected, complete):
     except Exception:
         pass
 
-def _read_back_retry(plid, yt_cookie, tries: int = 3):
-    last = None
+def _read_back_retry(plid, yt_cookie, tries: int = 5, minimum: int = 0):
+    """Longest stable read wins. InnerTube browse reads go short — an empty list
+    straight after a 50-inline create was observed live — so keep the longest
+    non-None read, stop early on two agreeing reads at/above minimum, and log
+    every disagreeing set for the audit trail. All None -> None (callers keep
+    their read-back-failed errors)."""
+    best, prev, seen = None, -1, set()
     for a in range(max(1, tries)):
         try:
             entries = yt_playlist_entries(plid, yt_cookie)
         except Exception:
             entries = None
         if entries is not None:
-            return entries
-        last = entries
+            if best is None or len(entries) > len(best):
+                best = entries
+            seen.add(len(entries))
+            if len(entries) == prev and (not minimum or len(entries) >= minimum):
+                break
+            prev = len(entries)
         if a < tries - 1:
             time.sleep(1.5)
-    return last
+    if best is not None and len(seen) > 1:
+        blog("readback", f"{plid} short reads {sorted(seen)} settled longest={len(best)}")
+    return best
+
+def _reconcile(video_ids, entries, attempts: dict) -> list:
+    """Final ledger: the read-back multiset is the only source of truth.
+    Present (unclaimed copy) -> landed, whatever the append said: a FAILED
+    duplicate-reject of an inline-seeded id, or a timed-out-then-applied
+    append, is still on the playlist. Absent -> refused when YTM said FAILED,
+    else missing ("sent but not on the playlist at read-back"). SUCCEEDED but
+    absent is missing, never landed: landed means read back, nothing else."""
+    left = {}
+    for v in entries or []:
+        left[v] = left.get(v, 0) + 1
+    out = []
+    for i, v in enumerate(video_ids):
+        if left.get(v, 0) > 0:
+            left[v] -= 1
+            out.append({"i": i + 1, "videoId": v, "outcome": "landed", "status": ""})
+            continue
+        st = (attempts.get(i, "") or "")
+        if "FAILED" in st.upper():
+            out.append({"i": i + 1, "videoId": v, "outcome": "rejected", "status": st[:80]})
+        elif st:
+            out.append({"i": i + 1, "videoId": v, "outcome": "missing",
+                        "status": (st[:80] + " — absent at read-back")[:80]})
+        else:
+            out.append({"i": i + 1, "videoId": v, "outcome": "missing", "status": ""})
+    return out
+
+def _done_summary(landed, refused, skipped, missing, declared, n_pl, parts, topped_up=None, sent=None):
+    """The done line is derived from reconciled rows plus the read-back whose
+    length is printed: refused rows were proven absent from that same read, so
+    the line can never print N landed beside a different holds count without
+    naming the split in the same sentence."""
+    landed, refused, skipped, missing = int(landed or 0), int(refused or 0), int(skipped or 0), int(missing or 0)
+    m, n = int(declared or 0), int(n_pl or 0)
+    if topped_up is not None:
+        head = f"topped up {int(topped_up)} of {int(sent or 0)} — "
+    else:
+        head = "done — "
+    line = (f"{head}landed {landed} of {m} \u00b7 not found {skipped} ({parts or 'none'}) "
+            f"\u00b7 refused {refused} \u00b7 missing {missing} \u00b7 ")
+    if landed + refused + skipped + missing != m:
+        return line + (f"counts do not reconcile ({landed}+{refused}+{skipped}+{missing}!={m}) "
+                       f"— playlist holds {n}")
+    if landed == n:
+        return line + f"verified against the playlist (holds {n})"
+    if landed < n:
+        return line + (f"playlist holds {n} — {n - landed} entries not attributed to this run "
+                       f"(outside adds?) — refused rows proven absent from that read-back")
+    return line + (f"playlist holds {n} — read-back short of {landed} landed "
+                   f"(resume re-verifies, no re-transfer)")
 
 def _append_todo(plid, video_ids, todo, yt_cookie, hooks=None):
     attempts = {}
@@ -1346,7 +1439,7 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
             on_created(plid, url, False)
         except Exception:
             pass
-    first = _read_back_retry(plid, yt_cookie)
+    first = _read_back_retry(plid, yt_cookie, minimum=len(video_ids))
     blog("create", f"id={plid} inline={len(inline)} back={-1 if first is None else len(first)}")
     if first is None:
         blog("verify", "read-back after create returned nothing — no appends attempted")
@@ -1369,14 +1462,17 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
             on_phase("verify")
         except Exception:
             pass
-    entries = _read_back_retry(plid, yt_cookie)
+    entries = _read_back_retry(plid, yt_cookie, minimum=len(video_ids))
     if entries is None:
         raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (final read-back failed)")
-    ledger = _ledger(video_ids, entries, attempts)
+    ledger = _reconcile(video_ids, entries, attempts)
     added, rejected, missing = _ledger_counts(ledger)
     repeats = _repeat_count(video_ids, version_sigs)
     blog("parity", f"{added}/{len(video_ids)} landed, {rejected} refused, {missing} missing, "
                    f"{repeats} repeat(s) in source, {len(todo)} append attempt(s)")
+    if rejected or missing:
+        bad = [f"{e['videoId']}={e['outcome']}" for e in ledger if e["outcome"] != "landed"][:8]
+        blog("ledger", f"not-landed sample: {','.join(bad)}")
     _persist_final(spotify_id, plid, url, title, len(video_ids), added == len(video_ids))
     if not added:
         if isinstance(entries, list) and len(entries) == 0:
@@ -1407,7 +1503,7 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
             on_phase("append")
         except Exception:
             pass
-    entries = _read_back_retry(plid, yt_cookie)
+    entries = _read_back_retry(plid, yt_cookie, minimum=len(video_ids))
     if entries is None:
         raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (read-back failed)")
     seed_ledger = _seed_ledger(video_ids, entries)
@@ -1424,10 +1520,10 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
             on_phase("verify")
         except Exception:
             pass
-    entries2 = _read_back_retry(plid, yt_cookie)
+    entries2 = _read_back_retry(plid, yt_cookie, minimum=len(video_ids))
     if entries2 is None:
         raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (final read-back failed)")
-    ledger = _ledger(video_ids, entries2, attempts)
+    ledger = _reconcile(video_ids, entries2, attempts)
     added, rejected, missing = _ledger_counts(ledger)
     repeats = _repeat_count(video_ids, version_sigs)
     blog("parity", f"resume {added}/{len(video_ids)} landed, {rejected} refused, {missing} missing")
@@ -1459,9 +1555,11 @@ def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PR
         rec = load_created().get(spotify_id)
         if rec and rec.get("yt_id"):
             if rec.get("complete") is True:
-                entries = yt_playlist_entries(rec["yt_id"], yt_cookie)
+                entries = _read_back_retry(rec["yt_id"], yt_cookie, minimum=len(ids))
+                if entries is None:
+                    entries = []
                 if entries is not None:
-                    seed = _seed_ledger(ids, entries)
+                    seed = _reconcile(ids, entries, {})
                     todo = [int(e["i"]) - 1 for e in seed if e["outcome"] != "landed"]
                     if not todo:
                         added = sum(1 for e in seed if e["outcome"] == "landed")
@@ -1488,10 +1586,10 @@ def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PR
                             on_phase("verify")
                         except Exception:
                             pass
-                    entries2 = _read_back_retry(plid, yt_cookie)
+                    entries2 = _read_back_retry(plid, yt_cookie, minimum=len(ids))
                     if entries2 is None:
                         raise RuntimeError(f"playlist topped up at {rec.get('url')} — appends sent but the rest could not be verified (final read-back failed)")
-                    ledger = _ledger(ids, entries2, attempts)
+                    ledger = _reconcile(ids, entries2, attempts)
                     added, rejected, missing = _ledger_counts(ledger)
                     todo_set = set(todo)
                     newly = sum(1 for e in ledger
@@ -1843,15 +1941,14 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
             dec = int(RUN.get("declared", 0) or RUN.get("total", 0))
             n_pl = int(res.get("playlist_count", 0) or 0)
             RUN["playlist_count"] = n_pl
-            if res.get("topped_up") is not None:
-                summary = f"topped up {int(res.get('topped_up', 0))} of {int(res.get('sent', 0))} — {int(RUN.get('landed', 0))} of {dec} on the playlist (playlist holds {n_pl}), {skipped_n} skipped ({parts})"
-            else:
-                summary = f"done — {int(RUN.get('landed', 0))} of {dec} on the playlist (playlist holds {n_pl}), {skipped_n} skipped ({parts})"
-            if int(RUN.get("refused", 0)):
-                summary += f", {int(RUN.get('refused', 0))} refused"
-            if int(RUN.get("missing", 0)):
-                summary += f", {int(RUN.get('missing', 0))} missing"
-            RUN["summary"] = summary
+            # Derived, never accumulated: rows were recounted from the reconciled
+            # ledger above, so landed+refused+skipped+missing == declared and the
+            # holds count is the read-back the ledger consumed.
+            RUN["summary"] = _done_summary(
+                RUN.get("landed", 0), RUN.get("refused", 0), skipped_n,
+                RUN.get("missing", 0), dec, n_pl, parts,
+                topped_up=(int(res.get("topped_up", 0)) if res.get("topped_up") is not None else None),
+                sent=int(res.get("sent", 0) or 0))
             RUN["phase"] = "done"
             RUN["error"] = ""
             RUN["seq"] += 1

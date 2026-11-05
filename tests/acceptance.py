@@ -237,6 +237,130 @@ def test_scoped_clear():
         backend.run_reset()
 
 
+def test_reconcile_present_but_refused():
+    """Owner run r1: 25 refused rows whose videos were on the playlist.
+    Reconcile flips present-but-refused to landed; the done line then reads
+    landed == holds instead of 48 beside 73."""
+    try:
+        vids = ["VID%08d" % i for i in range(5)]
+        entries = list(vids)  # read-back holds every requested copy
+        attempts = {0: "STATUS_FAILED", 1: "STATUS_FAILED",
+                    2: "STATUS_SUCCEEDED", 3: "STATUS_SUCCEEDED", 4: "STATUS_SUCCEEDED"}
+        ledger = backend._reconcile(vids, entries, attempts)
+        landed = sum(1 for e in ledger if e["outcome"] == "landed")
+        refused = sum(1 for e in ledger if e["outcome"] == "rejected")
+        if landed != len(entries) or refused:
+            return "FAIL reconcile-present: landed=%d refused=%d, want 5/0" % (landed, refused)
+        s = backend._done_summary(landed, refused, 0, 0, 5, len(entries), "none")
+        if "landed 5 of 5" not in s or "verified against the playlist (holds 5)" not in s:
+            return "FAIL reconcile-present: done line %r" % (s,)
+        print("reconcile-present: refused-but-present flips to landed, done line verified (holds 5)")
+        return None
+    except Exception as e:
+        return "FAIL reconcile-present: %s: %s" % (type(e).__name__, e)
+
+
+def test_reconcile_absent_stays_refused():
+    """Genuinely absent at read-back stays refused (FAILED) or missing
+    (SUCCEEDED-but-absent); the done line prints the same holds count the
+    ledger consumed, with the split named."""
+    try:
+        vids = ["VID%08d" % i for i in range(5)]
+        entries = vids[:3]  # last two copies never made the read-back
+        attempts = {3: "STATUS_FAILED", 4: "STATUS_SUCCEEDED"}
+        ledger = backend._reconcile(vids, entries, attempts)
+        by = {e["videoId"]: e["outcome"] for e in ledger}
+        if by[vids[3]] != "rejected" or by[vids[4]] != "missing":
+            return "FAIL reconcile-absent: %r" % (by,)
+        if vids[3] in entries:
+            return "FAIL reconcile-absent: refused row present at read-back, must be proven absent"
+        landed = sum(1 for e in ledger if e["outcome"] == "landed")
+        if landed != len(entries):
+            return "FAIL reconcile-absent: landed=%d, read-back holds %d" % (landed, len(entries))
+        s = backend._done_summary(landed, 1, 0, 1, 5, len(entries), "none")
+        if "holds 3" not in s or "verified against the playlist" not in s:
+            return "FAIL reconcile-absent: done line %r" % (s,)
+        print("reconcile-absent: absent stays refused/missing, done line holds 3")
+        return None
+    except Exception as e:
+        return "FAIL reconcile-absent: %s: %s" % (type(e).__name__, e)
+
+
+def test_timeout_retry_already_exists():
+    """Append times out, retry comes back already-exists -> recorded added."""
+    try:
+        real = urllib.request.urlopen
+        calls = []
+
+        class FakeDup:
+            def read(self):
+                return b'"error": "video already in playlist"'
+
+        class FakeOK:
+            def read(self):
+                return b'{"status": "STATUS_SUCCEEDED"}'
+
+        def fake_first_timeout(req, timeout=None):
+            calls.append(1)
+            if len(calls) == 1:
+                raise urllib.error.URLError("timed out")
+            return FakeDup()
+
+        real_sleep = __import__("time").sleep
+        __import__("time").sleep = lambda s: None
+        try:
+            urllib.request.urlopen = fake_first_timeout
+            st = backend.yt_add_one("PLX", "VID00000001", "SAPISID=x")
+            if "SUCCEEDED" not in (st or "").upper() or len(calls) != 2:
+                return "FAIL retry: timeout+already-exists -> %r (calls=%d)" % (st, len(calls))
+
+            calls.clear()
+
+            def fake_twice_timeout(req, timeout=None):
+                calls.append(1)
+                raise urllib.error.URLError("timed out")
+
+            urllib.request.urlopen = fake_twice_timeout
+            st = backend.yt_add_one("PLX", "VID00000001", "SAPISID=x")
+            if "SUCCEEDED" in (st or "").upper():
+                return "FAIL retry: double timeout must not read as added (%r)" % (st,)
+
+            calls.clear()
+            urllib.request.urlopen = lambda req, timeout=None: (calls.append(1), FakeOK())[1]
+            st = backend.yt_add_one("PLX", "VID00000001", "SAPISID=x")
+            if "SUCCEEDED" not in (st or "").upper() or len(calls) != 1:
+                return "FAIL retry: clean SUCCEEDED retried (%r, calls=%d)" % (st, len(calls))
+        finally:
+            urllib.request.urlopen = real
+            __import__("time").sleep = real_sleep
+        print("retry: timeout+already-exists lands, double timeout does not, clean success unretried")
+        return None
+    except Exception as e:
+        return "FAIL retry: %s: %s" % (type(e).__name__, e)
+
+
+def test_done_line_never_splits():
+    """The done line is incapable of printing N landed beside a different
+    holds count without naming the split in the same sentence."""
+    try:
+        bad = []
+        for landed, n in [(48, 73), (73, 48), (0, 5), (5, 0)]:
+            s = backend._done_summary(landed, 0, 0, 0, 75 if landed == 48 else 5, n, "none")
+            if f"holds {n}" not in s:
+                bad.append("no holds in %r" % (s,))
+            if landed != n and "verified against the playlist" in s:
+                bad.append("false verified in %r" % (s,))
+            if landed != n and ("short" not in s and "not attributed" not in s
+                                and "do not reconcile" not in s):
+                bad.append("unexplained split in %r" % (s,))
+        if bad:
+            return "FAIL done-line: %s" % ("; ".join(bad),)
+        print("done-line: every landed/holds split names itself")
+        return None
+    except Exception as e:
+        return "FAIL done-line: %s: %s" % (type(e).__name__, e)
+
+
 def main():
     try:
         data = fixture_lib.load()
@@ -373,6 +497,17 @@ def main():
     scope_err = test_scoped_clear()
     if scope_err:
         failures.append(scope_err)
+
+    for fn in (test_reconcile_present_but_refused,
+               test_reconcile_absent_stays_refused,
+               test_timeout_retry_already_exists,
+               test_done_line_never_splits):
+        try:
+            err = fn()
+        except Exception as e:
+            err = "FAIL %s: %s: %s" % (fn.__name__, type(e).__name__, e)
+        if err:
+            failures.append(err)
 
     for line in failures:
         print(line)
