@@ -7,7 +7,7 @@
 <title>sp2yt — transfer deck</title>
 <style>
 :root{
-  --bg:#0B0D0B; --panel:#111411; --panel2:#0E110E; --line:#232823; --line2:#2E352E;
+  --bg:#0B0D0B; --panel:#111411; --panel2:#0E110E; --line:#232823; --line2:#5A675B;
   --tx:#EDF2EC; --mut:#A9B7AA; --dim:#7E8A7F;
   --grn:#3DDC84; --grn-dk:#0E2A1A; --amb:#E3C15C; --red:#F08080; --pend:#93A093;
   --r:10px; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
@@ -19,6 +19,7 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
   height:100dvh;display:grid;grid-template-rows:auto minmax(0,1fr) auto}
 :focus{outline:none}
 :focus-visible{outline:2px solid var(--grn);outline-offset:2px;border-radius:4px}
+::placeholder{color:var(--dim)}
 /* top command bar: brand, created-playlist chip, state pill */
 .topbar{display:flex;align-items:center;gap:12px;padding:12px 16px;
   border-bottom:1px solid var(--line);background:var(--panel2);min-width:0}
@@ -29,13 +30,10 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
   padding:6px 12px;font:600 12px var(--sans);color:var(--grn);text-decoration:none;
   white-space:nowrap;max-width:46vw;min-width:0;overflow:hidden;text-overflow:ellipsis;flex:0 1 auto}
 #ytchip[hidden]{display:none}
-#statepill{font:700 11px/1 var(--mono);letter-spacing:.08em;
-  border:1px solid var(--line2);border-radius:99px;padding:6px 10px;color:var(--mut);
-  white-space:nowrap;margin-left:auto;flex:0 0 auto}
-#statepill.on{color:var(--grn);border-color:var(--grn)}
+#statepill{display:none}
 #newbtn{font:600 11px var(--sans);letter-spacing:.04em;background:transparent;color:var(--mut);
   border:1px solid var(--line2);border-radius:99px;padding:6px 12px;cursor:pointer;
-  white-space:nowrap;flex:0 0 auto}
+  white-space:nowrap;flex:0 0 auto;margin-left:auto}
 #newbtn[hidden]{display:none}
 #newbtn:disabled{opacity:.45;cursor:default}
 /* body: 280px rail + fluid ledger; strip below 1024px */
@@ -44,7 +42,7 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
   display:flex;flex-direction:column;gap:10px;overflow-y:auto;min-height:0}
 .flab{font:700 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
 #srcurl{background:#060706;border:1px solid var(--line2);color:var(--tx);border-radius:8px;
-  padding:9px 10px;font-size:13px;font-family:var(--sans);width:100%}
+  padding:9px 10px;font-size:13px;font-family:var(--sans);width:100%;align-self:stretch}
 .srcwrap{position:relative;min-width:0}
 .srcwrap #srcurl{padding-right:34px}
 .srcx{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:22px;height:22px;
@@ -53,7 +51,7 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
 .srcx:hover{background:var(--line);color:var(--tx)}
 .srcx[hidden]{display:none}
 .pident{display:flex;gap:10px;align-items:center;border:1px solid var(--line);border-radius:8px;
-  padding:10px;background:var(--panel2);min-width:0}
+  padding:10px;background:var(--panel2);min-width:0;min-height:48px}
 .pcover{width:44px;height:44px;border-radius:6px;flex:0 0 44px;aspect-ratio:1;
   background:#060706;object-fit:cover;object-position:center;display:block;
   border:1px solid var(--line2)}
@@ -103,20 +101,20 @@ details.adv input[type=text],details.adv input:not([type]){width:100%;background
 .lrow .c3{font:700 10px var(--mono);letter-spacing:.06em;text-align:right;
   grid-column:3;grid-row:1/span 2}
 .c3.ok{color:var(--grn)} .c3.skip{color:var(--amb)} .c3.deny{color:var(--red)} .c3.wait{color:var(--pend)}
-#zerostate{position:absolute;inset:0;display:grid;place-items:center;padding:24px;
+#zerostate{position:absolute;inset:0;display:grid;align-items:start;justify-items:center;padding:24px;
   text-align:center;color:var(--mut);font-size:13px}
 #zerostate[hidden]{display:none}
 #zerostate strong{color:var(--tx)}
-/* sticky footer: phase + elapsed/rate/remaining, key hints, Stop/Start pair */
-.actionbar{display:flex;align-items:center;gap:12px;padding:12px 16px;
+/* sticky footer: phase + elapsed/rate/remaining, key hints, Detach/Start pair */
+.actionbar{display:flex;align-items:center;gap:8px;padding:12px 16px;
   border-top:1px solid var(--line);background:var(--panel);flex-wrap:wrap}
 #phaseline{font:600 12px var(--mono);color:var(--mut);font-variant-numeric:tabular-nums;
-  flex:1 1 auto;min-width:0}
-.keys{font:500 11.5px var(--sans);color:var(--dim);flex:0 1 auto}
-.keys kbd{font:600 10.5px var(--mono);border:1px solid var(--line2);border-radius:5px;
-  padding:1px 6px;color:var(--mut);background:#060706}
-.pair{display:flex;gap:8px;flex:0 0 auto;flex-wrap:nowrap;margin-left:auto}
-.go{background:var(--grn);color:#06110A;border:0;border-radius:8px;padding:9px 16px;
+  flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.keys{font:500 10.5px var(--sans);color:var(--dim);flex:0 1 auto;white-space:nowrap}
+.keys kbd{font:600 10px var(--mono);border:1px solid var(--line2);border-radius:5px;
+  padding:1px 4px;color:var(--mut);background:#060706}
+.pair{display:flex;gap:6px;flex:0 0 auto;flex-wrap:nowrap;margin-left:auto}
+.go{background:var(--grn);color:#06110A;border:0;border-radius:8px;padding:9px 12px;
   font:700 13px var(--sans);cursor:pointer;white-space:nowrap;flex:0 0 auto}
 .go.ghost{background:transparent;color:var(--tx);border:1px solid var(--line2)}
 .go:disabled{opacity:.45;cursor:default}
@@ -143,8 +141,10 @@ details.adv input[type=text],details.adv input:not([type]){width:100%;background
   details.adv{flex:1 1 100%}
   #bignum{font-size:27px}
 }
+@media (max-width:700px){
+  .keys{flex:1 1 100%;order:3}
+}
 @media (max-width:480px){
-  .keys{display:none}
   .actionbar{gap:8px;padding:10px 12px}
   .go{padding:8px 12px;font-size:12.5px}
   #phaseline{flex:1 1 100%}
@@ -531,10 +531,11 @@ const CMDS=[["Start transfer","Ctrl+Enter","start"],["Detach from run","Esc","st
   ["Filter: pending","Alt+5","f-pending"],["Copy summary","","copy"],
   ["Jump to top","","top"],["Jump to bottom","","bottom"]];
 const pal=$("cmdpal"),palbox=$("palcard"),palin=$("palinput");
-let sel=0,items=CMDS.slice();
-function openPal(){pal.classList.add("show");palin.value="";items=CMDS.slice();sel=0;drawPal();palin.focus();}
+let sel=0,items=CMDS.slice(),lastFocus=null;
+function openPal(){lastFocus=document.activeElement;pal.classList.add("show");palin.value="";items=CMDS.slice();sel=0;drawPal();palin.focus();}
 function closePal(){pal.classList.remove("show");
-  palbox.querySelectorAll(".cmdopt").forEach(o=>o.remove());startB.focus();}
+  palbox.querySelectorAll(".cmdopt").forEach(o=>o.remove());
+  if(lastFocus&&lastFocus.isConnected)lastFocus.focus();else startB.focus();}
 function drawPal(){palbox.querySelectorAll(".cmdopt").forEach(o=>o.remove());
   items.forEach((c,i)=>{const b=document.createElement("button");b.type="button";
     b.className="cmdopt";b.setAttribute("aria-selected",String(i===sel));
@@ -556,6 +557,13 @@ palin.addEventListener("keydown",e=>{
   if(e.key==="ArrowDown"){e.preventDefault();sel=Math.min(items.length-1,sel+1);drawPal();}
   else if(e.key==="ArrowUp"){e.preventDefault();sel=Math.max(0,sel-1);drawPal();}
   else if(e.key==="Enter"){e.preventDefault();if(items[sel])runCmd(items[sel][2]);}});
+palcard.addEventListener("keydown",e=>{
+  if(e.key!=="Tab")return;
+  const f=[palin,...palbox.querySelectorAll(".cmdopt")];
+  if(!f.length)return;
+  const first=f[0],last=f[f.length-1];
+  if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
+  else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}});
 document.addEventListener("keydown",e=>{
   const tag=(document.activeElement&&document.activeElement.tagName)||"";
   const inField=/INPUT|TEXTAREA/.test(tag);
