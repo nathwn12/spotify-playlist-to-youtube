@@ -188,7 +188,7 @@ details.adv input[type=text],details.adv input:not([type]){width:100%;background
 <footer class="actionbar">
   <span id="phaseline">Idle — press Ctrl+Enter to start.</span>
   <span class="keys"><kbd>Ctrl K</kbd> palette · <kbd>Ctrl Enter</kbd> start · <kbd>Esc</kbd> stop · <kbd>1–5</kbd> filter · <kbd>/</kbd> url</span>
-  <span class="pair"><button class="go ghost" id="stopbtn" type="button" disabled>Stop</button><button class="go" id="startbtn" type="button">Start transfer</button></span>
+  <span class="pair"><button class="go ghost" id="stopbtn" type="button" disabled>Stop</button><button class="go ghost" id="clearbtn" type="button">Clear</button><button class="go" id="startbtn" type="button">Start transfer</button></span>
 </footer>
 <div id="cmdpal" role="dialog" aria-modal="true" aria-label="Command palette"><div class="palcard" id="palcard">
   <input id="palinput" placeholder="Type a command…" aria-label="Command palette">
@@ -207,7 +207,7 @@ details.adv input[type=text],details.adv input:not([type]){width:100%;background
 const $=id=>document.getElementById(id);
 const chip=$("ytchip"),pill=$("statepill"),newbtn=$("newbtn"),big=$("bignum"),brk=$("breakdown"),rule=$("rule");
 const ledger=$("ledger"),pad=$("pad"),zero=$("zerostate"),phaseEl=$("phaseline");
-const startB=$("startbtn"),stopB=$("stopbtn"),pname=$("pname");
+const startB=$("startbtn"),stopB=$("stopbtn"),clearB=$("clearbtn"),pname=$("pname");
 const ROWH=50, POLLMS=700;
 const LIVE=new Set(["spotify","search","create","append","verify"]);
 const HUMAN={idle:"Idle",spotify:"Reading playlist",search:"Reading playlist",create:"Creating playlist",append:"Adding",verify:"Reconciling",done:"Done",failed:"Stopped",aborted:"Stopped"};
@@ -232,7 +232,7 @@ function paintNewBtn(){
   const show=(S.phase==="done"||S.phase==="failed"||S.phase==="aborted")&&!LIVE.has(S.phase);
   newbtn.hidden=!show; newbtn.disabled=!show||LIVE.has(S.phase);}
 function setRunning(on){
-  startB.disabled=on; stopB.disabled=!on;
+  startB.disabled=on; stopB.disabled=!on; clearB.disabled=on;
   startB.classList.toggle("ghost",on); stopB.classList.toggle("ghost",!on);
 }
 function tally(){let a=0,s=0,r=0,p=0;
@@ -448,20 +448,35 @@ async function startTransfer(){
 }
 function abortRun(){if(!LIVE.has(S.phase))return;
   unpoll();S.aborted=true;S.pin=null;setRunning(false);setPhase("aborted");render();}
-async function doNewTransfer(){
-  if(LIVE.has(S.phase))return;
-  unpoll();
-  try{await postJSON("/api/reset",{},15000);}catch(e){}
+/* Clear = wipe local state only (never touches the remote YTM playlist):
+   1) fetched source rows + track count, 2) transfer tallies, 3) created link.
+   The URL box keeps its text — Clear wipes results, never what the owner is typing. */
+function clearLocal(keepUrl){
   S.runId="";S.since=0;S.phase="idle";S.total=0;S.declared=0;S.matched=0;S.sent=0;
   S.landed=0;S.refused=0;S.skipped=0;S.missing=0;S.attempted=0;S.playlist_count=0;
   S.created=false;S.existing=false;S.url="";S.title="";S.summary="";
   S.rows=new Map();S.filter="all";S.fails=0;S.lastOk=Date.now();S.deadNoted=false;
   S.ceil=0;S.hist=[];S.localT0=0;S.aborted=false;S.pin=null;S.interrupted=null;
   window.__t0srv=0;
-  $("srcurl").value="";pname.textContent="Not resolved yet — press Start.";pname.dataset.custom="";
+  if(!keepUrl)$("srcurl").value="";
+  pname.textContent="Not resolved yet — press Start.";pname.dataset.custom="";
   setRunning(false);setPhase("idle");paintChip();S._prog++;ledger.scrollTop=0;S.follow=true;S._prog--;render();
+}
+async function doClear(){
+  if(LIVE.has(S.phase))return;
+  unpoll();
+  try{await postJSON("/api/reset",{},15000);}catch(e){}
+  clearLocal(true);
   $("srcurl").focus();
 }
+async function doNewTransfer(){
+  if(LIVE.has(S.phase))return;
+  unpoll();
+  try{await postJSON("/api/reset",{},15000);}catch(e){}
+  clearLocal(false);
+  $("srcurl").focus();
+}
+clearB.addEventListener("click",doClear);
 newbtn.addEventListener("click",doNewTransfer);
 startB.addEventListener("click",startTransfer);
 stopB.addEventListener("click",abortRun);

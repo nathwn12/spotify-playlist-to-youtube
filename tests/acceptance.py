@@ -36,6 +36,85 @@ class FakeResponse:
         return self._body
 
 
+def test_clear():
+    """Clear empties the served state; a fresh start after clear serves nothing.
+
+    Drives the real HTTP routes (POST /api/reset, GET /api/run) against an
+    in-process server with temp STATE files, so the proof covers the handler,
+    not just the helpers. Settings survive (privacy latch is not transfer state).
+    """
+    import tempfile
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    tmp = tempfile.mkdtemp(prefix="sp2yt-clear-")
+    real_created, real_setting = backend.CREATEDF, backend.SETTINGF
+    backend.CREATEDF = os.path.join(tmp, "created.json")
+    backend.SETTINGF = os.path.join(tmp, "settings.json")
+    try:
+        backend.run_begin("seedsp", "Seed Title")
+        with backend._RUN_LOCK:
+            backend.RUN["total"] = 2
+            backend.RUN["declared"] = 2
+            backend.RUN["landed"] = 1
+            backend.RUN["skipped"] = 1
+            backend.RUN["url"] = "https://music.youtube.com/playlist?list=PLSEED"
+            backend.RUN["created"] = True
+            backend.RUN["title"] = "Seed Title"
+            backend.RUN["phase"] = "done"
+            backend.RUN["rows"] = [
+                {"i": 1, "title": "A", "artist": "B", "videoId": "dQw4w9WgXcQ",
+                 "state": "landed", "status": "", "row_seq": 1},
+                {"i": 2, "title": "C", "artist": "D", "videoId": "",
+                 "state": "skipped", "status": "no match", "row_seq": 2},
+            ]
+        backend._persist_incomplete("seedsp", "PLSEED",
+                                    "https://music.youtube.com/playlist?list=PLSEED",
+                                    "Seed Title", 2)
+        backend.save_settings({"privacy": "UNLISTED"})
+        assert os.path.exists(backend.CREATEDF), "seed created.json missing"
+        assert backend._latest_incomplete() is not None, "seed interrupted record missing"
+
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), backend.H)
+        port = srv.server_address[1]
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            base = "http://127.0.0.1:%d" % port
+
+            def get(p):
+                return json.loads(urllib.request.urlopen(base + p, timeout=10).read())
+            pre = get("/api/run?since=0")
+            assert pre["ok"] and len(pre["rows"]) == 2 and pre["created"] is True, \
+                "seeded run not served"
+            req = urllib.request.Request(base + "/api/reset", data=b"{}",
+                                         headers={"Content-Type": "application/json"})
+            cleared = json.loads(urllib.request.urlopen(req, timeout=10).read())
+            assert cleared.get("ok"), "reset not ok: %r" % (cleared,)
+            post = get("/api/run?since=0")
+            assert post["ok"], "run not ok after clear"
+            assert post["run_id"] == "" and post["rows"] == [], "served rows survived clear"
+            assert post["total"] == 0 and post["declared"] == 0, "served counts survived clear"
+            assert post["created"] is False and not post["url"], "served link survived clear"
+            assert "interrupted" not in post, "interrupted ghost survived clear"
+            assert not os.path.exists(backend.CREATEDF), "created.json survived clear"
+            fresh = get("/api/run?since=0")
+            assert fresh["rows"] == [] and fresh["run_id"] == "" \
+                and "interrupted" not in fresh, "fresh start after clear not empty"
+            assert backend.load_settings().get("privacy") == "UNLISTED", "settings not kept"
+        finally:
+            srv.shutdown()
+            srv.server_close()
+        print("clear: served state empty after reset, fresh start serves nothing, settings kept")
+        return None
+    except AssertionError as e:
+        return "FAIL clear: %s" % (e,)
+    except Exception as e:
+        return "FAIL clear: %s: %s" % (type(e).__name__, e)
+    finally:
+        backend.CREATEDF, backend.SETTINGF = real_created, real_setting
+        backend.run_reset()
+
+
 def main():
     try:
         data = fixture_lib.load()
@@ -160,6 +239,10 @@ def main():
                 print("versions: 4/4 distinct, 0 repeats")
     finally:
         urllib.request.urlopen = real_urlopen
+
+    clear_err = test_clear()
+    if clear_err:
+        failures.append(clear_err)
 
     for line in failures:
         print(line)

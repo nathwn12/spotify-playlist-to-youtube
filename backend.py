@@ -119,7 +119,11 @@ def run_begin(spotify_id="", title=""):
 
 def run_reset() -> bool:
     """Clear a finished run so a reload stays idle. Refuses while live.
-    Never touches created.json, YTM playlists, or settings."""
+    Never touches settings, the cookie vault, or any YouTube playlist —
+    those are not local transfer state. created.json IS local transfer
+    state (it feeds the reopen restore), so its removal lives next to
+    this in the /api/reset handler, not in here (unit tests seed RUN
+    without touching disk)."""
     with _RUN_LOCK:
         if RUN.get("phase") in ("spotify", "search", "create", "append", "verify"):
             return False
@@ -1068,6 +1072,21 @@ def save_settings(d: dict):
     except Exception:
         pass
 
+def clear_created() -> None:
+    """Delete the local created-playlist store (created.json).
+
+    LOCAL ONLY: this forgets which YTM playlist ids belong to which
+    Spotify ids. It never calls any YTM endpoint, so the remote
+    playlists are untouched — a later transfer of the same Spotify
+    link simply creates fresh instead of resuming/topping up.
+    Missing file is success (already clear)."""
+    try:
+        os.remove(CREATEDF)
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
 def load_created() -> dict:
     try:
         with open(CREATEDF, encoding="utf-8") as f:
@@ -2011,7 +2030,8 @@ class H(BaseHTTPRequestHandler):
                 if run_is_live():
                     return self.send_json({"ok": False, "error": "a transfer is already running"}, 409)
                 run_reset()
-                blog("reset", "finished run cleared; created.json kept")
+                clear_created()
+                blog("reset", "run + created link cleared; settings/vault/watch kept")
                 return self.send_json({"ok": True})
             if self.path == "/api/vault":
                 v = vault_load()
