@@ -115,6 +115,66 @@ def test_clear():
         backend.run_reset()
 
 
+def test_cover_wiring():
+    """cover_url rides the run payload; the page has a real <img> with fallback.
+
+    Seeds RUN with a cover, serves GET /api/run over HTTP, asserts the key is
+    present, then resets and asserts it is gone. Static part: index.html must
+    hold an <img id="pcover"> (not a gradient span), a setCover() that falls
+    back to the gradient, and a Clear path that empties the URL field.
+    """
+    import tempfile
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    tmp = tempfile.mkdtemp(prefix="sp2yt-cover-")
+    real_created, real_setting = backend.CREATEDF, backend.SETTINGF
+    backend.CREATEDF = os.path.join(tmp, "created.json")
+    backend.SETTINGF = os.path.join(tmp, "settings.json")
+    try:
+        backend.run_begin("seedcover", "Seed Cover")
+        with backend._RUN_LOCK:
+            backend.RUN["phase"] = "done"
+            backend.RUN["cover_url"] = "https://i.scdn.co/image/seedcover"
+            backend.RUN["title"] = "Seed Cover"
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), backend.H)
+        port = srv.server_address[1]
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            base = "http://127.0.0.1:%d" % port
+
+            def get(p):
+                return json.loads(urllib.request.urlopen(base + p, timeout=10).read())
+            pre = get("/api/run?since=0")
+            assert pre["ok"] and pre.get("cover_url") == "https://i.scdn.co/image/seedcover", \
+                "cover_url missing from /api/run: %r" % (pre.get("cover_url"),)
+            req = urllib.request.Request(base + "/api/reset", data=b"{}",
+                                         headers={"Content-Type": "application/json"})
+            cleared = json.loads(urllib.request.urlopen(req, timeout=10).read())
+            assert cleared.get("ok"), "reset not ok: %r" % (cleared,)
+            post = get("/api/run?since=0")
+            assert post.get("cover_url", "") == "", "cover_url survived clear"
+        finally:
+            srv.shutdown()
+            srv.server_close()
+        page = open(os.path.join(ROOT, "index.html"), encoding="utf-8").read()
+        assert '<img id="pcover"' in page, "no <img id=pcover> in index.html"
+        assert "setCover(r.cover_url" in page, "autoTitle drops cover_url"
+        assert "d.cover_url!==undefined" in page, "mergeRun drops cover_url"
+        assert 'id="srcx"' in page, "no inline URL-clear button"
+        assert 'clearLocal(true)' not in page and 'clearLocal(false)' not in page, \
+            "keepUrl switch still present — Clear must empty the field"
+        print("cover: served over /api/run, cleared on reset, img+fallback wired")
+        return None
+    except AssertionError as e:
+        return "FAIL cover: %s" % (e,)
+    except Exception as e:
+        return "FAIL cover: %s: %s" % (type(e).__name__, e)
+    finally:
+        backend.CREATEDF, backend.SETTINGF = real_created, real_setting
+        backend.run_reset()
+
+
 def main():
     try:
         data = fixture_lib.load()
@@ -243,6 +303,10 @@ def main():
     clear_err = test_clear()
     if clear_err:
         failures.append(clear_err)
+
+    cover_err = test_cover_wiring()
+    if cover_err:
+        failures.append(cover_err)
 
     for line in failures:
         print(line)

@@ -45,13 +45,21 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
 .flab{font:700 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
 #srcurl{background:#060706;border:1px solid var(--line2);color:var(--tx);border-radius:8px;
   padding:9px 10px;font-size:13px;font-family:var(--sans);width:100%}
+.srcwrap{position:relative;min-width:0}
+.srcwrap #srcurl{padding-right:34px}
+.srcx{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:22px;height:22px;
+  display:grid;place-items:center;border:0;border-radius:6px;background:transparent;
+  color:var(--dim);font:700 11px/1 var(--sans);cursor:pointer;padding:0}
+.srcx:hover{background:var(--line);color:var(--tx)}
+.srcx[hidden]{display:none}
 .pident{display:flex;gap:10px;align-items:center;border:1px solid var(--line);border-radius:8px;
   padding:10px;background:var(--panel2);min-width:0}
-.pcover{width:44px;height:44px;border-radius:6px;flex:0 0 44px;
-  background:linear-gradient(135deg,#3DDC84 0 25%,#0E2A1A 25% 50%,#E3C15C 50% 75%,#111411 75%);
+.pcover{width:44px;height:44px;border-radius:6px;flex:0 0 44px;aspect-ratio:1;
+  background:#060706;object-fit:cover;object-position:center;display:block;
   border:1px solid var(--line2)}
-#pname{font:600 12.5px var(--sans);color:var(--tx);min-width:0;overflow:hidden;
-  text-overflow:ellipsis;white-space:nowrap}
+.pcover.gen{background:linear-gradient(135deg,#3DDC84 0 25%,#0E2A1A 25% 50%,#E3C15C 50% 75%,#111411 75%)}
+#pname{font:600 12.5px/1.3 var(--sans);color:var(--tx);min-width:0;overflow:hidden;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2}
 .privseg{display:flex;border:1px solid var(--line2);border-radius:8px;overflow:hidden}
 .privseg button{flex:1;background:transparent;border:0;color:var(--mut);
   font:600 12px var(--sans);padding:8px 4px;cursor:pointer}
@@ -129,7 +137,7 @@ details.adv input[type=text],details.adv input:not([type]){width:100%;background
   .side{flex-direction:row;flex-wrap:wrap;align-items:center;border-right:0;
     border-bottom:1px solid var(--line);overflow:visible}
   .side .flab{flex:0 0 auto}
-  #srcurl{flex:1 1 220px}
+  .srcwrap{flex:1 1 220px}
   .pident{flex:1 1 200px}
   .privseg{flex:0 1 260px}
   details.adv{flex:1 1 100%}
@@ -153,9 +161,13 @@ details.adv input[type=text],details.adv input:not([type]){width:100%;background
 </header>
 <div class="deck">
   <aside class="side" aria-label="Source and options">
+    <div class="srcwrap">
     <input id="srcurl" aria-label="Source: Spotify playlist URL" autofocus
       value="" placeholder="Paste Spotify playlist link">
-    <div class="pident"><span class="pcover" aria-hidden="true"></span><span id="pname">Not resolved yet — press Start.</span></div>
+    <button id="srcx" class="srcx" type="button" aria-label="Clear the Spotify link"
+      title="Clear the link (the ledger keeps its results)" hidden>&#10005;</button>
+    </div>
+    <div class="pident"><img id="pcover" class="pcover gen" alt="" title="" width="44" height="44" referrerpolicy="no-referrer" decoding="async" onerror="this.classList.add('gen');this.removeAttribute('src')"><span id="pname">no playlist yet — paste a link</span></div>
     <span class="flab" id="privcap">Privacy</span>
     <div class="privseg" role="group" aria-labelledby="privcap">
       <button type="button" data-priv="PUBLIC" aria-pressed="false">Public</button><button type="button" data-priv="UNLISTED" aria-pressed="false">Unlisted</button><button type="button" data-priv="PRIVATE" aria-pressed="true">Private</button>
@@ -208,6 +220,7 @@ const $=id=>document.getElementById(id);
 const chip=$("ytchip"),pill=$("statepill"),newbtn=$("newbtn"),big=$("bignum"),brk=$("breakdown"),rule=$("rule");
 const ledger=$("ledger"),pad=$("pad"),zero=$("zerostate"),phaseEl=$("phaseline");
 const startB=$("startbtn"),stopB=$("stopbtn"),clearB=$("clearbtn"),pname=$("pname");
+new MutationObserver(()=>{pname.title=pname.textContent;}).observe(pname,{childList:true,characterData:true,subtree:true});
 const ROWH=50, POLLMS=700;
 const LIVE=new Set(["spotify","search","create","append","verify"]);
 const HUMAN={idle:"Idle",spotify:"Reading playlist",search:"Reading playlist",create:"Creating playlist",append:"Adding",verify:"Reconciling",done:"Done",failed:"Stopped",aborted:"Stopped"};
@@ -345,9 +358,9 @@ function render(){
       const a=document.createElement("span");a.className="c0";a.textContent=String(r.i).padStart(3,"0");
       const c=document.createElement("span");c.className="c1";
       const line1=`${r.title||"—"} — ${r.artist||"?"}`;
-      if(rsn){c.textContent=line1.slice(0,52)+"\n"+rsn.slice(0,64);
+      if(rsn){c.textContent=line1+"\n"+rsn;
         c.title=line1+"\n"+rsn;d.title=rsn;}
-      else{c.textContent=line1.slice(0,52);c.title=line1;}
+      else{c.textContent=line1;c.title=line1;}
       const s=document.createElement("span");s.className="c3 "+clsOf(b);s.textContent=DISP[b]||b;
       d.append(a,c,s);frag.appendChild(d);}
     pad.appendChild(frag);
@@ -374,6 +387,7 @@ function mergeRun(d,full){
     "error","hint","kind"]){
     if(d[k]!==undefined)S[k]=d[k];}
   if(d.phase)S.phase=d.phase;
+  if(d.cover_url!==undefined)setCover(d.cover_url,S.title);
   if(d.started_at&&!window.__t0srv)window.__t0srv=d.started_at*1000;
   if(d.interrupted!==undefined)S.interrupted=d.interrupted||null;
   if(S.created)paintChip();
@@ -384,7 +398,9 @@ function showInterrupted(inc){
   S.created=true;S.url=inc.url||"";S.title=inc.title||"";
   paintChip();
   if(!$("srcurl").value.trim()&&inc.spotify_id)
-    $("srcurl").value="https://open.spotify.com/playlist/"+inc.spotify_id;
+    {$("srcurl").value="https://open.spotify.com/playlist/"+inc.spotify_id;paintSrcX();}
+  if(inc.title)pname.textContent=`${inc.title} — interrupted, playlist linked`;
+  autoTitle();
   if(inc.title)pname.textContent=`${inc.title} — interrupted, playlist linked`;
   S.pin=`previous run was interrupted — playlist exists and is linked; press Start to resume the same playlist (no second create).`;
   render();
@@ -448,35 +464,49 @@ async function startTransfer(){
 }
 function abortRun(){if(!LIVE.has(S.phase))return;
   unpoll();S.aborted=true;S.pin=null;setRunning(false);setPhase("aborted");render();}
+/* Cover: real art when the backend has it, gradient only as fallback/pre-resolve. */
+function setCover(url,name){
+  const im=$("pcover");if(!im||im.tagName!=="IMG")return;
+  if(url){im.classList.remove("gen");im.src=url;im.alt=name||"";im.title=name||"";}
+  else{im.classList.add("gen");im.removeAttribute("src");im.alt="";im.title="";}
+}
+const spotifyIdOf=u=>{const m=/open\.spotify\.com\/playlist\/([A-Za-z0-9]+)/.exec(u||"");return m?m[1]:"";};
+function paintSrcX(){$("srcx").hidden=!$("srcurl").value;}
+function wipeDetect(){detTok++;clearTimeout(detT);}
+function wipeSrcField(){$("srcurl").value="";wipeDetect();paintSrcX();$("srcurl").focus();}
 /* Clear = wipe local state only (never touches the remote YTM playlist):
    1) fetched source rows + track count, 2) transfer tallies, 3) created link.
-   The URL box keeps its text — Clear wipes results, never what the owner is typing. */
-function clearLocal(keepUrl){
+   The URL box is cleared too — the source link is transfer state, not a draft:
+   a screen with no rows must not still name a playlist. The ✕ in the field is
+   the one that clears text without clearing results. */
+function clearLocal(){
   S.runId="";S.since=0;S.phase="idle";S.total=0;S.declared=0;S.matched=0;S.sent=0;
   S.landed=0;S.refused=0;S.skipped=0;S.missing=0;S.attempted=0;S.playlist_count=0;
   S.created=false;S.existing=false;S.url="";S.title="";S.summary="";
   S.rows=new Map();S.filter="all";S.fails=0;S.lastOk=Date.now();S.deadNoted=false;
   S.ceil=0;S.hist=[];S.localT0=0;S.aborted=false;S.pin=null;S.interrupted=null;
   window.__t0srv=0;
-  if(!keepUrl)$("srcurl").value="";
-  pname.textContent="Not resolved yet — press Start.";pname.dataset.custom="";
+  $("srcurl").value="";wipeDetect();paintSrcX();
+  setCover("","");
+  pname.textContent="no playlist yet — paste a link";pname.dataset.custom="";
   setRunning(false);setPhase("idle");paintChip();S._prog++;ledger.scrollTop=0;S.follow=true;S._prog--;render();
 }
 async function doClear(){
   if(LIVE.has(S.phase))return;
   unpoll();
   try{await postJSON("/api/reset",{},15000);}catch(e){}
-  clearLocal(true);
+  clearLocal();
   $("srcurl").focus();
 }
 async function doNewTransfer(){
   if(LIVE.has(S.phase))return;
   unpoll();
   try{await postJSON("/api/reset",{},15000);}catch(e){}
-  clearLocal(false);
+  clearLocal();
   $("srcurl").focus();
 }
 clearB.addEventListener("click",doClear);
+$("srcx").addEventListener("click",wipeSrcField);
 newbtn.addEventListener("click",doNewTransfer);
 startB.addEventListener("click",startTransfer);
 stopB.addEventListener("click",abortRun);
@@ -587,7 +617,7 @@ $("copybtn").addEventListener("click",async()=>{
     phaseEl.textContent=`rows copied (${txt.length} chars).`;}catch(e){}});
 /* title auto-detect: same-origin spotify metadata only; never blocks start */
 let detTok=0,detT=null;
-$("srcurl").addEventListener("input",()=>{clearTimeout(detT);detT=setTimeout(autoTitle,600);});
+$("srcurl").addEventListener("input",()=>{paintSrcX();clearTimeout(detT);detT=setTimeout(autoTitle,600);});
 async function autoTitle(){
   if(LIVE.has(S.phase))return;
   const u=$("srcurl").value.trim();
@@ -595,7 +625,8 @@ async function autoTitle(){
   const my=++detTok;
   try{const r=await postJSON("/api/spotify",{url:u,spotify_cookie:""},25000);
     if(my!==detTok||!r.ok||!r.playlist_name)return;
-    pname.textContent=`${r.playlist_name} — ${r.tracks.length} of ${r.declared_total||r.tracks.length} tracks`;
+    setCover(r.cover_url,r.playlist_name);
+    pname.textContent=`${r.playlist_name} — ${r.tracks.length}/${r.declared_total||"?"}`;
     pname.dataset.custom="";}catch(e){}}
 /* reload re-attach: full rows once, then live deltas; never reset a live run.
    After a process restart an idle server reports {interrupted} — show it, link it. */
@@ -606,7 +637,7 @@ async function autoTitle(){
     if(!d.run_id&&d.interrupted){showInterrupted(d.interrupted);return;}
     if(!d.run_id)return;
     mergeRun(d,true);
-    if(d.title)pname.textContent=`${d.title} — ${d.declared||d.total} tracks`;
+    if(d.title)pname.textContent=`${d.title} — ${d.total||"?"}/${d.declared||d.total||"?"}`;
     paintChip();render();
     if(LIVE.has(d.phase)){S.localT0=Date.now();
       if(d.started_at)window.__t0srv=d.started_at*1000;

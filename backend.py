@@ -33,6 +33,7 @@ RUN = {
     "updated_at": time.time(),
     "spotify_id": "",
     "title": "",
+    "cover_url": "",
     "playlist_id": "",
     "url": "",
     "created": False,
@@ -96,6 +97,7 @@ def run_begin(spotify_id="", title=""):
         RUN["updated_at"] = now
         RUN["spotify_id"] = spotify_id
         RUN["title"] = title
+        RUN["cover_url"] = ""
         RUN["playlist_id"] = ""
         RUN["url"] = ""
         RUN["created"] = False
@@ -133,6 +135,7 @@ def run_reset() -> bool:
         RUN["updated_at"] = time.time()
         RUN["spotify_id"] = ""
         RUN["title"] = ""
+        RUN["cover_url"] = ""
         RUN["playlist_id"] = ""
         RUN["url"] = ""
         RUN["created"] = False
@@ -1538,6 +1541,7 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                 return
             RUN["spotify_id"] = sid
             RUN["title"] = pname
+            RUN["cover_url"] = sp.get("cover_url", "") or ""
             RUN["total"] = len(tracks)
             RUN["declared"] = declared or len(tracks)
             RUN["sent"] = 0
@@ -1929,6 +1933,7 @@ class H(BaseHTTPRequestHandler):
                             "age": max(0.0, now - float(snap.get("updated_at", now) or now)),
                             "spotify_id": snap.get("spotify_id", ""),
                             "title": snap.get("title", ""),
+                            "cover_url": snap.get("cover_url", ""),
                             "playlist_id": snap.get("playlist_id", ""),
                             "url": snap.get("url", ""),
                             "created": bool(snap.get("created", False)),
