@@ -361,6 +361,54 @@ def test_done_line_never_splits():
         return "FAIL done-line: %s: %s" % (type(e).__name__, e)
 
 
+def test_running_motion():
+    """Running state visibly moves without faking progress.
+
+    Pill carries a moving dot + the same landedNow()/declared count the chips
+    use; rule sweeps only while the total is unknown and fills capped at the
+    known count; only the appending row pulses; one 1s footer tick cleared
+    when live ends; all motion is CSS keyframes silenced under
+    prefers-reduced-motion; no animation class survives a terminal phase.
+    """
+    try:
+        page = open(os.path.join(ROOT, "index.html"), encoding="utf-8").read()
+        need = [
+            ('pill dot element', '<span class="pdot"'),
+            ('pill text element', 'class="ptxt"'),
+            ('pill pulse keyframes', '@keyframes pulse'),
+            ('pill run selector', '#statepill.run .pdot'),
+            ('pill count from landedNow', 'landedNow()'),
+            ('pill label helper', 'pillLabel'),
+            ('indeterminate sweep keyframes', '@keyframes slidesweep'),
+            ('indeterminate pseudo-element', '.rule.live::after'),
+            ('determinate cap', 'Math.min(100,100*a/'),
+            ('unknown total guards sweep', '!known'),
+            ('in-flight row class', 'inflight'),
+            ('in-flight only appending', 'r.state==="appending"'),
+            ('in-flight pulse keyframes', '@keyframes rowpulse'),
+            ('single 1s tick', 'setInterval(()=>{paintFacts();},1000)'),
+            ('tick guard', 'if(S.tick)return'),
+            ('tick cleared', 'clearInterval(S.tick)'),
+            ('tick stops off-live', 'if(live)tickStart();else tickStop()'),
+            ('reduced-motion block', 'prefers-reduced-motion: reduce'),
+        ]
+        for label, s in need:
+            if s not in page:
+                return "FAIL motion: missing %s (%r)" % (label, s)
+        seg = page.split("prefers-reduced-motion", 1)[1][:1500]
+        for sel in ("rule.live", "pdot", "inflight"):
+            if sel not in seg or "animation:none" not in seg:
+                return "FAIL motion: reduced-motion does not silence %s" % (sel,)
+        if "pill.textContent=human(p)" in page:
+            return "FAIL motion: pill still overwrites the dot (textContent wipe)"
+        if "@keyframes sweep" in page:
+            return "FAIL motion: dead --fill sweep still present"
+        print("motion: pill dot+count, rule sweep-then-fill capped, appending row pulses, 1s tick, reduced-motion static")
+        return None
+    except Exception as e:
+        return "FAIL motion: %s: %s" % (type(e).__name__, e)
+
+
 def main():
     try:
         data = fixture_lib.load()
@@ -497,6 +545,10 @@ def main():
     scope_err = test_scoped_clear()
     if scope_err:
         failures.append(scope_err)
+
+    motion_err = test_running_motion()
+    if motion_err:
+        failures.append(motion_err)
 
     for fn in (test_reconcile_present_but_refused,
                test_reconcile_absent_stays_refused,
