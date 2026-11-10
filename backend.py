@@ -372,28 +372,16 @@ def _cookie_state_set(site: str, state: str, msg: str, source: str, cookie: str,
     except Exception:
         pass
 
-def _cookie_state_drop(site: str):
-    d = cookie_states()
-    d.pop(site, None)
-    try:
-        if d:
-            with open(COOKIEF, "w", encoding="utf-8") as f:
-                json.dump(d, f)
-        else:
-            os.remove(COOKIEF)
-    except Exception:
-        pass
-
 def vault_save(which: str, cookie: str, source: str = "manual", latched_at: float = 0) -> dict:
     """Validate, then latch a cookie vault-side, DPAPI-encrypted (this Windows user only).
-    Plain values never touch disk. Junk and empty write nothing."""
+    Plain values never touch disk. An empty, junk or expired blob writes nothing at all,
+    so a bad paste can never replace the cookie already working."""
     if which not in ("sp", "yt"):
         return {"ok": False, "state": "none", "msg": "unknown site"}
     shp = cookie_shape(cookie, which)
-    if shp["state"] in ("junk", "empty"):
+    if shp["state"] != "valid":
         return {"ok": False, "state": shp["state"], "msg": shp["reason"]}
     c = normalize_cookie(cookie)
-    state = "expired" if shp["state"] == "expired" else "unverified"
     try:
         v = _vault_read()
         v[which] = base64.b64encode(_dpapi_blob(ctypes.windll.crypt32.CryptProtectData, c.encode())).decode()
@@ -401,11 +389,11 @@ def vault_save(which: str, cookie: str, source: str = "manual", latched_at: floa
         meta[which] = {"latched_at": latched_at or time.time(), "source": source}
         v["_meta"] = meta
         if not _vault_write(v):
-            return {"ok": False, "state": state, "msg": "could not save the cookie"}
+            return {"ok": False, "state": "unverified", "msg": "could not save the cookie"}
     except Exception:
-        return {"ok": False, "state": state, "msg": "could not save the cookie"}
-    _cookie_state_set(which, state, "saved", source, c, checked_at=0)
-    return {"ok": True, "state": state, "msg": "saved" if state == "unverified" else "expired"}
+        return {"ok": False, "state": "unverified", "msg": "could not save the cookie"}
+    _cookie_state_set(which, "unverified", "saved", source, c, checked_at=0)
+    return {"ok": True, "state": "unverified", "msg": "saved"}
 
 def vault_load() -> dict:
     v = _vault_read()
@@ -417,10 +405,12 @@ def vault_load() -> dict:
     # re-latch: adopt a valid disk file only when it is newer than the value we already hold
     for site, cand in scan_disk_cookies()["best"].items():
         st = states.get(site) or {}
-        if st.get("state") in ("expired", "junk") and st.get("hash") == cookie_hash(cand["raw"]):
+        h = cookie_hash(cand["raw"])
+        # a rejected or removed value is never re-adopted by a scan; only the user clears the block
+        if st.get("state") in ("expired", "junk", "removed") and st.get("hash") == h:
             continue
         cur = out.get(site + "_cookie") or ""
-        if cur and (cookie_hash(cur) == cookie_hash(cand["raw"]) or meta[site]["latched_at"] >= cand["mtime"]):
+        if cur and (cookie_hash(cur) == h or meta[site]["latched_at"] >= cand["mtime"]):
             continue
         norm = normalize_cookie(cand["raw"])
         try:
@@ -430,6 +420,12 @@ def vault_load() -> dict:
             continue
         out[site + "_cookie"] = norm
         meta[site] = {"latched_at": cand["mtime"], "source": cand["source"]}
+        if st.get("hash") != h:
+            # a different value is a different cookie: no verdict carries across the swap
+            msg = f"found {cand['name']}; checking"
+            _cookie_state_set(site, "unverified", msg, cand["source"], norm, checked_at=0)
+            states[site] = {"hash": h, "state": "unverified", "msg": msg,
+                            "checked_at": 0, "source": cand["source"]}
         refreshed.append(site + ":" + cand["name"])
     if refreshed:
         v["_meta"] = meta
@@ -452,15 +448,25 @@ def vault_load() -> dict:
     return out
 
 def vault_remove(which: str):
+    """Drop the stored value and remember which value was dropped: a later disk scan
+    will not hand the same file back, and the user clears the block by choosing a file."""
     if which not in ("sp", "yt"):
         return
     v = _vault_read()
+    held = _decode(v, which)
     v.pop(which, None)
     meta = v.get("_meta") if isinstance(v.get("_meta"), dict) else {}
     meta.pop(which, None)
     v["_meta"] = meta
     _vault_write(v)
-    _cookie_state_drop(which)
+    d = cookie_states()
+    d[which] = {"hash": cookie_hash(held) if held else "", "state": "removed", "msg": "removed",
+                "checked_at": int(time.time()), "source": ""}
+    try:
+        with open(COOKIEF, "w", encoding="utf-8") as f:
+            json.dump(d, f)
+    except Exception:
+        pass
 
 def vault_forget():
     for site in ("sp", "yt"):

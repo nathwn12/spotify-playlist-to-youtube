@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -64,6 +65,28 @@ JUNK = "\n".join([
 HTML = "<!doctype html><html><body><p>SAPISID=AbCdEfGhIjKlMnOp</p></body></html>"
 JSON_BLOB = '{"SAPISID": "AbCdEfGhIjKlMnOp", "PREF": "tz=UTC"}'
 NOTES = "my cookie notes\nfoo=bar\n"
+
+
+def api(path, body=None):
+    """One call against a throwaway loopback instance of the real handler.
+    Returns (status, parsed body); an error status is a result, not an exception."""
+    srv = backend.ThreadingHTTPServer(("127.0.0.1", 0), backend.H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        url = "http://127.0.0.1:%d%s" % (srv.server_address[1], path)
+        req = urllib.request.Request(
+            url, data=None if body is None else json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+            method="GET" if body is None else "POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.loads(e.read().decode())
+    finally:
+        srv.shutdown()
+        srv.server_close()
 
 
 class CookieTests(unittest.TestCase):
@@ -207,6 +230,68 @@ class CookieTests(unittest.TestCase):
                              "a posted value removed the cookie that was stored")
         finally:
             backend.check_yt_cookie = real
+
+    # 10
+    def test_a_connected_verdict_never_survives_a_different_cookie(self):
+        """An adopted value is unverified until it is itself checked.
+        check_yt_cookie is stubbed: this test must never touch the network."""
+        real = backend.check_yt_cookie
+        try:
+            self.assertTrue(backend.vault_save("yt", OLD_NETSCAPE)["ok"])
+            backend.check_yt_cookie = lambda c: {"ok": True, "msg": ""}
+            self.assertEqual(backend.cookie_check("yt", backend.normalize_cookie(OLD_NETSCAPE))["state"], "connected")
+            self.assertEqual(backend.vault_load()["state"]["yt"], "connected")
+
+            self.write("yt-new.txt", NEW_NETSCAPE, mtime=time.time() + 120)
+            v = backend.vault_load()
+            self.assertEqual(v["yt_cookie"], backend.normalize_cookie(NEW_NETSCAPE))
+            self.assertEqual(v["state"]["yt"], "unverified",
+                             "a connected verdict was carried onto a different cookie")
+            self.assertEqual(backend.cookies_state()["yt"]["state"], "unverified")
+
+            # the same value keeps the verdict it already earned
+            self.assertEqual(backend.cookie_check("yt", backend.normalize_cookie(NEW_NETSCAPE))["state"], "connected")
+            self.assertEqual(backend.vault_load()["state"]["yt"], "connected")
+        finally:
+            backend.check_yt_cookie = real
+
+    # 11
+    def test_remove_stays_removed_until_an_explicit_use(self):
+        self.write(DESKTOP_NAME, NETSCAPE, mtime=time.time() - 60)
+        self.assertEqual(backend.vault_load()["yt_cookie"], backend.normalize_cookie(NETSCAPE))
+        backend.vault_remove("yt")
+        v = backend.vault_load()
+        self.assertEqual(v["yt_cookie"], "", "a removed cookie came back from the disk file")
+        self.assertEqual(v["state"]["yt"], "none")
+        body = backend.cookies_state()
+        self.assertFalse(body["yt"]["has"])
+        self.assertEqual(body["yt"]["state"], "none")
+        self.assertEqual(body["yt"]["msg"], "Not connected yet")
+        self.assertIsNotNone(body["detected"]["yt"], "the file is still there - the user must be able to pick it")
+
+        code, used = api("/api/cookies/use", {"site": "yt"})
+        self.assertEqual(code, 200, used)
+        self.assertEqual(used["file"], DESKTOP_NAME)
+        v = backend.vault_load()
+        self.assertEqual(v["yt_cookie"], backend.normalize_cookie(NETSCAPE))
+        self.assertEqual(v["state"]["yt"], "unverified")
+
+    # 12
+    def test_an_expired_paste_is_rejected_and_the_working_cookie_survives(self):
+        self.assertTrue(backend.vault_save("yt", HEADER)["ok"])
+        before = backend.vault_load()["yt_cookie"]
+        r = backend.vault_save("yt", EXPIRED)
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["state"], "expired")
+        self.assertTrue(r["msg"])
+        self.assertEqual(backend.vault_load()["yt_cookie"], before,
+                         "an expired paste replaced the stored working cookie")
+
+        code, body = api("/api/latch", {"yt_cookie": EXPIRED})
+        self.assertEqual(code, 400, body)
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["state"], "expired")
+        self.assertEqual(backend.vault_load()["yt_cookie"], before)
 
     # 8
     def test_api_cookies_never_carries_a_value(self):
