@@ -337,6 +337,64 @@ class CookieTests(unittest.TestCase):
         self.assertEqual(body["sp"]["state"], "unverified")
         self.assertEqual(backend.vault_load()["sp_cookie"], backend.normalize_cookie(SP_HEADER))
 
+    # 15
+    def test_remove_is_idempotent_and_keeps_its_block(self):
+        self.write(DESKTOP_NAME, NETSCAPE, mtime=time.time() - 60)
+        self.assertTrue(backend.vault_load()["yt_cookie"])
+        self.assertEqual(api("/api/cookies/remove", {"site": "yt"})[0], 200)
+        first = dict(backend.cookie_states()["yt"])
+        self.assertEqual(first["state"], "removed")
+        self.assertEqual(first["hash"], backend.cookie_hash(NETSCAPE))
+        self.assertEqual(api("/api/cookies/remove", {"site": "yt"})[0], 200)
+        self.assertEqual(backend.cookie_states()["yt"]["hash"], first["hash"],
+                         "a second remove forgot which value was removed")
+        body = api("/api/cookies")[1]
+        self.assertEqual(body["yt"]["state"], "none")
+        self.assertFalse(body["yt"]["has"])
+        self.assertEqual(backend.vault_load()["yt_cookie"], "")
+
+    # 16
+    def test_a_verdict_is_only_shown_for_the_value_it_describes(self):
+        real = backend.check_yt_cookie
+        try:
+            self.assertTrue(backend.vault_save("yt", OLD_NETSCAPE)["ok"])
+            self.assertEqual(backend.vault_load()["state"]["yt"], "unverified")
+            backend.check_yt_cookie = lambda c: {"ok": True, "msg": ""}
+            probe = backend.cookie_check("yt", backend.normalize_cookie(NEW_NETSCAPE))
+            self.assertEqual(probe["state"], "connected", "the probe's verdict must still come back to its caller")
+        finally:
+            backend.check_yt_cookie = real
+        v = backend.vault_load()
+        self.assertEqual(v["yt_cookie"], backend.normalize_cookie(OLD_NETSCAPE), "a probe replaced the stored value")
+        self.assertEqual(v["state"]["yt"], "unverified", "a probe's verdict was shown for the stored value")
+        body = api("/api/cookies")[1]
+        self.assertTrue(body["yt"]["has"])
+        self.assertEqual(body["yt"]["state"], "unverified")
+        self.assertEqual((backend.cookie_states().get("yt") or {}).get("state"), "unverified",
+                         "a probe overwrote the stored verdict")
+
+        # a record that describes some other value is never shown for the stored one
+        backend._cookie_state_set("yt", "connected", "ok", "manual", NEW_NETSCAPE)
+        self.assertEqual(backend.vault_load()["state"]["yt"], "unverified")
+        body = api("/api/cookies")[1]
+        self.assertEqual(body["yt"]["state"], "unverified")
+        self.assertEqual(body["yt"]["checked_at"], 0, "a foreign record's checked_at was reported")
+
+    # 17
+    def test_an_empty_yt_key_is_rejected_and_writes_nothing(self):
+        code, body = api("/api/latch", {"yt_cookie": "", "spotify_cookie": SP_HEADER})
+        self.assertEqual(code, 400, body)
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["state"], "empty")
+        self.assertEqual(body["error"], "missing - upload the cookie file")
+        self.assertEqual(backend.cookie_states(), {}, "an empty yt still wrote a verdict")
+        self.assertEqual(backend.vault_load()["sp_cookie"], "", "an empty yt still reached the sp path")
+
+        code, body = api("/api/latch", {"spotify_cookie": SP_HEADER})
+        self.assertEqual(code, 200, body)
+        self.assertTrue(body["ok"])
+        self.assertEqual(backend.vault_load()["sp_cookie"], backend.normalize_cookie(SP_HEADER))
+
     # 8
     def test_api_cookies_never_carries_a_value(self):
         self.assertTrue(backend.vault_save("yt", HEADER)["ok"])

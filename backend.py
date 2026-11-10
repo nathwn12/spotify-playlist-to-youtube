@@ -434,10 +434,13 @@ def vault_load() -> dict:
     site_state = {}
     for site in ("sp", "yt"):
         cur = out.get(site + "_cookie") or ""
-        st = (states.get(site) or {}).get("state") or ""
+        entry = states.get(site) or {}
+        st = entry.get("state") or ""
         if not cur:
             site_state[site] = "none"
-        elif st in ("expired", "junk") and (states.get(site) or {}).get("hash") == cookie_hash(cur):
+        elif entry.get("hash") != cookie_hash(cur):
+            site_state[site] = "unverified"   # the record describes some other value
+        elif st in ("expired", "junk"):
             out[site + "_cookie"] = ""
             site_state[site] = st
         else:
@@ -460,6 +463,9 @@ def vault_remove(which: str):
     v["_meta"] = meta
     _vault_write(v)
     d = cookie_states()
+    prev = d.get(which) or {}
+    if not held and prev.get("state") == "removed" and prev.get("hash"):
+        return   # a second remove keeps the block on the value already removed
     d[which] = {"hash": cookie_hash(held) if held else "", "state": "removed", "msg": "removed",
                 "checked_at": int(time.time()), "source": ""}
     try:
@@ -505,12 +511,14 @@ def cookie_check(site: str, cookie: str, source: str = "") -> dict:
     if state == "network":
         msg += " - your file is saved"
     src = source or _vault_source(site)
-    if state in ("expired", "junk"):
-        held = _decode(_vault_read(), site)
+    held = _decode(_vault_read(), site)
+    stray = bool(held) and cookie_hash(held) != cookie_hash(cookie)   # a probe, not the stored value
+    if state in ("expired", "junk") and not stray:
         if not held or cookie_hash(held) == cookie_hash(cookie):
             vault_remove(site)   # auto-reject only the value that failed
         # the verdict is written after the removal so the same file is never re-adopted
-    _cookie_state_set(site, state, detail, src, cookie)
+    if not stray:
+        _cookie_state_set(site, state, detail, src, cookie)
     return {"ok": state == "connected", "state": state, "msg": msg, "detail": detail}
 
 def cookies_state() -> dict:
@@ -526,11 +534,13 @@ def cookies_state() -> dict:
         meta = (v.get("meta") or {}).get(site) or {}
         cand = by_hash.get((site, cookie_hash(cookie))) if cookie else None
         known = bool(cookie) or state != "none"
+        entry = states.get(site) or {}
+        fresh = bool(cookie) and entry.get("hash") == cookie_hash(cookie)
         body[site] = {"has": bool(cookie), "state": state, "msg": _STATE_MSG.get(state, ""),
                       "source": (meta.get("source") or "") if known else "",
                       "file": cand["name"] if cand else "",
                       "latched_at": int(meta.get("latched_at") or 0),
-                      "checked_at": int((states.get(site) or {}).get("checked_at") or 0)}
+                      "checked_at": int(entry.get("checked_at") or 0) if fresh else 0}
     detected = {}
     for site in ("sp", "yt"):
         c = scan["best"].get(site)
@@ -2474,6 +2484,10 @@ class H(BaseHTTPRequestHandler):
                                        "has_yt": bool(v["yt_cookie"]),
                                        "yt_state": (v.get("state") or {}).get("yt", "none"), **v})
             if self.path == "/api/latch":
+                if "yt_cookie" in payload and not normalize_cookie(str(payload.get("yt_cookie") or "")):
+                    blog("latch", "yt empty rejected")
+                    return self.send_json({"ok": False, "state": "empty",
+                                           "error": "missing - upload the cookie file"}, 400)
                 sp_raw = str(payload.get("spotify_cookie", "") or "")
                 spr = (vault_save("sp", sp_raw) if sp_raw.strip()
                        else {"ok": False, "state": "none", "msg": "no Spotify cookie sent"})
