@@ -25,6 +25,7 @@ import backend  # noqa: E402
 DESKTOP_NAME = "music.youtube.com_cookies.txt"
 
 HEADER = "SID=abc123def456; HSID=def456ghi789; SSID=ghi789jkl012; APISID=jkl012mno345; SAPISID=AbCdEfGhIjKlMnOp"
+SP_HEADER = "sp_dc=SpOtIfYdC1234567890; sp_key=SpOtIfYk1234567890"
 
 NETSCAPE = "\n".join([
     "# Netscape HTTP Cookie File",
@@ -292,6 +293,49 @@ class CookieTests(unittest.TestCase):
         self.assertFalse(body["ok"])
         self.assertEqual(body["state"], "expired")
         self.assertEqual(backend.vault_load()["yt_cookie"], before)
+
+    # 13
+    def test_check_cannot_resurrect_a_removed_cookie(self):
+        self.write(DESKTOP_NAME, NETSCAPE, mtime=time.time() - 60)
+        self.assertTrue(backend.vault_load()["yt_cookie"])
+        self.assertEqual(api("/api/cookies/remove", {"site": "yt"})[0], 200)
+
+        real, calls = backend.check_yt_cookie, []
+        backend.check_yt_cookie = lambda c: calls.append(c) or {"ok": True, "msg": ""}
+        try:
+            code, r = api("/api/cookies/check", {"site": "yt"})
+        finally:
+            backend.check_yt_cookie = real
+        self.assertEqual(code, 200, r)
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["state"], "none")
+        self.assertEqual(r["msg"], "Not connected yet")
+        self.assertEqual(calls, [], "a removed file was checked and could have been latched again")
+        self.assertEqual(backend.vault_load()["yt_cookie"], "")
+        body = api("/api/cookies")[1]
+        self.assertFalse(body["yt"]["has"])
+        self.assertEqual(body["yt"]["state"], "none")
+
+    # 14
+    def test_latch_reports_the_spotify_verdict_and_never_calls_junk_saved(self):
+        backend.HISTORY.clear()
+        code, body = api("/api/latch", {"spotify_cookie": NOTES, "yt_cookie": HEADER})
+        self.assertEqual(code, 400, body)
+        self.assertFalse(body["ok"])
+        self.assertFalse(body["sp"]["ok"])
+        self.assertEqual(body["sp"]["state"], "junk")
+        self.assertTrue(body["sp"]["msg"])
+        self.assertFalse([l for l in backend.HISTORY if "cookies latched" in l],
+                         "a junk Spotify paste was logged as latched")
+        self.assertEqual(backend.vault_load()["yt_cookie"], backend.normalize_cookie(HEADER),
+                         "the yt path is unchanged: a valid yt cookie is still saved")
+
+        code, body = api("/api/latch", {"spotify_cookie": SP_HEADER})
+        self.assertEqual(code, 200, body)
+        self.assertTrue(body["ok"])
+        self.assertTrue(body["sp"]["ok"])
+        self.assertEqual(body["sp"]["state"], "unverified")
+        self.assertEqual(backend.vault_load()["sp_cookie"], backend.normalize_cookie(SP_HEADER))
 
     # 8
     def test_api_cookies_never_carries_a_value(self):

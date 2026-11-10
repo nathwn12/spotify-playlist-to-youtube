@@ -2421,6 +2421,12 @@ class H(BaseHTTPRequestHandler):
                 if not cookie:
                     cand = scan_disk_cookies()["best"].get(site)
                     if cand:
+                        st = cookie_states().get(site) or {}
+                        if st.get("state") == "removed" and st.get("hash") == cookie_hash(cand["raw"]):
+                            # a removed value is not re-opened by a check; only choosing it is
+                            blog("cookiecheck", f"{site}=none (removed)")
+                            return self.send_json({"ok": False, "site": site, "state": "none",
+                                                   "msg": "Not connected yet"})
                         cookie, src = cand["raw"], cand["source"]
                 r = cookie_check(site, cookie, src)
                 blog("cookiecheck", f"{site}={r['state']}")
@@ -2468,17 +2474,27 @@ class H(BaseHTTPRequestHandler):
                                        "has_yt": bool(v["yt_cookie"]),
                                        "yt_state": (v.get("state") or {}).get("yt", "none"), **v})
             if self.path == "/api/latch":
-                vault_save("sp", payload.get("spotify_cookie", ""))
+                sp_raw = str(payload.get("spotify_cookie", "") or "")
+                spr = (vault_save("sp", sp_raw) if sp_raw.strip()
+                       else {"ok": False, "state": "none", "msg": "no Spotify cookie sent"})
+                sp_bad = bool(sp_raw.strip()) and not spr["ok"]
                 yt_raw = payload.get("yt_cookie", "")
+                yt_saved = False
                 if normalize_cookie(yt_raw):
                     r = vault_save("yt", yt_raw, source="manual")
                     if not r["ok"]:
                         blog("latch", f"yt {r['state']} rejected")
-                        return self.send_json({"ok": False, "state": r["state"], "error": r["msg"]}, 400)
-                    blog("latch", "cookies latched to vault")
-                    return self.send_json({"ok": True, "state": "unverified", "msg": "saved"})
+                        return self.send_json({"ok": False, "state": r["state"],
+                                               "error": r["msg"], "sp": spr}, 400)
+                    yt_saved = True
+                if sp_bad:
+                    blog("latch", f"sp {spr['state']} rejected" + ("; yt saved" if yt_saved else ""))
+                    return self.send_json({"ok": False, "state": spr["state"],
+                                           "error": spr["msg"], "sp": spr}, 400)
                 blog("latch", "cookies latched to vault")
-                return self.send_json({"ok": True})
+                if yt_saved:
+                    return self.send_json({"ok": True, "state": "unverified", "msg": "saved", "sp": spr})
+                return self.send_json({"ok": True, "sp": spr})
             if self.path == "/api/forget":
                 vault_forget()
                 try:
