@@ -395,6 +395,34 @@ class CookieTests(unittest.TestCase):
         self.assertTrue(body["ok"])
         self.assertEqual(backend.vault_load()["sp_cookie"], backend.normalize_cookie(SP_HEADER))
 
+    # 18
+    def test_an_empty_probe_writes_nothing_and_the_removed_record_survives(self):
+        self.write(DESKTOP_NAME, NETSCAPE, mtime=time.time() - 60)
+        self.assertTrue(backend.vault_load()["yt_cookie"])
+        self.assertEqual(api("/api/cookies/remove", {"site": "yt"})[0], 200)
+        blocked = dict(backend.cookie_states()["yt"])
+        self.assertEqual(blocked["state"], "removed")
+        self.assertEqual(blocked["hash"], backend.cookie_hash(NETSCAPE))
+
+        code, r = api("/api/check", {"yt_cookie": ""})
+        self.assertEqual(code, 200, r)
+        self.assertEqual(r["ytm"]["state"], "none")
+        self.assertFalse(r["ytm"]["ok"])
+
+        os.remove(os.path.join(self.watch, DESKTOP_NAME))   # no candidate left to fall back to
+        code, r = api("/api/cookies/check", {"site": "yt"})
+        self.assertEqual(code, 200, r)
+        self.assertEqual(r["state"], "none")
+        self.assertEqual(r["msg"], "Not connected yet")
+
+        self.assertEqual(backend.cookie_states()["yt"], blocked, "an empty probe rewrote the removed record")
+        self.assertNotEqual(backend.cookie_states()["yt"]["hash"], backend.cookie_hash(""),
+                            "the removed hash was replaced by the hash of nothing")
+        self.assertEqual(backend.vault_load()["yt_cookie"], "")
+
+        self.write(DESKTOP_NAME, NETSCAPE, mtime=time.time() - 60)
+        self.assertEqual(backend.vault_load()["yt_cookie"], "", "an empty probe let the removed file back in")
+
     # 8
     def test_api_cookies_never_carries_a_value(self):
         self.assertTrue(backend.vault_save("yt", HEADER)["ok"])

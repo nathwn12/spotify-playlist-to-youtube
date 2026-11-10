@@ -487,11 +487,13 @@ def _vault_source(site: str) -> str:
     return _vault_meta(_vault_read(), site)["source"] or "unknown"
 
 def cookie_check(site: str, cookie: str, source: str = "") -> dict:
-    """Shape, then network-check one cookie. Persists the verdict; a dead one is dropped."""
+    """Shape, then network-check one cookie. Persists the verdict; a dead one is dropped.
+    An empty probe persists nothing: there is no value, so there is no record to write."""
     shp = cookie_shape(cookie, site)
     if shp["state"] == "empty":
-        state, detail = "none", "missing - upload the cookie file"
-    elif shp["state"] == "junk":
+        return {"ok": False, "state": "none", "msg": _STATE_MSG["none"],
+                "detail": "missing - upload the cookie file"}
+    if shp["state"] == "junk":
         state, detail = "junk", shp["reason"]
     elif shp["state"] == "expired":
         state, detail = "expired", "expired - its own expiry field is in the past"
