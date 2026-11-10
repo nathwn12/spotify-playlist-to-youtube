@@ -474,6 +474,56 @@ class CookieTests(unittest.TestCase):
         self.assertEqual(body["yt"]["state"], "unverified")
         self.assertEqual(body["detected"]["yt"]["name"], "yt-new.txt", "detected must still name the newest")
 
+    # 21
+    def test_a_removal_that_lands_during_the_verdict_write_still_wins(self):
+        """Remove between a check's record comparison and its state write must still win:
+        compare-plus-write is one critical section, shared with vault_remove."""
+        self.assertTrue(backend.vault_save("yt", HEADER)["ok"])
+        at_barrier, resume = threading.Event(), threading.Event()
+        removing, removed = threading.Event(), threading.Event()
+        real_hook, real = backend._COOKIE_CHECK_HOOK, backend.check_yt_cookie
+        out = {}
+
+        def hold(site):
+            at_barrier.set()
+            resume.wait(10)
+
+        def drop():
+            removing.set()
+            backend.vault_remove("yt")
+            removed.set()
+
+        backend._COOKIE_CHECK_HOOK = hold
+        backend.check_yt_cookie = lambda c: {"ok": True, "msg": ""}
+        try:
+            t = threading.Thread(
+                target=lambda: out.update(backend.cookie_check("yt", backend.normalize_cookie(HEADER))))
+            t.start()
+            self.assertTrue(at_barrier.wait(10), "the check never reached its compare-and-write")
+            r = threading.Thread(target=drop, daemon=True)
+            r.start()
+            self.assertTrue(removing.wait(10), "the removal thread never started")
+            # When the write holds the lock the removal waits for it; whichever order these
+            # land in, the record must end up removed. Both orders are exercised by the two runs.
+            removed.wait(0.25)
+            resume.set()
+            t.join(10)
+            r.join(10)
+        finally:
+            backend._COOKIE_CHECK_HOOK = real_hook
+            backend.check_yt_cookie = real
+        self.assertEqual(out.get("state"), "connected", "the verdict must still come back to its caller")
+        self.assertFalse(t.is_alive(), "the check never finished")
+        self.assertFalse(r.is_alive(), "the removal never finished")
+        record = backend.cookie_states()["yt"]
+        self.assertEqual(record["state"], "removed", "a verdict written during a removal overwrote it")
+        self.assertEqual(record["hash"], backend.cookie_hash(HEADER), "the removed value lost its identity")
+        self.assertEqual(backend.vault_load()["yt_cookie"], "")
+
+        self.write("headers.txt", HEADER, mtime=time.time() - 60)
+        self.assertEqual(backend.vault_load()["yt_cookie"], "",
+                         "the removed value came back on the next scan")
+
     # 8
     def test_api_cookies_never_carries_a_value(self):
         self.assertTrue(backend.vault_save("yt", HEADER)["ok"])

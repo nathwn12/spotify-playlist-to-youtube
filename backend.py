@@ -166,6 +166,8 @@ COOKIE_MAX_READ = 200000
 COOKIE_MAX_SIZE = 1024 * 1024
 YT_AUTH = ("SAPISID", "__Secure-3PAPISID", "__Secure-1PAPISID")
 SP_AUTH = ("sp_dc", "sp_key")
+_COOKIE_LOCK = threading.RLock()
+_COOKIE_CHECK_HOOK = None   # test seam: runs inside the compare-and-write critical section
 _STATE_MSG = {"connected": "Connected", "unverified": "Saved, not checked yet",
               "expired": "Needs a fresh file", "junk": "That file is not a cookie",
               "network": "Could not reach YouTube Music", "none": "Not connected yet"}
@@ -459,24 +461,25 @@ def vault_remove(which: str):
     will not hand the same file back, and the user clears the block by choosing a file."""
     if which not in ("sp", "yt"):
         return
-    v = _vault_read()
-    held = _decode(v, which)
-    v.pop(which, None)
-    meta = v.get("_meta") if isinstance(v.get("_meta"), dict) else {}
-    meta.pop(which, None)
-    v["_meta"] = meta
-    _vault_write(v)
-    d = cookie_states()
-    prev = d.get(which) or {}
-    if not held and prev.get("state") == "removed" and prev.get("hash"):
-        return   # a second remove keeps the block on the value already removed
-    d[which] = {"hash": cookie_hash(held) if held else "", "state": "removed", "msg": "removed",
-                "checked_at": int(time.time()), "source": ""}
-    try:
-        with open(COOKIEF, "w", encoding="utf-8") as f:
-            json.dump(d, f)
-    except Exception:
-        pass
+    with _COOKIE_LOCK:
+        v = _vault_read()
+        held = _decode(v, which)
+        v.pop(which, None)
+        meta = v.get("_meta") if isinstance(v.get("_meta"), dict) else {}
+        meta.pop(which, None)
+        v["_meta"] = meta
+        _vault_write(v)
+        d = cookie_states()
+        prev = d.get(which) or {}
+        if not held and prev.get("state") == "removed" and prev.get("hash"):
+            return   # a second remove keeps the block on the value already removed
+        d[which] = {"hash": cookie_hash(held) if held else "", "state": "removed", "msg": "removed",
+                    "checked_at": int(time.time()), "source": ""}
+        try:
+            with open(COOKIEF, "w", encoding="utf-8") as f:
+                json.dump(d, f)
+        except Exception:
+            pass
 
 def vault_forget():
     for site in ("sp", "yt"):
@@ -520,19 +523,26 @@ def cookie_check(site: str, cookie: str, source: str = "") -> dict:
     msg = _STATE_MSG.get(state, "")
     if state == "network":
         msg += " - your file is saved"
-    then = cookie_states().get(site) or {}
-    if (then.get("hash"), then.get("checked_at")) != sig:
-        # the record moved under this check: an old verdict is not evidence about the new value
-        return {"ok": state == "connected", "state": state, "msg": msg, "detail": detail}
-    src = source or _vault_source(site)
-    held = _decode(_vault_read(), site)
-    stray = bool(held) and cookie_hash(held) != cookie_hash(cookie)   # a probe, not the stored value
-    if state in ("expired", "junk") and not stray:
-        if not held or cookie_hash(held) == cookie_hash(cookie):
-            vault_remove(site)   # auto-reject only the value that failed
-        # the verdict is written after the removal so the same file is never re-adopted
-    if not stray:
-        _cookie_state_set(site, state, detail, src, cookie)
+    # The record may have moved while the network call ran, and a remove may land while this
+    # verdict is being written: compare and write as one critical section shared with
+    # vault_remove, so a check that began before Remove can never overwrite Remove.
+    # The lock is never held across the network call above.
+    with _COOKIE_LOCK:
+        then = cookie_states().get(site) or {}
+        if (then.get("hash"), then.get("checked_at")) != sig:
+            # the record moved under this check: an old verdict is not evidence about the new value
+            return {"ok": state == "connected", "state": state, "msg": msg, "detail": detail}
+        if _COOKIE_CHECK_HOOK:
+            _COOKIE_CHECK_HOOK(site)
+        src = source or _vault_source(site)
+        held = _decode(_vault_read(), site)
+        stray = bool(held) and cookie_hash(held) != cookie_hash(cookie)   # a probe, not the stored value
+        if state in ("expired", "junk") and not stray:
+            if not held or cookie_hash(held) == cookie_hash(cookie):
+                vault_remove(site)   # auto-reject only the value that failed
+            # the verdict is written after the removal so the same file is never re-adopted
+        if not stray:
+            _cookie_state_set(site, state, detail, src, cookie)
     return {"ok": state == "connected", "state": state, "msg": msg, "detail": detail}
 
 def cookies_state() -> dict:
