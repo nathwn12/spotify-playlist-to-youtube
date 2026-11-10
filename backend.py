@@ -3,7 +3,7 @@
 Spotify: scrapes public embed __NEXT_DATA__ (optional user Cookie forwarded).
 YTM: InnerTube WEB_REMIX + user-supplied Cookie (SAPISIDHASH derived server-side).
 """
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 import json, re, sys, time, base64, hashlib, hmac, struct, shutil, sqlite3, subprocess, tempfile, threading, unicodedata, urllib.request, urllib.parse, webbrowser
 import ctypes
 from ctypes import wintypes
@@ -159,6 +159,16 @@ def run_reset() -> bool:
         return True
 VAULTF = os.path.join(STATE, "cookie_vault.json")
 WATCHF = os.path.join(STATE, "cookie_watch.json")
+COOKIEF = os.path.join(STATE, "cookie_state.json")
+COOKIE_EXTS = (".txt", ".cookies")
+COOKIE_MAX_FILES = 200
+COOKIE_MAX_READ = 200000
+COOKIE_MAX_SIZE = 1024 * 1024
+YT_AUTH = ("SAPISID", "__Secure-3PAPISID", "__Secure-1PAPISID")
+SP_AUTH = ("sp_dc", "sp_key")
+_STATE_MSG = {"connected": "Connected", "unverified": "Saved, not checked yet",
+              "expired": "Needs a fresh file", "junk": "That file is not a cookie",
+              "network": "Could not reach YouTube Music", "none": "Not connected yet"}
 
 def home_dir() -> str:
     return os.path.expanduser("~")
@@ -174,38 +184,123 @@ def cookie_dirs() -> list:
         pass
     return [d for d in dirs if os.path.isdir(d)]
 
-def scan_disk_cookies() -> dict:
-    """Newest cookie-like .txt per site across watched dirs. Reads metadata+markers only."""
-    best = {}
-    for d in cookie_dirs():
-        try:
-            names = [n for n in os.listdir(d) if n.lower().endswith(".txt")]
-        except Exception:
-            continue
-        for n in names[:100]:
-            p = os.path.join(d, n)
-            try:
-                if os.path.getsize(p) > 1024 * 1024:
-                    continue
-                with open(p, encoding="utf-8", errors="ignore") as f:
-                    raw = f.read(200000)
-            except Exception:
-                continue
-            site = detect_site(raw)
-            if not site:
-                continue
-            mt = os.path.getmtime(p)
-            if site not in best or mt > best[site][0]:
-                best[site] = (mt, p, raw)
-    return best
+def _dir_source(d: str) -> str:
+    b = os.path.basename(os.path.normpath(d)).lower()
+    if b == "desktop":
+        return "desktop"
+    if b == "downloads":
+        return "downloads"
+    return "extra"
 
-def detect_site(cookie: str) -> str:
-    c = cookie or ""
-    if "SAPISID" in c or "music.youtube" in c:
+def _netscape_rows(raw: str) -> list:
+    """Tab-separated cookie-file rows as field lists, '#HttpOnly_' prefix stripped."""
+    rows = []
+    for line in (raw or "").splitlines():
+        line = line.strip()
+        if line.startswith("#HttpOnly_"):
+            line = line[10:].strip()
+        if not line or line.startswith("#") or "\t" not in line:
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 7:
+            rows.append(parts)
+    return rows
+
+def cookie_site(raw: str, filename: str = "") -> str:
+    """Which site a cookie blob belongs to: content markers win over the filename."""
+    s = raw or ""
+    fn = (filename or "").lower()
+    rows = _netscape_rows(s)
+    if any(m in s for m in YT_AUTH) or any(r[0].strip().lower().endswith(".youtube.com") for r in rows):
         return "yt"
-    if "sp_dc" in c or "sp_key" in c or "open.spotify" in c or "spotify" in c.lower():
+    if any(m in s for m in SP_AUTH) or any(r[0].strip().lower().endswith(".spotify.com") for r in rows):
+        return "sp"
+    if "music.youtube.com_cookies.txt" in fn:
+        return "yt"
+    if "spotify" in fn:
         return "sp"
     return ""
+
+def cookie_shape(raw: str, site: str) -> dict:
+    """Structural verdict on a cookie blob: valid | junk | empty | expired, plus a reason.
+    A reason names cookie fields only - it never contains a value."""
+    norm = normalize_cookie(raw)
+    if not norm:
+        return {"ok": False, "state": "empty", "reason": "no cookie pairs in the file", "expires_at": 0}
+    head = (raw or "").strip()[:400].lower()
+    if head.startswith("<!doctype") or "<html" in head:
+        return {"ok": False, "state": "junk", "reason": "looks like an HTML page", "expires_at": 0}
+    if head.startswith("{") or head.startswith("["):
+        return {"ok": False, "state": "junk", "reason": "looks like JSON", "expires_at": 0}
+    pairs = [p.strip() for p in norm.split(";") if "=" in p]
+    if len(pairs) < 2:
+        return {"ok": False, "state": "junk", "reason": "fewer than 2 name=value pairs", "expires_at": 0}
+    auth = YT_AUTH if site == "yt" else SP_AUTH
+    found = [(p.split("=", 1)[0].strip(), p.split("=", 1)[1].strip()) for p in pairs]
+    mine = [(n, v) for n, v in found if n in auth]
+    if not mine:
+        return {"ok": False, "state": "junk", "reason": "no login cookie for this site", "expires_at": 0}
+    for name, val in mine:
+        if len(val) < 10:
+            return {"ok": False, "state": "junk", "reason": f"{name} is too short to be a cookie value", "expires_at": 0}
+        if re.search(r"[<>\"'\s]", val) or "..." in val or "\u2026" in val:
+            return {"ok": False, "state": "junk", "reason": f"{name} is a placeholder, not a cookie value", "expires_at": 0}
+    rows = [r for r in _netscape_rows(raw) if r[5].strip() in auth]
+    expiries = []
+    for r in rows:
+        try:
+            expiries.append(int(r[4]))
+        except Exception:
+            pass
+    if expiries and 0 not in expiries and max(expiries) < int(time.time()):
+        return {"ok": False, "state": "expired", "reason": "its own expiry field is in the past",
+                "expires_at": max(expiries)}
+    return {"ok": True, "state": "valid", "reason": "", "expires_at": max([e for e in expiries if e > 0] or [0])}
+
+def scan_disk_cookies() -> dict:
+    """Valid cookie files in the watched dirs, what was rejected and why, and the dirs scanned."""
+    best, ignored = {}, []
+    dirs = cookie_dirs()
+    seen = 0
+    for d in dirs:
+        src = _dir_source(d)
+        try:
+            names = sorted(os.listdir(d))
+        except Exception:
+            continue
+        for n in names:
+            if seen >= COOKIE_MAX_FILES:
+                break
+            if not n.lower().endswith(COOKIE_EXTS):
+                continue
+            p = os.path.join(d, n)
+            try:
+                if not os.path.isfile(p) or os.path.getsize(p) > COOKIE_MAX_SIZE:
+                    continue
+                with open(p, encoding="utf-8", errors="ignore") as f:
+                    raw = f.read(COOKIE_MAX_READ)
+                mt = os.path.getmtime(p)
+            except Exception:
+                continue
+            seen += 1
+            site = cookie_site(raw, n)
+            if not site:
+                continue
+            shp = cookie_shape(raw, site)
+            if shp["state"] in ("junk", "expired"):
+                ignored.append({"name": n, "site": site, "state": shp["state"], "reason": shp["reason"]})
+                continue
+            if shp["state"] != "valid":
+                continue
+            cur = best.get(site)
+            if not cur or mt > cur["mtime"]:
+                best[site] = {"path": p, "name": n, "raw": raw, "mtime": mt,
+                              "state": shp["state"], "expires_at": shp["expires_at"], "source": src}
+    return {"best": best, "ignored": ignored, "dirs": dirs}
+
+def detect_site(cookie: str) -> str:
+    """Compatibility wrapper: new code goes through cookie_site + cookie_shape."""
+    return cookie_site(cookie)
 
 class DATA_BLOB(ctypes.Structure):
     _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
@@ -226,60 +321,215 @@ def _dpapi_blob(fn, data: bytes) -> bytes:
     finally:
         ctypes.windll.kernel32.LocalFree(bout.pbData)
 
-def vault_save(which: str, cookie: str):
-    """Latch a cookie vault-side, DPAPI-encrypted (this Windows user only). Plain values never touch disk."""
-    c = normalize_cookie(cookie)
-    if which not in ("sp", "yt") or not c:
-        return
+def _vault_read() -> dict:
     try:
         with open(VAULTF, encoding="utf-8") as f:
             v = json.load(f)
-            v = v if isinstance(v, dict) else {}
+        return v if isinstance(v, dict) else {}
     except Exception:
-        v = {}
+        return {}
+
+def _vault_write(v: dict) -> bool:
     try:
-        v[which] = base64.b64encode(_dpapi_blob(ctypes.windll.crypt32.CryptProtectData, c.encode())).decode()
         with open(VAULTF, "w", encoding="utf-8") as f:
             json.dump(v, f)
+        return True
+    except Exception:
+        return False
+
+def _decode(v: dict, site: str) -> str:
+    try:
+        return _dpapi_blob(
+            ctypes.windll.crypt32.CryptUnprotectData, base64.b64decode(v[site])).decode() if v.get(site) else ""
+    except Exception:
+        return ""
+
+def _vault_meta(v: dict, site: str) -> dict:
+    m = v.get("_meta") if isinstance(v.get("_meta"), dict) else {}
+    m = m.get(site) if isinstance(m.get(site), dict) else {}
+    return {"latched_at": m.get("latched_at") or 0, "source": m.get("source") or ""}
+
+def cookie_hash(cookie: str) -> str:
+    """16 hex chars of sha256 over the normalized value - an identity, never a value."""
+    return hashlib.sha256(normalize_cookie(cookie).encode()).hexdigest()[:16]
+
+def cookie_states() -> dict:
+    try:
+        with open(COOKIEF, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+def _cookie_state_set(site: str, state: str, msg: str, source: str, cookie: str, checked_at=None):
+    d = cookie_states()
+    d[site] = {"hash": cookie_hash(cookie), "state": state, "msg": (msg or "")[:200],
+               "checked_at": int(time.time()) if checked_at is None else int(checked_at),
+               "source": source or "unknown"}
+    try:
+        with open(COOKIEF, "w", encoding="utf-8") as f:
+            json.dump(d, f)
     except Exception:
         pass
+
+def _cookie_state_drop(site: str):
+    d = cookie_states()
+    d.pop(site, None)
+    try:
+        if d:
+            with open(COOKIEF, "w", encoding="utf-8") as f:
+                json.dump(d, f)
+        else:
+            os.remove(COOKIEF)
+    except Exception:
+        pass
+
+def vault_save(which: str, cookie: str, source: str = "manual", latched_at: float = 0) -> dict:
+    """Validate, then latch a cookie vault-side, DPAPI-encrypted (this Windows user only).
+    Plain values never touch disk. Junk and empty write nothing."""
+    if which not in ("sp", "yt"):
+        return {"ok": False, "state": "none", "msg": "unknown site"}
+    shp = cookie_shape(cookie, which)
+    if shp["state"] in ("junk", "empty"):
+        return {"ok": False, "state": shp["state"], "msg": shp["reason"]}
+    c = normalize_cookie(cookie)
+    state = "expired" if shp["state"] == "expired" else "unverified"
+    try:
+        v = _vault_read()
+        v[which] = base64.b64encode(_dpapi_blob(ctypes.windll.crypt32.CryptProtectData, c.encode())).decode()
+        meta = v.get("_meta") if isinstance(v.get("_meta"), dict) else {}
+        meta[which] = {"latched_at": latched_at or time.time(), "source": source}
+        v["_meta"] = meta
+        if not _vault_write(v):
+            return {"ok": False, "state": state, "msg": "could not save the cookie"}
+    except Exception:
+        return {"ok": False, "state": state, "msg": "could not save the cookie"}
+    _cookie_state_set(which, state, "saved", source, c, checked_at=0)
+    return {"ok": True, "state": state, "msg": "saved" if state == "unverified" else "expired"}
 
 def vault_load() -> dict:
-    try:
-        with open(VAULTF, encoding="utf-8") as f:
-            v = json.load(f)
-    except Exception:
-        v = {}
+    v = _vault_read()
     out, refreshed = {}, []
     for k in ("sp", "yt"):
+        out[k + "_cookie"] = _decode(v, k)
+    meta = {site: _vault_meta(v, site) for site in ("sp", "yt")}
+    states = cookie_states()
+    # re-latch: adopt a valid disk file only when it is newer than the value we already hold
+    for site, cand in scan_disk_cookies()["best"].items():
+        st = states.get(site) or {}
+        if st.get("state") in ("expired", "junk") and st.get("hash") == cookie_hash(cand["raw"]):
+            continue
+        cur = out.get(site + "_cookie") or ""
+        if cur and (cookie_hash(cur) == cookie_hash(cand["raw"]) or meta[site]["latched_at"] >= cand["mtime"]):
+            continue
+        norm = normalize_cookie(cand["raw"])
         try:
-            out[k + "_cookie"] = _dpapi_blob(
-                ctypes.windll.crypt32.CryptUnprotectData, base64.b64decode(v[k])).decode() if v.get(k) else ""
-        except Exception:
-            out[k + "_cookie"] = ""
-    # re-latch: watched dirs may hold a regenerated file -> adopt by content markers
-    for site, (_mt, path, raw) in scan_disk_cookies().items():
-        norm = normalize_cookie(raw)
-        if site and norm and norm != normalize_cookie(out.get(site + "_cookie", "")):
-            out[site + "_cookie"] = norm
             v[site] = base64.b64encode(_dpapi_blob(
                 ctypes.windll.crypt32.CryptProtectData, norm.encode())).decode()
-            refreshed.append(site + ":" + os.path.basename(path))
-    if refreshed:
-        try:
-            with open(VAULTF, "w", encoding="utf-8") as f:
-                json.dump(v, f)
         except Exception:
-            pass
-        blog("relatch", "fresh disk files adopted: " + ",".join(refreshed))
+            continue
+        out[site + "_cookie"] = norm
+        meta[site] = {"latched_at": cand["mtime"], "source": cand["source"]}
+        refreshed.append(site + ":" + cand["name"])
+    if refreshed:
+        v["_meta"] = meta
+        if _vault_write(v):
+            blog("relatch", "fresh disk files adopted: " + ",".join(refreshed))
+    site_state = {}
+    for site in ("sp", "yt"):
+        cur = out.get(site + "_cookie") or ""
+        st = (states.get(site) or {}).get("state") or ""
+        if not cur:
+            site_state[site] = "none"
+        elif st in ("expired", "junk") and (states.get(site) or {}).get("hash") == cookie_hash(cur):
+            out[site + "_cookie"] = ""
+            site_state[site] = st
+        else:
+            site_state[site] = st if st in ("connected", "unverified", "network") else "unverified"
     out["refreshed"] = refreshed
+    out["meta"] = meta
+    out["state"] = site_state
     return out
 
+def vault_remove(which: str):
+    if which not in ("sp", "yt"):
+        return
+    v = _vault_read()
+    v.pop(which, None)
+    meta = v.get("_meta") if isinstance(v.get("_meta"), dict) else {}
+    meta.pop(which, None)
+    v["_meta"] = meta
+    _vault_write(v)
+    _cookie_state_drop(which)
+
 def vault_forget():
-    try:
-        os.remove(VAULTF)
-    except Exception:
-        pass
+    for site in ("sp", "yt"):
+        vault_remove(site)
+    for p in (VAULTF, COOKIEF):
+        try:
+            os.remove(p)
+        except Exception:
+            pass
+
+def _vault_source(site: str) -> str:
+    return _vault_meta(_vault_read(), site)["source"] or "unknown"
+
+def cookie_check(site: str, cookie: str, source: str = "") -> dict:
+    """Shape, then network-check one cookie. Persists the verdict; a dead one is dropped."""
+    shp = cookie_shape(cookie, site)
+    if shp["state"] == "empty":
+        state, detail = "none", "missing - upload the cookie file"
+    elif shp["state"] == "junk":
+        state, detail = "junk", shp["reason"]
+    elif shp["state"] == "expired":
+        state, detail = "expired", "expired - its own expiry field is in the past"
+    else:
+        r = check_yt_cookie(cookie) if site == "yt" else check_spotify_cookie(cookie)
+        detail = str(r.get("msg") or "")
+        low = detail.lower()
+        if r.get("ok"):
+            state = "connected"
+        elif "could not reach" in low:
+            state = "network"
+        elif "no sapisid" in low:
+            state = "junk"
+        else:
+            state = "expired"
+    msg = _STATE_MSG.get(state, "")
+    if state == "network":
+        msg += " - your file is saved"
+    src = source or _vault_source(site)
+    if state in ("expired", "junk"):
+        held = _decode(_vault_read(), site)
+        if not held or cookie_hash(held) == cookie_hash(cookie):
+            vault_remove(site)   # auto-reject only the value that failed
+        # the verdict is written after the removal so the same file is never re-adopted
+    _cookie_state_set(site, state, detail, src, cookie)
+    return {"ok": state == "connected", "state": state, "msg": msg, "detail": detail}
+
+def cookies_state() -> dict:
+    """The /api/cookies payload: per-site state only, nothing that could reconstruct a value."""
+    v = vault_load()
+    scan = scan_disk_cookies()
+    states = cookie_states()
+    by_hash = {(site, cookie_hash(c["raw"])): c for site, c in scan["best"].items()}
+    body = {}
+    for site in ("sp", "yt"):
+        cookie = v.get(site + "_cookie") or ""
+        state = (v.get("state") or {}).get(site) or "none"
+        meta = (v.get("meta") or {}).get(site) or {}
+        cand = by_hash.get((site, cookie_hash(cookie))) if cookie else None
+        known = bool(cookie) or state != "none"
+        body[site] = {"has": bool(cookie), "state": state, "msg": _STATE_MSG.get(state, ""),
+                      "source": (meta.get("source") or "") if known else "",
+                      "file": cand["name"] if cand else "",
+                      "latched_at": int(meta.get("latched_at") or 0),
+                      "checked_at": int((states.get(site) or {}).get("checked_at") or 0)}
+    detected = {}
+    for site in ("sp", "yt"):
+        c = scan["best"].get(site)
+        detected[site] = {"name": c["name"], "path": c["path"], "mtime": int(c["mtime"])} if c else None
+    return {"ok": True, "dirs": scan["dirs"], **body, "detected": detected, "ignored": scan["ignored"]}
 
 def blog(event: str, detail: str = ""):
     """Audit log. Never writes cookie values — lengths only."""
@@ -336,6 +586,8 @@ def normalize_cookie(raw: str = "") -> str:
     pairs = []
     for line in s.splitlines():
         line = line.strip()
+        if line.startswith("#HttpOnly_"):
+            line = line[10:].strip()   # HttpOnly prefix is data, not a comment
         if not line or line.startswith("#"):
             continue
         if line[:7].lower() == "cookie:":
@@ -2067,6 +2319,8 @@ class H(BaseHTTPRequestHandler):
                 if inc:
                     out["interrupted"] = inc
             self.send_json(out)
+        elif self.path == "/api/cookies":
+            self.send_json(cookies_state())
         else:
             self.send_json({"error": "not found"}, 404)
     def do_POST(self):
@@ -2126,17 +2380,75 @@ class H(BaseHTTPRequestHandler):
                     return self.send_json({"ok": False, "error": "missing url"}, 400)
                 title = str(payload.get("title", "") or "")
                 privacy = str(payload.get("privacy", "PRIVATE") or "PRIVATE")
+                yt = str(payload.get("yt_cookie", "") or "")
+                if not normalize_cookie(yt):
+                    yt = vault_load().get("yt_cookie", "")
+                if not normalize_cookie(yt):
+                    return self.send_json({"ok": False, "error": "connect YouTube Music first",
+                                           "state": "none"}, 400)
+                if cookie_shape(yt, "yt")["state"] != "valid":
+                    blog("transfer", "yt cookie rejected: not a cookie")
+                    return self.send_json({"ok": False, "state": "junk",
+                                           "error": "that file is not a YouTube Music cookie - export a fresh one"}, 400)
                 rid = run_begin("", title)
                 blog("transfer", f"run={rid} started")
                 threading.Thread(target=_transfer_thread,
-                                 args=(url, payload.get("yt_cookie", ""), title, privacy, rid),
+                                 args=(url, yt, title, privacy, rid),
                                  daemon=True).start()
                 return self.send_json({"ok": True, "run_id": rid})
             if self.path == "/api/check":
                 sp = check_spotify_cookie(payload.get("spotify_cookie", ""))
-                yt = check_yt_cookie(payload.get("yt_cookie", ""))
-                blog("check", f"spotify={sp['ok']} ytm={yt['ok']}")
-                return self.send_json({"ok": True, "spotify": sp, "ytm": yt})
+                yt_raw = payload.get("yt_cookie", "")
+                if not normalize_cookie(yt_raw):
+                    yt_raw = vault_load().get("yt_cookie", "")
+                yt = cookie_check("yt", yt_raw)
+                blog("check", f"spotify={sp['ok']} ytm={yt['state']}")
+                return self.send_json({"ok": True, "spotify": sp,
+                                       "ytm": {"ok": yt["ok"], "msg": yt["detail"] or yt["msg"],
+                                               "state": yt["state"]}})
+            if self.path == "/api/cookies/check":
+                site = str(payload.get("site") or "yt").strip().lower()
+                if site not in ("sp", "yt"):
+                    return self.send_json({"ok": False, "error": "site must be sp or yt"}, 400)
+                v = vault_load()
+                cookie, src = v.get(site + "_cookie") or "", ""
+                if not cookie:
+                    cand = scan_disk_cookies()["best"].get(site)
+                    if cand:
+                        cookie, src = cand["raw"], cand["source"]
+                r = cookie_check(site, cookie, src)
+                blog("cookiecheck", f"{site}={r['state']}")
+                return self.send_json({"ok": r["ok"], "site": site, "state": r["state"], "msg": r["msg"]})
+            if self.path == "/api/cookies/remove":
+                site = str(payload.get("site") or "yt").strip().lower()
+                if site not in ("sp", "yt"):
+                    return self.send_json({"ok": False, "error": "site must be sp or yt"}, 400)
+                vault_remove(site)
+                blog("cookieremove", f"{site} removed")
+                return self.send_json({"ok": True, "site": site, "state": "none"})
+            if self.path == "/api/cookies/use":
+                site = str(payload.get("site") or "yt").strip().lower()
+                if site not in ("sp", "yt"):
+                    return self.send_json({"ok": False, "error": "site must be sp or yt"}, 400)
+                want = str(payload.get("file") or "").strip().lower()
+                scan = scan_disk_cookies()
+                cand = None
+                if want:
+                    for s, c in scan["best"].items():
+                        if s == site and c["name"].lower() == want:
+                            cand = c
+                            break
+                else:
+                    cand = scan["best"].get(site)
+                if not cand:
+                    return self.send_json({"ok": False, "state": "none",
+                                           "error": "no valid cookie file found"}, 400)
+                r = vault_save(site, cand["raw"], source=cand["source"], latched_at=cand["mtime"])
+                if not r["ok"]:
+                    return self.send_json({"ok": False, "state": r["state"], "error": r["msg"]}, 400)
+                blog("cookieuse", f"{site} from {cand['source']}")
+                return self.send_json({"ok": True, "site": site, "state": "unverified", "msg": "saved",
+                                       "source": cand["source"], "file": cand["name"]})
             if self.path == "/api/reset":
                 if run_is_live():
                     return self.send_json({"ok": False, "error": "a transfer is already running"}, 409)
@@ -2147,10 +2459,18 @@ class H(BaseHTTPRequestHandler):
             if self.path == "/api/vault":
                 v = vault_load()
                 return self.send_json({"ok": True, "has_sp": bool(v["sp_cookie"]),
-                                       "has_yt": bool(v["yt_cookie"]), **v})
+                                       "has_yt": bool(v["yt_cookie"]),
+                                       "yt_state": (v.get("state") or {}).get("yt", "none"), **v})
             if self.path == "/api/latch":
                 vault_save("sp", payload.get("spotify_cookie", ""))
-                vault_save("yt", payload.get("yt_cookie", ""))
+                yt_raw = payload.get("yt_cookie", "")
+                if normalize_cookie(yt_raw):
+                    r = vault_save("yt", yt_raw, source="manual")
+                    if not r["ok"]:
+                        blog("latch", f"yt {r['state']} rejected")
+                        return self.send_json({"ok": False, "state": r["state"], "error": r["msg"]}, 400)
+                    blog("latch", "cookies latched to vault")
+                    return self.send_json({"ok": True, "state": "unverified", "msg": "saved"})
                 blog("latch", "cookies latched to vault")
                 return self.send_json({"ok": True})
             if self.path == "/api/forget":
