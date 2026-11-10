@@ -59,6 +59,23 @@ ok("/api/vault is gone", "/api/vault" not in script, "the page still reads the r
 ok("one latch call site only", script.count('"/api/latch"') == 1,
    "expected exactly one /api/latch call, found %d" % script.count('"/api/latch"'))
 
+# the rejection path must ask what is really stored before it claims failure:
+# /api/latch can save a valid yt cookie and still 400 on a junk spotify cookie.
+_i = script.index("async function latchText(")
+latch = script[_i:script.index("\n}", _i)]
+tail = latch[latch.index("return true;"):]
+JUNK = 'S.ytState="junk"'
+GUARD = 'S.ytState==="none"||S.ytState==="junk"||S.ytState==="expired"'
+ok("latch rejection re-reads the record", "await refreshAcct()" in tail,
+   "a 400 is turned into junk without GET /api/cookies")
+ok("latch re-reads before the junk fallback",
+   "await refreshAcct()" in tail and JUNK in tail
+   and tail.index("await refreshAcct()") < tail.index(JUNK),
+   "junk is set before the stored state is known")
+ok("latch shows the rejection only when nothing usable is stored",
+   GUARD in tail and JUNK in tail and tail.index(GUARD) < tail.index(JUNK),
+   "the backend error can cover a cookie that was really stored")
+
 # 4 the transfer surface is intact
 for i in ("srcurl", "startbtn", "ledger"):
     ok('id="%s" survives' % i, 'id="%s"' % i in html, "transfer surface broken")

@@ -808,15 +808,22 @@ function openSheet(el){el.classList.add("show");}
 function closeSheets(){pasteSheet.classList.remove("show");moreSheet.classList.remove("show");}
 /* One latch path for both entry points. The file input is cleared on every
    outcome so choosing the same file twice still fires change; a bad file lands
-   in `junk` with the backend's reason and never with the text we were handed. */
+   in `junk` with the backend's reason and never with the text we were handed.
+   A 400 is not proof the file was dropped: the backend saves a valid yt cookie
+   and still rejects a junk spotify cookie in the same request, so the rejection
+   is shown only when what is actually stored is none/junk/expired. */
 async function latchText(text){
   let r=null;
   try{r=await postJSON("/api/latch",{yt_cookie:text},45000);}catch(e){r=null;}
   ckInput.value="";pasteInput.value="";closeSheets();
   if(r&&r.ok){await refreshAcct();return true;}
-  S.ytState="junk";
-  S.ytHelp=(r&&r.error)||"Couldn't reach the server. Try that file again.";
-  renderAcct();return false;
+  await refreshAcct();
+  if(S.ytState==="none"||S.ytState==="junk"||S.ytState==="expired"){
+    S.ytState="junk";
+    S.ytHelp=(r&&r.error)||"Couldn't reach the server. Try that file again.";
+    renderAcct();
+  }
+  return false;
 }
 function latchFile(f){
   if(!f)return;
