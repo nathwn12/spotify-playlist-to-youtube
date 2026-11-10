@@ -258,8 +258,10 @@ def cookie_shape(raw: str, site: str) -> dict:
     return {"ok": True, "state": "valid", "reason": "", "expires_at": max([e for e in expiries if e > 0] or [0])}
 
 def scan_disk_cookies() -> dict:
-    """Valid cookie files in the watched dirs, what was rejected and why, and the dirs scanned."""
-    best, ignored = {}, []
+    """Valid cookie files in the watched dirs, what was rejected and why, and the dirs scanned.
+    `best` is the newest per site; `all` keeps every valid candidate per site, newest first,
+    so a name the user picked still resolves when a newer export sits beside it."""
+    allv, ignored = {}, []
     dirs = cookie_dirs()
     seen = 0
     for d in dirs:
@@ -292,11 +294,13 @@ def scan_disk_cookies() -> dict:
                 continue
             if shp["state"] != "valid":
                 continue
-            cur = best.get(site)
-            if not cur or mt > cur["mtime"]:
-                best[site] = {"path": p, "name": n, "raw": raw, "mtime": mt,
-                              "state": shp["state"], "expires_at": shp["expires_at"], "source": src}
-    return {"best": best, "ignored": ignored, "dirs": dirs}
+            allv.setdefault(site, []).append({"path": p, "name": n, "raw": raw, "mtime": mt,
+                                              "state": shp["state"], "expires_at": shp["expires_at"],
+                                              "source": src})
+    for cands in allv.values():
+        cands.sort(key=lambda c: c["mtime"], reverse=True)
+    best = {site: cands[0] for site, cands in allv.items()}
+    return {"best": best, "all": allv, "ignored": ignored, "dirs": dirs}
 
 def detect_site(cookie: str) -> str:
     """Compatibility wrapper: new code goes through cookie_site + cookie_shape."""
@@ -488,7 +492,11 @@ def _vault_source(site: str) -> str:
 
 def cookie_check(site: str, cookie: str, source: str = "") -> dict:
     """Shape, then network-check one cookie. Persists the verdict; a dead one is dropped.
-    An empty probe persists nothing: there is no value, so there is no record to write."""
+    An empty probe persists nothing: there is no value, so there is no record to write.
+    A verdict lands only on the record this call started from — if it changed while the
+    network call ran (a remove, a different latch), the verdict goes back to the caller."""
+    seen = cookie_states().get(site) or {}
+    sig = (seen.get("hash"), seen.get("checked_at"))
     shp = cookie_shape(cookie, site)
     if shp["state"] == "empty":
         return {"ok": False, "state": "none", "msg": _STATE_MSG["none"],
@@ -512,6 +520,10 @@ def cookie_check(site: str, cookie: str, source: str = "") -> dict:
     msg = _STATE_MSG.get(state, "")
     if state == "network":
         msg += " - your file is saved"
+    then = cookie_states().get(site) or {}
+    if (then.get("hash"), then.get("checked_at")) != sig:
+        # the record moved under this check: an old verdict is not evidence about the new value
+        return {"ok": state == "connected", "state": state, "msg": msg, "detail": detail}
     src = source or _vault_source(site)
     held = _decode(_vault_read(), site)
     stray = bool(held) and cookie_hash(held) != cookie_hash(cookie)   # a probe, not the stored value
@@ -2458,8 +2470,8 @@ class H(BaseHTTPRequestHandler):
                 scan = scan_disk_cookies()
                 cand = None
                 if want:
-                    for s, c in scan["best"].items():
-                        if s == site and c["name"].lower() == want:
+                    for c in scan["all"].get(site) or []:
+                        if c["name"].lower() == want:
                             cand = c
                             break
                 else:
@@ -2467,7 +2479,9 @@ class H(BaseHTTPRequestHandler):
                 if not cand:
                     return self.send_json({"ok": False, "state": "none",
                                            "error": "no valid cookie file found"}, 400)
-                r = vault_save(site, cand["raw"], source=cand["source"], latched_at=cand["mtime"])
+                # latched_at is now, not the file's mtime: an explicit choice must survive the
+                # next scan, otherwise a newer export silently undoes what the user just picked
+                r = vault_save(site, cand["raw"], source=cand["source"])
                 if not r["ok"]:
                     return self.send_json({"ok": False, "state": r["state"], "error": r["msg"]}, 400)
                 blog("cookieuse", f"{site} from {cand['source']}")

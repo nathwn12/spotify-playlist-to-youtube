@@ -423,6 +423,57 @@ class CookieTests(unittest.TestCase):
         self.write(DESKTOP_NAME, NETSCAPE, mtime=time.time() - 60)
         self.assertEqual(backend.vault_load()["yt_cookie"], "", "an empty probe let the removed file back in")
 
+    # 19
+    def test_a_verdict_never_lands_on_a_record_it_did_not_see(self):
+        self.assertTrue(backend.vault_save("yt", HEADER)["ok"])
+        started, release = threading.Event(), threading.Event()
+        real = backend.check_yt_cookie
+
+        def slow(c):
+            started.set()
+            release.wait(10)
+            return {"ok": True, "msg": ""}
+
+        backend.check_yt_cookie = slow
+        out = {}
+        try:
+            t = threading.Thread(target=lambda: out.update(backend.cookie_check("yt", backend.normalize_cookie(HEADER))))
+            t.start()
+            self.assertTrue(started.wait(10), "the check never reached the network stub")
+            backend.vault_remove("yt")     # the record changes while the check is in flight
+            release.set()
+            t.join(10)
+        finally:
+            backend.check_yt_cookie = real
+        self.assertEqual(out.get("state"), "connected", "the verdict must still come back to its caller")
+        record = backend.cookie_states()["yt"]
+        self.assertEqual(record["state"], "removed", "an in-flight verdict overwrote the removal")
+        self.assertEqual(record["hash"], backend.cookie_hash(HEADER), "the removed value lost its identity")
+        self.assertEqual(backend.vault_load()["yt_cookie"], "")
+
+        self.write("headers.txt", HEADER, mtime=time.time() - 60)
+        self.assertEqual(backend.vault_load()["yt_cookie"], "",
+                         "an in-flight verdict let the removed value back in on the next scan")
+
+    # 20
+    def test_a_named_file_can_be_chosen_even_when_it_is_not_the_newest(self):
+        self.write("yt-old.txt", OLD_NETSCAPE, mtime=time.time() - 600)
+        self.write("yt-new.txt", NEW_NETSCAPE, mtime=time.time() - 60)
+        scan = backend.scan_disk_cookies()
+        self.assertEqual(scan["best"]["yt"]["name"], "yt-new.txt")
+        self.assertEqual([c["name"] for c in scan["all"]["yt"]], ["yt-new.txt", "yt-old.txt"])
+
+        code, r = api("/api/cookies/use", {"site": "yt", "file": "yt-old.txt"})
+        self.assertEqual(code, 200, r)
+        self.assertEqual(r["file"], "yt-old.txt")
+        self.assertEqual(backend._decode(backend._vault_read(), "yt"), backend.normalize_cookie(OLD_NETSCAPE),
+                         "the named file was not the one latched")
+        body = api("/api/cookies")[1]
+        self.assertNotEqual(backend.vault_load()["yt_cookie"], backend.normalize_cookie(NEW_NETSCAPE),
+                            "a later read swapped the chosen value for the newest file")
+        self.assertEqual(body["yt"]["state"], "unverified")
+        self.assertEqual(body["detected"]["yt"]["name"], "yt-new.txt", "detected must still name the newest")
+
     # 8
     def test_api_cookies_never_carries_a_value(self):
         self.assertTrue(backend.vault_save("yt", HEADER)["ok"])
