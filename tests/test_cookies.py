@@ -477,24 +477,28 @@ class CookieTests(unittest.TestCase):
     # 21
     def test_a_removal_that_lands_during_the_verdict_write_still_wins(self):
         """Remove between a check's record comparison and its state write must still win:
-        compare-plus-write is one critical section, shared with vault_remove."""
+        compare-plus-write is one critical section, shared with vault_remove.
+        Both sides synchronise on the boundary hook, so no test here depends on timing."""
         self.assertTrue(backend.vault_save("yt", HEADER)["ok"])
         at_barrier, resume = threading.Event(), threading.Event()
-        removing, removed = threading.Event(), threading.Event()
-        real_hook, real = backend._COOKIE_CHECK_HOOK, backend.check_yt_cookie
+        at_remove, removed = threading.Event(), threading.Event()
+        real_hook, real = backend._COOKIE_HOOK, backend.check_yt_cookie
         out = {}
 
-        def hold(site):
-            at_barrier.set()
-            resume.wait(10)
+        def hook(name):
+            if name == "check":
+                at_barrier.set()
+                resume.wait(10)
+            elif name == "remove":
+                at_remove.set()
 
         def drop():
-            removing.set()
             backend.vault_remove("yt")
             removed.set()
 
-        backend._COOKIE_CHECK_HOOK = hold
+        backend._COOKIE_HOOK = hook
         backend.check_yt_cookie = lambda c: {"ok": True, "msg": ""}
+        t = r = None
         try:
             t = threading.Thread(
                 target=lambda: out.update(backend.cookie_check("yt", backend.normalize_cookie(HEADER))))
@@ -502,16 +506,17 @@ class CookieTests(unittest.TestCase):
             self.assertTrue(at_barrier.wait(10), "the check never reached its compare-and-write")
             r = threading.Thread(target=drop, daemon=True)
             r.start()
-            self.assertTrue(removing.wait(10), "the removal thread never started")
-            # When the write holds the lock the removal waits for it; whichever order these
-            # land in, the record must end up removed. Both orders are exercised by the two runs.
-            removed.wait(0.25)
-            resume.set()
-            t.join(10)
-            r.join(10)
+            # the removal reached its boundary before the paused write was released;
+            # under the shared lock it then waits for that write, and lands last either way
+            self.assertTrue(at_remove.wait(10), "the removal never reached its boundary")
         finally:
-            backend._COOKIE_CHECK_HOOK = real_hook
+            backend._COOKIE_HOOK = real_hook
             backend.check_yt_cookie = real
+            resume.set()
+            for th in (t, r):
+                if th:
+                    th.join(10)
+        self.assertTrue(removed.is_set(), "the removal never completed")
         self.assertEqual(out.get("state"), "connected", "the verdict must still come back to its caller")
         self.assertFalse(t.is_alive(), "the check never finished")
         self.assertFalse(r.is_alive(), "the removal never finished")
@@ -523,6 +528,95 @@ class CookieTests(unittest.TestCase):
         self.write("headers.txt", HEADER, mtime=time.time() - 60)
         self.assertEqual(backend.vault_load()["yt_cookie"], "",
                          "the removed value came back on the next scan")
+
+    # 22
+    def test_a_removal_that_lands_during_a_disk_adoption_still_wins(self):
+        """Adoption is a read-modify-write of the vault and the record. A removal that lands
+        between the stale read and the write must survive it, and the file must stay blocked.
+        Both sides meet at the boundary hook, so no assertion here depends on a sleep."""
+        self.assertTrue(backend.vault_save("yt", OLD_NETSCAPE)["ok"])
+        self.write(DESKTOP_NAME, NETSCAPE, mtime=time.time() + 120)   # newer than the held value
+        at_adopt, resume, at_remove = threading.Event(), threading.Event(), threading.Event()
+        real_hook, out = backend._COOKIE_HOOK, {}
+
+        def hook(name):
+            if name == "adopt":
+                at_adopt.set()
+                resume.wait(10)
+            elif name == "remove":
+                at_remove.set()
+
+        backend._COOKIE_HOOK = hook
+        t = r = None
+        try:
+            t = threading.Thread(target=lambda: out.update(backend.vault_load()))
+            t.start()
+            self.assertTrue(at_adopt.wait(10), "the adoption never reached its write boundary")
+            r = threading.Thread(target=backend.vault_remove, args=("yt",), daemon=True)
+            r.start()
+            self.assertTrue(at_remove.wait(10), "the removal never reached its boundary")
+        finally:
+            backend._COOKIE_HOOK = real_hook
+            resume.set()
+            for th in (t, r):
+                if th:
+                    th.join(10)
+        self.assertFalse(t.is_alive(), "the adoption never finished")
+        self.assertFalse(r.is_alive(), "the removal never finished")
+        record = backend.cookie_states()["yt"]
+        self.assertEqual(record["state"], "removed", "an adoption wrote over a completed removal")
+        self.assertEqual(record["hash"], backend.cookie_hash(NETSCAPE),
+                         "the removal did not remember the value it dropped")
+        self.assertEqual(backend._decode(backend._vault_read(), "yt"), "",
+                         "a removed value stayed in the vault")
+        self.assertEqual(backend.vault_load()["yt_cookie"], "",
+                         "the removed file was re-adopted by the next load")
+        self.assertEqual(backend.cookies_state()["yt"]["state"], "none")
+
+    # 23
+    def test_a_removal_that_lands_during_a_save_still_wins(self):
+        """A save that read the vault before a removal must not write that stale view back.
+        Once the removal has completed, only a later explicit save stores a value again."""
+        self.assertTrue(backend.vault_save("yt", OLD_NETSCAPE)["ok"])
+        at_save, resume, at_remove = threading.Event(), threading.Event(), threading.Event()
+        real_hook, out = backend._COOKIE_HOOK, {}
+
+        def hook(name):
+            if name == "save":
+                at_save.set()
+                resume.wait(10)
+            elif name == "remove":
+                at_remove.set()
+
+        backend._COOKIE_HOOK = hook
+        t = r = None
+        try:
+            t = threading.Thread(target=lambda: out.update(backend.vault_save("yt", HEADER)))
+            t.start()
+            self.assertTrue(at_save.wait(10), "the save never reached its write boundary")
+            r = threading.Thread(target=backend.vault_remove, args=("yt",), daemon=True)
+            r.start()
+            self.assertTrue(at_remove.wait(10), "the removal never reached its boundary")
+        finally:
+            backend._COOKIE_HOOK = real_hook
+            resume.set()
+            for th in (t, r):
+                if th:
+                    th.join(10)
+        self.assertFalse(t.is_alive(), "the save never finished")
+        self.assertFalse(r.is_alive(), "the removal never finished")
+        record = backend.cookie_states()["yt"]
+        self.assertEqual(record["state"], "removed", "a save wrote over a completed removal")
+        self.assertEqual(record["hash"], backend.cookie_hash(HEADER),
+                         "the removal did not remember the value it dropped")
+        self.assertEqual(backend.vault_load()["yt_cookie"], "", "a removed value stayed in the vault")
+
+        # the other order: an explicit save after the removal is the documented exception
+        self.assertTrue(backend.vault_save("yt", OLD_NETSCAPE)["ok"])
+        self.assertEqual(backend.vault_load()["yt_cookie"], backend.normalize_cookie(OLD_NETSCAPE))
+        backend.vault_remove("yt")
+        self.assertEqual(backend.vault_load()["yt_cookie"], "")
+        self.assertEqual(backend.cookie_states()["yt"]["state"], "removed")
 
     # 8
     def test_api_cookies_never_carries_a_value(self):

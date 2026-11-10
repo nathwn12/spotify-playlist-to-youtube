@@ -167,7 +167,7 @@ COOKIE_MAX_SIZE = 1024 * 1024
 YT_AUTH = ("SAPISID", "__Secure-3PAPISID", "__Secure-1PAPISID")
 SP_AUTH = ("sp_dc", "sp_key")
 _COOKIE_LOCK = threading.RLock()
-_COOKIE_CHECK_HOOK = None   # test seam: runs inside the compare-and-write critical section
+_COOKIE_HOOK = None   # test seam: hook(name) is called at every cookie-record read/write boundary
 _STATE_MSG = {"connected": "Connected", "unverified": "Saved, not checked yet",
               "expired": "Needs a fresh file", "junk": "That file is not a cookie",
               "network": "Could not reach YouTube Music", "none": "Not connected yet"}
@@ -355,6 +355,11 @@ def _vault_meta(v: dict, site: str) -> dict:
     m = m.get(site) if isinstance(m.get(site), dict) else {}
     return {"latched_at": m.get("latched_at") or 0, "source": m.get("source") or ""}
 
+def _cookie_hook(name: str):
+    h = _COOKIE_HOOK
+    if h:
+        h(name)
+
 def cookie_hash(cookie: str) -> str:
     """16 hex chars of sha256 over the normalized value - an identity, never a value."""
     return hashlib.sha256(normalize_cookie(cookie).encode()).hexdigest()[:16]
@@ -368,15 +373,16 @@ def cookie_states() -> dict:
         return {}
 
 def _cookie_state_set(site: str, state: str, msg: str, source: str, cookie: str, checked_at=None):
-    d = cookie_states()
-    d[site] = {"hash": cookie_hash(cookie), "state": state, "msg": (msg or "")[:200],
-               "checked_at": int(time.time()) if checked_at is None else int(checked_at),
-               "source": source or "unknown"}
-    try:
-        with open(COOKIEF, "w", encoding="utf-8") as f:
-            json.dump(d, f)
-    except Exception:
-        pass
+    with _COOKIE_LOCK:
+        d = cookie_states()
+        d[site] = {"hash": cookie_hash(cookie), "state": state, "msg": (msg or "")[:200],
+                   "checked_at": int(time.time()) if checked_at is None else int(checked_at),
+                   "source": source or "unknown"}
+        try:
+            with open(COOKIEF, "w", encoding="utf-8") as f:
+                json.dump(d, f)
+        except Exception:
+            pass
 
 def vault_save(which: str, cookie: str, source: str = "manual", latched_at: float = 0) -> dict:
     """Validate, then latch a cookie vault-side, DPAPI-encrypted (this Windows user only).
@@ -388,20 +394,30 @@ def vault_save(which: str, cookie: str, source: str = "manual", latched_at: floa
     if shp["state"] != "valid":
         return {"ok": False, "state": shp["state"], "msg": shp["reason"]}
     c = normalize_cookie(cookie)
-    try:
-        v = _vault_read()
-        v[which] = base64.b64encode(_dpapi_blob(ctypes.windll.crypt32.CryptProtectData, c.encode())).decode()
-        meta = v.get("_meta") if isinstance(v.get("_meta"), dict) else {}
-        meta[which] = {"latched_at": latched_at or time.time(), "source": source}
-        v["_meta"] = meta
-        if not _vault_write(v):
+    with _COOKIE_LOCK:
+        try:
+            v = _vault_read()
+            _cookie_hook("save")
+            v[which] = base64.b64encode(_dpapi_blob(ctypes.windll.crypt32.CryptProtectData, c.encode())).decode()
+            meta = v.get("_meta") if isinstance(v.get("_meta"), dict) else {}
+            meta[which] = {"latched_at": latched_at or time.time(), "source": source}
+            v["_meta"] = meta
+            if not _vault_write(v):
+                return {"ok": False, "state": "unverified", "msg": "could not save the cookie"}
+        except Exception:
             return {"ok": False, "state": "unverified", "msg": "could not save the cookie"}
-    except Exception:
-        return {"ok": False, "state": "unverified", "msg": "could not save the cookie"}
-    _cookie_state_set(which, "unverified", "saved", source, c, checked_at=0)
+        _cookie_state_set(which, "unverified", "saved", source, c, checked_at=0)
     return {"ok": True, "state": "unverified", "msg": "saved"}
 
 def vault_load() -> dict:
+    """The stored cookies plus what a disk scan would adopt. The scan reads files outside the
+    lock; every read-modify-write of the vault and its record happens inside it, so a completed
+    removal can never be overwritten by an adoption that read the vault before it."""
+    scan = scan_disk_cookies()
+    with _COOKIE_LOCK:
+        return _vault_load_adopt(scan)
+
+def _vault_load_adopt(scan: dict) -> dict:
     v = _vault_read()
     out, refreshed = {}, []
     for k in ("sp", "yt"):
@@ -409,7 +425,7 @@ def vault_load() -> dict:
     meta = {site: _vault_meta(v, site) for site in ("sp", "yt")}
     states = cookie_states()
     # re-latch: adopt a valid disk file only when it is newer than the value we already hold
-    for site, cand in scan_disk_cookies()["best"].items():
+    for site, cand in scan["best"].items():
         st = states.get(site) or {}
         h = cookie_hash(cand["raw"])
         # a rejected or removed value is never re-adopted by a scan; only the user clears the block
@@ -418,6 +434,7 @@ def vault_load() -> dict:
         cur = out.get(site + "_cookie") or ""
         if cur and (cookie_hash(cur) == h or meta[site]["latched_at"] >= cand["mtime"]):
             continue
+        _cookie_hook("adopt")
         norm = normalize_cookie(cand["raw"])
         try:
             v[site] = base64.b64encode(_dpapi_blob(
@@ -461,6 +478,7 @@ def vault_remove(which: str):
     will not hand the same file back, and the user clears the block by choosing a file."""
     if which not in ("sp", "yt"):
         return
+    _cookie_hook("remove")
     with _COOKIE_LOCK:
         v = _vault_read()
         held = _decode(v, which)
@@ -532,8 +550,7 @@ def cookie_check(site: str, cookie: str, source: str = "") -> dict:
         if (then.get("hash"), then.get("checked_at")) != sig:
             # the record moved under this check: an old verdict is not evidence about the new value
             return {"ok": state == "connected", "state": state, "msg": msg, "detail": detail}
-        if _COOKIE_CHECK_HOOK:
-            _COOKIE_CHECK_HOOK(site)
+        _cookie_hook("check")
         src = source or _vault_source(site)
         held = _decode(_vault_read(), site)
         stray = bool(held) and cookie_hash(held) != cookie_hash(cookie)   # a probe, not the stored value
