@@ -130,7 +130,19 @@ ok("paste box starts empty",
    re.search(r"<textarea[^>]*\bid=\"pasteinput\"[^>]*>\s*</textarea>", html) is not None,
    "#pasteinput carries content at rest")
 
-# 7 a guessed match is labelled in the ledger, in the slot the skip reason uses
+# 7 the cover tile never paints a broken-image glyph: a failed load falls back
+# to a 1x1 transparent pixel, because WebView2 keeps the glyph after src removal
+BLANK = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+ok("cover tile has a transparent placeholder pixel", BLANK in html,
+   "#pcover has no transparent data URI to fall back to")
+ok("failed cover load restores the blank pixel",
+   "onerror=\"this.classList.add('gen');this.src='%s'\"" % BLANK in html,
+   "#pcover onerror still fails to repaint the transparent pixel and the gradient")
+ok("page never removes the cover src",
+   "removeAttribute('src')" not in html and 'removeAttribute("src")' not in html,
+   "removeAttribute('src') lets WebView2 keep painting the broken glyph")
+
+# 8 a guessed match is labelled in the ledger, in the slot the skip reason uses
 ok("guessed row shows its reason", 'r.guess?(r.status||"best guess")' in script,
    "a matched row with r.guess renders no reason; it must show r.status || 'best guess'")
 

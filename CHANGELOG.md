@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-11-11
+
+### Fixed
+
+- The cover tile can no longer show a broken-image glyph after a failed cover load: the error handler repaints a transparent placeholder pixel and the gradient instead of removing `src`, which WebView2 keeps painting.
+- The app page is served `no-store` (with `Pragma: no-cache`), so a rebuilt exe cannot render a cached older page.
+
 ## [0.3.0] - 2026-11-11
 
 ### Added

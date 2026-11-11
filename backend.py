@@ -3,7 +3,7 @@
 Spotify: scrapes public embed __NEXT_DATA__ (optional user Cookie forwarded).
 YTM: InnerTube WEB_REMIX + user-supplied Cookie (SAPISIDHASH derived server-side).
 """
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.1"
 import json, re, sys, time, base64, hashlib, hmac, struct, shutil, sqlite3, subprocess, tempfile, threading, unicodedata, urllib.request, urllib.parse, webbrowser
 import difflib
 import ctypes
@@ -2687,6 +2687,10 @@ class H(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(b)))
+            # The shell must never come from a cache: a rebuilt exe ships a new
+            # page under the same URL, and a cached older page can outlive it.
+            self.send_header("Cache-Control", "no-store, max-age=0")
+            self.send_header("Pragma", "no-cache")
             self.end_headers()
             self.wfile.write(b)
         elif self.path == "/health":
