@@ -9,7 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Nothing yet.
+- Script-aware matching: a Japanese-script title and its romaji spelling — in either direction — now align, and a script-crossing row with no confident match is added as a labelled best guess (`best guess` in the ledger and the done line) instead of leaving a hole in the playlist.
+- The new playlist inherits the source Spotify cover when YouTube Music accepts it. The upload is best-effort and silent: a failed cover is a skip that never affects the transfer, and a resume never touches an existing cover.
+
+### Changed
+
+- The acceptance gate replays 36 fixture rows and now runs the language tests and the cover tests as well.
 
 ## [0.2.1] - 2026-11-11
 

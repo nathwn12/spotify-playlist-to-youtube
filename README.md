@@ -66,6 +66,8 @@ The cookie is never logged — audit lines record lengths and flags only. `pytho
 
 - Spotify read runs through the web player's keyless token (TOTP from the player bundle, memory only) plus the api-partner playlist query, paged 100 at a time past the embed cap. Fewer tracks than Spotify declares fails the run before YouTube is touched.
 - YouTube Music search runs through InnerTube `WEB_REMIX` with the public web client key — no quota, no billing.
+- Titles match across scripts: a Japanese-script spelling and its romaji — or the reverse — align, so either spelling of the same track finds it. A row whose spellings cross scripts and still has no confident match is added anyway, as a labelled best guess, and the ledger says `best guess` on it.
+- A newly created playlist inherits the Spotify cover when YouTube Music accepts it. The upload is best-effort: a failed cover is silent and never affects the transfer.
 - YouTube Music write creates the playlist and appends with your cookie (`SAPISIDHASH` derived locally per call, never stored).
 
 Both surfaces are unofficial: a shape change stops the run with a parse or auth diagnosis and a hint, instead of writing a wrong playlist.
@@ -83,7 +85,7 @@ Four files: `backend.py` (server and transfer logic), `index.html` (page), `app.
 
 - Dev lane: `sp2yt-start.cmd` serves the source at `http://127.0.0.1:8787`.
 - Build lane: `build.cmd` (needs `pyinstaller` and `pywebview`) backs up the exe, compiles one portable exe, smoke-tests `/health`, keeps green and restores on red.
-- Acceptance gate: `acceptance.cmd` must print `30/30 fixtures` and parse-check the page script.
+- Acceptance gate: `acceptance.cmd` must print `36/36 fixtures` and parse-check the page script.
 - Re-record: `python3 tests\record_fixtures.py <public playlist url>` — at most 40 real searches, 300 ms apart; everything after runs offline.
 
 ## Limits

@@ -13,7 +13,7 @@ Keyless Spotify to YouTube Music playlist transfer for Windows. The server binds
 
 - **DEV (iterate here):** `python3 backend.py` (or `sp2yt-start.cmd`), open `http://127.0.0.1:8787`. No build step.
 - **PROD:** run `build.cmd` from the repo root (needs `pyinstaller` + `pywebview`). It backs up the exe, kills running instances, compiles one portable `sp2yt.exe`, smoke-tests `/health`, deletes the backup on green / restores it on red. Never invoke `pyinstaller` directly — the backup/restore + smoke logic is the build.
-- The gate is `acceptance.cmd`, which must print `30/30 fixtures` and then pass the page-script parse check, the cookie tests, the connect-card checks and the release-asset checks — every one green — before anything ships.
+- The gate is `acceptance.cmd`, which must print `36/36 fixtures` and then pass the language tests, the cover tests, the page-script parse check, the cookie tests, the connect-card checks and the release-asset checks — every one green — before anything ships.
 - Port is fixed at `8787`, bound to `127.0.0.1` only.
 
 ## Architecture quirks (unofficial surfaces)
@@ -23,6 +23,8 @@ Keyless Spotify to YouTube Music playlist transfer for Windows. The server binds
 - `POST /api/search-batch`: max **25 items/batch**, workers clamped **1–10** (default 8). Item failure is a skip (`videoId: None`), never a batch failure — don't "fix" this to raise.
 - Playlist write (`transfer_create_append`): create carries ≤50 ids inline (`CREATE_INLINE_MAX`), then one-at-a-time appends for missing copies, then a read-back **ledger** reconciled against the playlist entries. Repeats are significant — N copies in ⇒ N entries out (`edit_playlist` refuses ids already on the list, which is why the two-shape flow exists). Never dedupe `video_ids`.
 - Dupe-aware create (`yt_create_checked`): same `spotify_id` + live YTM copy ⇒ returns the existing playlist, creates nothing. Record lives in `created.json`.
+- Script-aware matching (`_fold_text` → kana romanization → rank-1 guess): Japanese-script and romaji spellings of one title align, and a script-crossing row with no confident match takes YouTube Music's rank-1 answer as a guess — always labelled (`best_guess`, ledger status, done-line count), never silent. Latin-only rows still run the legacy scorer alone.
+- Cover inheritance (`yt_set_playlist_cover`): a **newly created** playlist takes the Spotify cover through the 3-call resumable upload (handshake → upload → attach). Best-effort by construction — no cover, non-image bytes, a refused handshake or a failed attach is a silent skip, one `cover` audit line, and never a failed run. Never runs on a resume/top-up, so it cannot overwrite a hand-set cover.
 
 ## Cookie / state gotchas
 
@@ -33,8 +35,8 @@ Keyless Spotify to YouTube Music playlist transfer for Windows. The server binds
 
 ## Fixtures
 
-- `tests/fixtures/playlist.json` holds 30 recorded rows — each with its real source row and the real YouTube Music search responses, trimmed to only the keys the parser reads. The gate replays them offline through the real matcher in `backend.py`.
-- Re-record when the matcher changes: `python3 tests\record_fixtures.py <public playlist url>` (at most 40 real searches, 300 ms apart; everything after that runs offline). Review the printed `ok`/`skip` lines before committing the new fixture.
+- `tests/fixtures/playlist.json` holds 36 recorded rows — each with its real source row and the real YouTube Music search responses, trimmed to only the keys the parser reads. The six Japanese rows are hand-authored, not recorded: each carries its own `responses` map so rows sharing a source title can still replay different cards. The gate replays them offline through the real matcher in `backend.py`.
+- Re-record when the matcher changes: `python3 tests\record_fixtures.py <public playlist url>` (at most 40 real searches, 300 ms apart; everything after that runs offline). `merge_rows` carries the hand-authored rows over, so only recorded rows are replaced. Review the printed `ok`/`skip` lines before committing the new fixture.
 
 ## Icons
 

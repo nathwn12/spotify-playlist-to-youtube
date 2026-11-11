@@ -3,7 +3,7 @@
 Spotify: scrapes public embed __NEXT_DATA__ (optional user Cookie forwarded).
 YTM: InnerTube WEB_REMIX + user-supplied Cookie (SAPISIDHASH derived server-side).
 """
-APP_VERSION = "0.2.1"
+APP_VERSION = "0.3.0"
 import json, re, sys, time, base64, hashlib, hmac, struct, shutil, sqlite3, subprocess, tempfile, threading, unicodedata, urllib.request, urllib.parse, webbrowser
 import difflib
 import ctypes

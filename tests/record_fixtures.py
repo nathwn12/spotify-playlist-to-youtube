@@ -151,6 +151,70 @@ def sections_of(raw):
         return []
 
 
+def merge_rows(old_rows, new_rows):
+    """Keep the hand-authored rows across a re-record, then append new ones.
+
+    A row carrying its own "responses" map was written by hand (the Japanese
+    script rows), so it is never discarded: it goes first, in its old order,
+    with its map untouched. Newly recorded rows follow, minus any whose id is
+    already taken. One id, one row.
+    """
+    curated = [r for r in (old_rows or [])
+               if isinstance(r, dict) and isinstance(r.get("responses"), dict)]
+    kept = {r.get("id") for r in curated}
+    out = list(curated)
+    for row in new_rows or []:
+        if row.get("id") in kept:
+            continue
+        out.append(row)
+        kept.add(row.get("id"))
+    return out
+
+
+def self_check():
+    """Offline proof that a re-record cannot drop the hand-authored rows.
+
+    No network, no fixture read, no fixture write: merge_rows is pure.
+    """
+    curated = {"id": "ja-best-guess", "kind": "playlist",
+               "source": {"title": "群青", "artist": "YOASOBI", "duration_ms": 252000},
+               "queries": ["群青 YOASOBI"],
+               "expect": {"signature": "plain", "videoId": "BestGuess01", "guess": True},
+               "responses": {"群青 YOASOBI": [{"musicCardShelfRenderer": {
+                   "title": {"runs": [{"text": "Ultramarine",
+                                       "navigationEndpoint": {"watchEndpoint":
+                                                              {"videoId": "BestGuess01"}}}]}}}]}}
+    recorded = {"id": "ogame", "kind": "version",
+                "source": {"title": "OGAME", "artist": "", "duration_ms": 0},
+                "queries": ["OGAME"], "expect": {"signature": "plain", "skip": "no_result"}}
+    collision = {"id": "ja-best-guess", "kind": "playlist",
+                 "source": {"title": "Different", "artist": "Other", "duration_ms": 1000},
+                 "queries": ["Different Other"], "expect": {"skip": "no_result"}}
+
+    merged = merge_rows([curated], [recorded, collision])
+    ids = [r.get("id") for r in merged]
+    failures = []
+    if not merged or merged[0] is not curated:
+        failures.append("curated row not kept first, untouched")
+    elif merged[0].get("responses") is not curated["responses"]:
+        failures.append("curated per-row responses map was rewritten")
+    if ids.count("ja-best-guess") != 1:
+        failures.append(f"duplicate id doubled: {ids}")
+    if len(merged) < 2 or merged[1] is not recorded:
+        failures.append(f"plain new row not appended: {ids}")
+    if merge_rows([], [recorded]) != [recorded]:
+        failures.append("empty old fixture did not take the new row")
+    if merge_rows([{"id": "x", "queries": [], "expect": {}}], [recorded]) != [recorded]:
+        failures.append("an old recorded row (no responses map) was carried over")
+
+    for line in failures:
+        print("FAIL self-check: " + line)
+    if failures:
+        return 1
+    print("self-check: curated rows kept with their maps, ids not doubled, new rows appended")
+    return 0
+
+
 def main():
     url = sys.argv[1] if len(sys.argv) > 1 else ""
     if not url.startswith("https://open.spotify.com/playlist/"):
@@ -258,6 +322,12 @@ def main():
             raise SystemExit(f"record: compaction changed candidates for: {query}")
         compact[query] = trimmed
 
+    try:
+        old_rows = fixture_lib.load().get("rows") or []
+    except (OSError, ValueError):
+        old_rows = []
+    rows = merge_rows(old_rows, rows)
+
     data = {
         "version": 1,
         "recorded_at": time.strftime("%Y-%m-%d"),
@@ -276,4 +346,6 @@ def main():
 
 
 if __name__ == "__main__":
+    if "--self-check" in sys.argv[1:]:
+        sys.exit(self_check())
     main()
