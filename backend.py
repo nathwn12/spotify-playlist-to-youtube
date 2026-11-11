@@ -5,6 +5,7 @@ YTM: InnerTube WEB_REMIX + user-supplied Cookie (SAPISIDHASH derived server-side
 """
 APP_VERSION = "0.2.1"
 import json, re, sys, time, base64, hashlib, hmac, struct, shutil, sqlite3, subprocess, tempfile, threading, unicodedata, urllib.request, urllib.parse, webbrowser
+import difflib
 import ctypes
 from ctypes import wintypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -46,6 +47,7 @@ RUN = {
     "refused": 0,
     "skipped": 0,
     "missing": 0,
+    "guessed": 0,
     "rows": [],
     "error": "",
     "hint": "",
@@ -110,6 +112,7 @@ def run_begin(spotify_id="", title=""):
         RUN["refused"] = 0
         RUN["skipped"] = 0
         RUN["missing"] = 0
+        RUN["guessed"] = 0
         RUN["declared"] = 0
         RUN["summary"] = ""
         RUN["playlist_count"] = 0
@@ -148,6 +151,7 @@ def run_reset() -> bool:
         RUN["refused"] = 0
         RUN["skipped"] = 0
         RUN["missing"] = 0
+        RUN["guessed"] = 0
         RUN["declared"] = 0
         RUN["summary"] = ""
         RUN["playlist_count"] = 0
@@ -1037,6 +1041,248 @@ def _sig_label(sig) -> str:
 
 _PLAIN_FORBIDDEN = frozenset({"slowed", "sped up", "nightcore", "reverb", "8d", "bass boosted"})
 
+# --- script-aware matching -------------------------------------------------
+# The legacy scorer above folds to ASCII, so any CJK title becomes "" on both
+# sides and the row skips even when the right video is rank 1. These helpers
+# keep the script, romanize kana deterministically, and compare characters.
+
+_CJK_RE = re.compile("[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]")
+_LATIN_RE = re.compile(r"[A-Za-z]")
+_KANA_RE = re.compile("[\u3041-\u3096\u30a1-\u30fa]")
+
+_KANA_BASE = {
+    "\u3042": "a", "\u3044": "i", "\u3046": "u", "\u3048": "e", "\u304a": "o",
+    "\u304b": "ka", "\u304d": "ki", "\u304f": "ku", "\u3051": "ke", "\u3053": "ko",
+    "\u304c": "ga", "\u304e": "gi", "\u3050": "gu", "\u3052": "ge", "\u3054": "go",
+    "\u3055": "sa", "\u3057": "shi", "\u3059": "su", "\u305b": "se", "\u305d": "so",
+    "\u3056": "za", "\u3058": "ji", "\u305a": "zu", "\u305c": "ze", "\u305e": "zo",
+    "\u305f": "ta", "\u3061": "chi", "\u3064": "tsu", "\u3066": "te", "\u3068": "to",
+    "\u3060": "da", "\u3062": "ji", "\u3065": "zu", "\u3067": "de", "\u3069": "do",
+    "\u306a": "na", "\u306b": "ni", "\u306c": "nu", "\u306d": "ne", "\u306e": "no",
+    "\u306f": "ha", "\u3072": "hi", "\u3075": "fu", "\u3078": "he", "\u307b": "ho",
+    "\u3070": "ba", "\u3073": "bi", "\u3076": "bu", "\u3079": "be", "\u307c": "bo",
+    "\u3071": "pa", "\u3074": "pi", "\u3077": "pu", "\u307a": "pe", "\u307d": "po",
+    "\u307e": "ma", "\u307f": "mi", "\u3080": "mu", "\u3081": "me", "\u3082": "mo",
+    "\u3084": "ya", "\u3086": "yu", "\u3088": "yo",
+    "\u3089": "ra", "\u308a": "ri", "\u308b": "ru", "\u308c": "re", "\u308d": "ro",
+    "\u308f": "wa", "\u3092": "o", "\u3093": "n", "\u3094": "vu",
+    "\u3090": "wi", "\u3091": "we",
+    # digraphs: longest match wins, so these are looked up before the singles
+    "\u304d\u3083": "kya", "\u304d\u3085": "kyu", "\u304d\u3087": "kyo",
+    "\u304e\u3083": "gya", "\u304e\u3085": "gyu", "\u304e\u3087": "gyo",
+    "\u3057\u3083": "sha", "\u3057\u3085": "shu", "\u3057\u3087": "sho",
+    "\u3058\u3083": "ja", "\u3058\u3085": "ju", "\u3058\u3087": "jo",
+    "\u3061\u3083": "cha", "\u3061\u3085": "chu", "\u3061\u3087": "cho",
+    "\u306b\u3083": "nya", "\u306b\u3085": "nyu", "\u306b\u3087": "nyo",
+    "\u3072\u3083": "hya", "\u3072\u3085": "hyu", "\u3072\u3087": "hyo",
+    "\u3073\u3083": "bya", "\u3073\u3085": "byu", "\u3073\u3087": "byo",
+    "\u3074\u3083": "pya", "\u3074\u3085": "pyu", "\u3074\u3087": "pyo",
+    "\u307f\u3083": "mya", "\u307f\u3085": "myu", "\u307f\u3087": "myo",
+    "\u308a\u3083": "rya", "\u308a\u3085": "ryu", "\u308a\u3087": "ryo",
+    # loanword digraphs (katakana in practice, the shared table covers both)
+    "\u3066\u3043": "ti", "\u3067\u3043": "di", "\u3068\u3045": "tu", "\u3069\u3045": "du",
+    "\u3075\u3041": "fa", "\u3075\u3043": "fi", "\u3075\u3047": "fe", "\u3075\u3049": "fo",
+    "\u3094\u3041": "va", "\u3094\u3043": "vi", "\u3094\u3047": "ve", "\u3094\u3049": "vo",
+    "\u3057\u3047": "she", "\u3058\u3047": "je", "\u3061\u3047": "che",
+    "\u3044\u3047": "ye", "\u3046\u3043": "wi", "\u3046\u3047": "we", "\u3046\u3049": "wo",
+    "\u3064\u3041": "tsa", "\u3064\u3043": "tsi", "\u3064\u3047": "tse", "\u3064\u3049": "tso",
+    "\u3059\u3043": "si", "\u305a\u3043": "zi", "\u304f\u3041": "kwa", "\u3050\u3041": "gwa",
+}
+
+
+def _kana_table() -> dict:
+    """One table for both kana blocks: every hiragana entry plus its katakana
+    twin (katakana is +0x60 from hiragana)."""
+    table = dict(_KANA_BASE)
+    for kana, romaji in _KANA_BASE.items():
+        kata = "".join(chr(ord(c) + 0x60) if 0x3041 <= ord(c) <= 0x3096 else c for c in kana)
+        table[kata] = romaji
+    return table
+
+
+_JA_ROMAJI = _kana_table()
+
+
+def _fold_text(s: str) -> str:
+    """Script-preserving fold: NFKC, casefold, drop bracket/promo/version zones
+    exactly as _norm_text does, then keep Unicode word characters. Latin text
+    lands on the same string _norm_text would give; CJK text survives."""
+    s = unicodedata.normalize("NFKC", s or "").casefold()
+    s = re.sub(r"\([^)]*\)", " ", s)
+    s = re.sub(r"\[[^\]]*\]", " ", s)
+    s = re.sub(r"\u3010[^\u3011]*\u3011", " ", s)
+    s = re.sub(r"\b(?:feat\.?|ft\.?|featuring)\b.*$", " ", s)
+    for pat in (r"\bremaster\w*\b.*$", r"\bofficial\b.*$", r"\blyric\w*\b.*$",
+                r"\bsped\s*up\b.*$", r"\bspeed\s*up\b.*$", r"\bslowed\b.*$",
+                r"\bsuper\b.*$", r"\bultra\b.*$", r"\balternat\w*\b.*$",
+                r"\bremix\b.*$", r"\breverb\b.*$", r"\bnightcore\b.*$",
+                r"\b8\s*d\b.*$", r"\bbass\s*boost\w*\b.*$",
+                r"\binstrumental\b.*$", r"\bkaraoke\b.*$", r"\bacoustic\b.*$",
+                r"\blive\b.*$", r"\bedit\b.*$", r"\bextended\b.*$",
+                r"\bdemo\b.*$", r"\bcover\b.*$", r"\baudio\b.*$",
+                r"\bvisualizer\b.*$"):
+        s = re.sub(pat, " ", s)
+    s = re.sub(r"[^\w\s]", " ", s)
+    s = s.replace("_", " ")
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _has_cjk(s: str) -> bool:
+    return bool(_CJK_RE.search(s or ""))
+
+
+def _has_latin(s: str) -> bool:
+    return bool(_LATIN_RE.search(s or ""))
+
+
+def _scripts_cross(want: str, cand: str) -> bool:
+    """True when the two titles are spelled in different scripts."""
+    return ((_has_cjk(want) and _has_latin(cand))
+            or (_has_latin(want) and _has_cjk(cand)))
+
+
+def _romanize_ja(s: str) -> str:
+    """Hepburn-style kana romanization. Kanji and other characters pass through
+    untouched: a kanji reading needs a dictionary this tool does not carry."""
+    s = unicodedata.normalize("NFKC", s or "")
+    out = []
+    i, n = 0, len(s)
+    while i < n:
+        pair = s[i:i + 2]
+        if len(pair) == 2 and pair in _JA_ROMAJI:
+            out.append(_JA_ROMAJI[pair])
+            i += 2
+            continue
+        ch = s[i]
+        if ch in ("\u3063", "\u30c3"):          # small tsu: double the next consonant
+            nxt = _JA_ROMAJI.get(s[i + 1:i + 3]) or _JA_ROMAJI.get(s[i + 1:i + 2]) or ""
+            if nxt.startswith("ch"):
+                out.append("t")
+            elif nxt and nxt[0] not in "aiueo":
+                out.append(nxt[0])
+            i += 1
+            continue
+        if ch == "\u30fc":                      # long vowel mark: repeat the vowel
+            last = out[-1] if out else ""
+            if last and last[-1] in "aiueo":
+                out.append(last[-1])
+            i += 1
+            continue
+        if ch in _JA_ROMAJI:
+            out.append(_JA_ROMAJI[ch])
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _seq_ratio(a: str, b: str) -> float:
+    """Character similarity on the whitespace-free strings, so a romaji title can
+    share a run ("ni"/"kakeru") with the kana it spells."""
+    return difflib.SequenceMatcher(
+        None, (a or "").replace(" ", ""), (b or "").replace(" ", "")).ratio()
+
+
+def _strip_artist_prefix(title: str, artist: str) -> str:
+    """YouTube cards often read 'ARTIST - TITLE'; drop that prefix before the
+    title comparison. Unchanged when there is no such prefix."""
+    t = (title or "").strip()
+    a = _fold_text(artist)
+    if not t or not a:
+        return t
+    for sep in (" - ", " \u2013 ", " \u2014 ", "|", ":", "\u2022"):
+        if sep in t:
+            head, tail = t.split(sep, 1)
+            rest = tail.strip()
+            if rest and _fold_text(head).startswith(a):
+                return rest
+    return t
+
+
+def _title_aligned(want_title: str, want_artist: str, cand_title: str) -> float:
+    """Title similarity that survives a script crossing: token overlap plus a
+    containment bonus, character similarity when either side is CJK, and a
+    kana-romanized comparison when either side is spelled in kana."""
+    ct = _strip_artist_prefix(cand_title, want_artist)
+    wn = _fold_text(want_title)
+    cn = _fold_text(ct)
+    if not wn or not cn:
+        return 0.0
+    sw, sc = set(wn.split()), set(cn.split())
+    jaccard = len(sw & sc) / len(sw | sc) if (sw | sc) else 0.0
+    scores = [jaccard]
+    short, long = (wn, cn) if len(wn) <= len(cn) else (cn, wn)
+    if len(short) >= 4 and short in long:
+        scores.append(min(1.0, jaccard + 0.2))
+    if _has_cjk(wn) or _has_cjk(cn):
+        scores.append(_seq_ratio(wn, cn))
+    if _KANA_RE.search(want_title or "") or _KANA_RE.search(ct):
+        scores.append(_seq_ratio(_fold_text(_romanize_ja(want_title or "")),
+                                 _fold_text(_romanize_ja(ct))))
+    return min(1.0, max(scores))
+
+
+def _artist_aligned(want_artist: str, cand_artist: str) -> float:
+    """Artist overlap over the wanted tokens, plus character similarity on the
+    romanized strings when either side is spelled in kana (YTM often romanizes
+    a Japanese artist while the title stays Japanese)."""
+    wa = _fold_text(want_artist)
+    ca = _fold_text(cand_artist)
+    if not wa or not ca:
+        return 0.0
+    wt = set(wa.split())
+    scores = [len(wt & set(ca.split())) / len(wt) if wt else 0.0]
+    if _KANA_RE.search(want_artist or "") or _KANA_RE.search(cand_artist or ""):
+        scores.append(_seq_ratio(_fold_text(_romanize_ja(want_artist or "")),
+                                 _fold_text(_romanize_ja(cand_artist or ""))))
+    return min(1.0, max(scores))
+
+
+def _aligned_candidate(want_title, want_artist, want_ms, cand: dict) -> dict:
+    """One candidate scored across scripts. d is None when duration is unknown;
+    the weights drop the missing term instead of scoring it as a miss."""
+    t = round(_title_aligned(want_title, want_artist, cand.get("title", "")), 3)
+    a = round(_artist_aligned(want_artist, cand.get("artist", "")), 3)
+    d = _duration_score(want_ms, cand.get("duration", ""))
+    if d is not None:
+        d = round(d, 3)
+    if a > 0 and d is not None:
+        score = 0.55 * t + 0.30 * a + 0.15 * d
+    elif a > 0:
+        score = 0.70 * t + 0.30 * a
+    elif d is not None:
+        score = 0.55 * t + 0.45 * d
+    else:
+        score = t
+    return {**cand, "t": t, "a": a, "d": d, "score": round(score, 3)}
+
+
+def _score_aligned_candidates(want_title, want_artist, want_ms, cands) -> list:
+    out = [_aligned_candidate(want_title, want_artist, want_ms, c)
+           for c in (cands or []) if isinstance(c, dict)]
+    out.sort(key=lambda x: -x["score"])
+    return out
+
+
+def _query_variants(title: str, artist: str) -> list:
+    """The legacy three queries in order, then the kana romanization when the
+    title is spelled in kana. Kanji never gains a variant: without a reading it
+    would only make the query worse. Deduped, empties dropped."""
+    title, artist = (title or "").strip(), (artist or "").strip()
+    out = [f"{title} {artist}".strip(), title, f"{artist} - {title}".strip()]
+    romaji = _romanize_ja(title).strip()
+    if romaji and romaji != title and not _has_cjk(romaji):
+        out.append(f"{romaji} {artist}".strip())
+        out.append(romaji)
+    seen, variants = set(), []
+    for q in out:
+        if q and q not in seen:
+            seen.add(q)
+            variants.append(q)
+    return variants
+
+
 def _norm_text(s: str) -> str:
     s = (s or "").lower()
     s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
@@ -1152,6 +1398,28 @@ def _pick_best(query: str, want_title: str, want_artist: str, want_ms: int, cand
     if best["score"] >= 0.60 and (len(scored) == 1 or (best["score"] - scored[1]["score"]) >= 0.08):
         return best
     second = scored[1]["score"] if len(scored) > 1 else -1.0
+    # Tier 2: aligned scoring, only when a script the legacy fold erases is in
+    # play. Latin-only rows never reach this, so their outcomes cannot change.
+    if _has_cjk(want_title) or any(_has_cjk(c.get("title", "")) for c in scored):
+        aligned = [c for c in _score_aligned_candidates(want_title, want_artist, want_ms, cands)
+                   if c.get("title")]
+        if aligned:
+            top = aligned[0]
+            margin = top["score"] - (aligned[1]["score"] if len(aligned) > 1 else 0.0)
+            if top["score"] >= 0.72 and top["t"] >= 0.45 and (len(aligned) == 1 or margin >= 0.10):
+                return {**top, "confidence": "aligned"}
+    # Tiers 3-4: the row crosses scripts, so the platform's rank-1 answer is the
+    # best evidence left. A guess is labelled; a duration that is >20 s off is
+    # evidence against the match and still skips.
+    first = next((c for c in cands if c.get("title")), None)
+    if first is not None and _scripts_cross(want_title, first.get("title", "")):
+        g = _aligned_candidate(want_title, want_artist, want_ms, first)
+        d = g.get("d")
+        if d is None or d > 0:
+            if ((g["t"] >= 0.45 and g["a"] >= 0.50)
+                    or (g["t"] >= 0.30 and g["a"] >= 0.34 and d is not None and d >= 0.50)):
+                return {**g, "best_guess": True, "why": "cross-script best guess"}
+            return {**g, "best_guess": True, "why": "cross-script fallback (no confident match)"}
     raise RuntimeError(
         f"no confident match (best {best['score']:.2f}: '{best.get('title', '')}' | "
         f"'{best.get('artist', '')}' [{best.get('videoId', '')}], "
@@ -1284,24 +1552,36 @@ def title_overlap(a: str, b: str) -> bool:
     return bool(wa & wb)
 
 def yt_match(title: str, artist: str = "", duration_ms: int = 0) -> dict:
-    """One song, isolated. Up to three query variants; first confident match wins.
-    Never raises: no match -> videoId None (skip), never a batch failure."""
+    """One song, isolated. Legacy queries first, then kana romanization; first
+    confident match wins. A cross-script guess is kept only when no variant is
+    confident, best score wins. Never raises: no match -> videoId None (skip)."""
     title, artist = (title or "").strip(), (artist or "").strip()
     want_q = f"{title} {artist}".strip()
     last_err = ""
-    for qi, q in enumerate([want_q, title, f"{artist} - {title}".strip()]):
-        if not q or qi >= 3:
+    guess = None
+    for qi, q in enumerate(_query_variants(title, artist)):
+        if not q:
             continue
         try:
             r = yt_search(q, title=title, artist=artist, duration_ms=int(duration_ms or 0))
         except Exception as e:
             last_err = f"{type(e).__name__}: {e}"
             continue
-        if r.get("videoId"):
-            r["query"] = want_q
-            r["via"] = q
-            r["alt"] = qi > 0
-            return {**{"ok": True}, **r}
+        if not r.get("videoId"):
+            continue
+        if r.get("best_guess"):
+            if guess is None or float(r.get("score") or 0) > float(guess.get("score") or 0):
+                guess = dict(r)
+                guess["via"] = q
+                guess["alt"] = qi > 0
+            continue
+        r["query"] = want_q
+        r["via"] = q
+        r["alt"] = qi > 0
+        return {**{"ok": True}, **r}
+    if guess is not None:
+        guess["query"] = want_q
+        return {**{"ok": True}, **guess}
     skip = (last_err[:220] if last_err else "no match on any variant")
     if "no confident match" not in skip and "no ytm result" not in skip:
         skip = "no match on any variant" + (f" ({skip})" if skip else "")
@@ -1661,7 +1941,7 @@ def _reconcile(video_ids, entries, attempts: dict) -> list:
             out.append({"i": i + 1, "videoId": v, "outcome": "missing", "status": ""})
     return out
 
-def _done_summary(landed, refused, skipped, missing, declared, n_pl, parts, topped_up=None, sent=None):
+def _done_summary(landed, refused, skipped, missing, declared, n_pl, parts, topped_up=None, sent=None, guessed=0):
     """The done line is derived from reconciled rows plus the read-back whose
     length is printed: refused rows were proven absent from that same read, so
     the line can never print N landed beside a different holds count without
@@ -1672,8 +1952,10 @@ def _done_summary(landed, refused, skipped, missing, declared, n_pl, parts, topp
         head = f"topped up {int(topped_up)} of {int(sent or 0)} — "
     else:
         head = "done — "
+    guesses = int(guessed or 0)
+    guess_part = f"best guess {guesses} \u00b7 " if guesses > 0 else ""
     line = (f"{head}landed {landed} of {m} \u00b7 not found {skipped} ({parts or 'none'}) "
-            f"\u00b7 refused {refused} \u00b7 missing {missing} \u00b7 ")
+            f"\u00b7 {guess_part}refused {refused} \u00b7 missing {missing} \u00b7 ")
     if landed + refused + skipped + missing != m:
         return line + (f"counts do not reconcile ({landed}+{refused}+{skipped}+{missing}!={m}) "
                        f"— playlist holds {n}")
@@ -2028,6 +2310,10 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                     if vid:
                         row["state"] = "matched"
                         row["status"] = ""
+                        if (res or {}).get("best_guess"):
+                            row["guess"] = True
+                            row["status"] = ("best guess: "
+                                             + str((res or {}).get("why") or "cross-script"))[:80]
                     else:
                         row["state"] = "skipped"
                         row["status"] = str((res or {}).get("skipped") or (res or {}).get("error") or "no match")[:80]
@@ -2253,12 +2539,15 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
             RUN["playlist_count"] = n_pl
             # Derived, never accumulated: rows were recounted from the reconciled
             # ledger above, so landed+refused+skipped+missing == declared and the
-            # holds count is the read-back the ledger consumed.
+            # holds count is the read-back the ledger consumed. Guesses are
+            # landed rows that were labelled, counted so the line can name them.
+            RUN["guessed"] = sum(1 for row in RUN["rows"]
+                                 if row.get("guess") and row.get("state") == "landed")
             RUN["summary"] = _done_summary(
                 RUN.get("landed", 0), RUN.get("refused", 0), skipped_n,
                 RUN.get("missing", 0), dec, n_pl, parts,
                 topped_up=(int(res.get("topped_up", 0)) if res.get("topped_up") is not None else None),
-                sent=int(res.get("sent", 0) or 0))
+                sent=int(res.get("sent", 0) or 0), guessed=RUN["guessed"])
             RUN["phase"] = "done"
             RUN["error"] = ""
             RUN["seq"] += 1
