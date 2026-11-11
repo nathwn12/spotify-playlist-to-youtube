@@ -216,7 +216,7 @@ def main():
         artist = row["source"]["artist"]
         ms = row["source"]["duration_ms"]
         sig = backend._sig_label(backend._version_sig(title))
-        variants = [f"{title} {artist}".strip(), title, f"{artist} - {title}".strip()]
+        variants = backend._query_variants(title, artist)
         backend._SEARCH_CACHE.clear()
         queries, best, last_error = [], None, ""
         for q in variants:

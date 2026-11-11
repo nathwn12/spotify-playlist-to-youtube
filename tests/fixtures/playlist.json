@@ -558,6 +558,431 @@
     "video_title": "MONTAGEM POLYCHROME (Speed Up)",
     "duration": "2:03"
    }
+  },
+  {
+   "id": "ja-ja-match",
+   "kind": "playlist",
+   "source": {
+    "title": "夜に駆ける",
+    "artist": "YOASOBI",
+    "duration_ms": 261000
+   },
+   "queries": [
+    "夜に駆ける YOASOBI"
+   ],
+   "expect": {
+    "signature": "plain",
+    "videoId": "JpJpMatch01",
+    "video_title": "夜に駆ける",
+    "duration": "4:21"
+   },
+   "responses": {
+    "夜に駆ける YOASOBI": [
+     {
+      "musicCardShelfRenderer": {
+       "title": {
+        "runs": [
+         {
+          "text": "夜に駆ける",
+          "navigationEndpoint": {
+           "watchEndpoint": {
+            "videoId": "JpJpMatch01"
+           }
+          }
+         }
+        ]
+       },
+       "subtitle": {
+        "runs": [
+         {
+          "text": "YOASOBI • 4:21"
+         }
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "ja-romaji-match",
+   "kind": "playlist",
+   "source": {
+    "title": "夜に駆ける",
+    "artist": "YOASOBI",
+    "duration_ms": 261000
+   },
+   "queries": [
+    "夜に駆ける YOASOBI"
+   ],
+   "expect": {
+    "signature": "plain",
+    "videoId": "JpRomaji001",
+    "video_title": "Yoru ni Kakeru",
+    "duration": "4:21"
+   },
+   "responses": {
+    "夜に駆ける YOASOBI": [
+     {
+      "musicCardShelfRenderer": {
+       "title": {
+        "runs": [
+         {
+          "text": "Yoru ni Kakeru",
+          "navigationEndpoint": {
+           "watchEndpoint": {
+            "videoId": "JpRomaji001"
+           }
+          }
+         }
+        ]
+       },
+       "subtitle": {
+        "runs": [
+         {
+          "text": "YOASOBI • 4:21"
+         }
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "romaji-ja-match",
+   "kind": "playlist",
+   "source": {
+    "title": "Yoru ni Kakeru",
+    "artist": "YOASOBI",
+    "duration_ms": 261000
+   },
+   "queries": [
+    "Yoru ni Kakeru YOASOBI"
+   ],
+   "expect": {
+    "signature": "plain",
+    "videoId": "RomajiJa001",
+    "video_title": "夜に駆ける",
+    "duration": "4:21"
+   },
+   "responses": {
+    "Yoru ni Kakeru YOASOBI": [
+     {
+      "musicCardShelfRenderer": {
+       "title": {
+        "runs": [
+         {
+          "text": "夜に駆ける",
+          "navigationEndpoint": {
+           "watchEndpoint": {
+            "videoId": "RomajiJa001"
+           }
+          }
+         }
+        ]
+       },
+       "subtitle": {
+        "runs": [
+         {
+          "text": "YOASOBI • 4:21"
+         }
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "ja-different-song-skips",
+   "kind": "playlist",
+   "source": {
+    "title": "夜に駆ける",
+    "artist": "YOASOBI",
+    "duration_ms": 261000
+   },
+   "queries": [
+    "夜に駆ける YOASOBI",
+    "夜に駆ける",
+    "YOASOBI - 夜に駆ける"
+   ],
+   "expect": {
+    "signature": "plain",
+    "skip": "low_confidence",
+    "skip_reason": "RuntimeError: no confident match (best 0.30: '群青' | 'YOASOBI • 4:08' [DiffSong001], runner-up -1.00) for: 夜に駆ける YOASOBI"
+   },
+   "responses": {
+    "夜に駆ける YOASOBI": [
+     {
+      "musicCardShelfRenderer": {
+       "title": {
+        "runs": [
+         {
+          "text": "群青",
+          "navigationEndpoint": {
+           "watchEndpoint": {
+            "videoId": "DiffSong001"
+           }
+          }
+         }
+        ]
+       },
+       "subtitle": {
+        "runs": [
+         {
+          "text": "YOASOBI • 4:08"
+         }
+        ]
+       }
+      }
+     }
+    ],
+    "夜に駆ける": [
+     {
+      "musicCardShelfRenderer": {
+       "title": {
+        "runs": [
+         {
+          "text": "群青",
+          "navigationEndpoint": {
+           "watchEndpoint": {
+            "videoId": "DiffSong001"
+           }
+          }
+         }
+        ]
+       },
+       "subtitle": {
+        "runs": [
+         {
+          "text": "YOASOBI • 4:08"
+         }
+        ]
+       }
+      }
+     }
+    ],
+    "YOASOBI - 夜に駆ける": [
+     {
+      "musicCardShelfRenderer": {
+       "title": {
+        "runs": [
+         {
+          "text": "群青",
+          "navigationEndpoint": {
+           "watchEndpoint": {
+            "videoId": "DiffSong001"
+           }
+          }
+         }
+        ]
+       },
+       "subtitle": {
+        "runs": [
+         {
+          "text": "YOASOBI • 4:08"
+         }
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "ja-version-only-skips",
+   "kind": "playlist",
+   "source": {
+    "title": "夜に駆ける",
+    "artist": "YOASOBI",
+    "duration_ms": 261000
+   },
+   "queries": [
+    "夜に駆ける YOASOBI",
+    "夜に駆ける",
+    "YOASOBI - 夜に駆ける"
+   ],
+   "expect": {
+    "signature": "plain",
+    "skip": "only_versioned",
+    "skip_reason": "RuntimeError: no confident match (only slowed versions found) for: 夜に駆ける YOASOBI"
+   },
+   "responses": {
+    "夜に駆ける YOASOBI": [
+     {
+      "musicCardShelfRenderer": {
+       "title": {
+        "runs": [
+         {
+          "text": "夜に駆ける (Slowed)",
+          "navigationEndpoint": {
+           "watchEndpoint": {
+            "videoId": "SlowedOnly1"
+           }
+          }
+         }
+        ]
+       },
+       "subtitle": {
+        "runs": [
+         {
+          "text": "YOASOBI • 4:40"
+         }
+        ]
+       }
+      }
+     }
+    ],
+    "夜に駆ける": [
+     {
+      "musicCardShelfRenderer": {
+       "title": {
+        "runs": [
+         {
+          "text": "夜に駆ける (Slowed)",
+          "navigationEndpoint": {
+           "watchEndpoint": {
+            "videoId": "SlowedOnly1"
+           }
+          }
+         }
+        ]
+       },
+       "subtitle": {
+        "runs": [
+         {
+          "text": "YOASOBI • 4:40"
+         }
+        ]
+       }
+      }
+     }
+    ],
+    "YOASOBI - 夜に駆ける": [
+     {
+      "musicCardShelfRenderer": {
+       "title": {
+        "runs": [
+         {
+          "text": "夜に駆ける (Slowed)",
+          "navigationEndpoint": {
+           "watchEndpoint": {
+            "videoId": "SlowedOnly1"
+           }
+          }
+         }
+        ]
+       },
+       "subtitle": {
+        "runs": [
+         {
+          "text": "YOASOBI • 4:40"
+         }
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "ja-best-guess",
+   "kind": "playlist",
+   "source": {
+    "title": "群青",
+    "artist": "YOASOBI",
+    "duration_ms": 252000
+   },
+   "queries": [
+    "群青 YOASOBI",
+    "群青",
+    "YOASOBI - 群青"
+   ],
+   "expect": {
+    "signature": "plain",
+    "videoId": "BestGuess01",
+    "video_title": "Ultramarine",
+    "duration": "",
+    "guess": true
+   },
+   "responses": {
+    "群青 YOASOBI": [
+     {
+      "musicCardShelfRenderer": {
+       "title": {
+        "runs": [
+         {
+          "text": "Ultramarine",
+          "navigationEndpoint": {
+           "watchEndpoint": {
+            "videoId": "BestGuess01"
+           }
+          }
+         }
+        ]
+       },
+       "subtitle": {
+        "runs": [
+         {
+          "text": "YOASOBI"
+         }
+        ]
+       }
+      }
+     }
+    ],
+    "群青": [
+     {
+      "musicCardShelfRenderer": {
+       "title": {
+        "runs": [
+         {
+          "text": "Ultramarine",
+          "navigationEndpoint": {
+           "watchEndpoint": {
+            "videoId": "BestGuess01"
+           }
+          }
+         }
+        ]
+       },
+       "subtitle": {
+        "runs": [
+         {
+          "text": "YOASOBI"
+         }
+        ]
+       }
+      }
+     }
+    ],
+    "YOASOBI - 群青": [
+     {
+      "musicCardShelfRenderer": {
+       "title": {
+        "runs": [
+         {
+          "text": "Ultramarine",
+          "navigationEndpoint": {
+           "watchEndpoint": {
+            "videoId": "BestGuess01"
+           }
+          }
+         }
+        ]
+       },
+       "subtitle": {
+        "runs": [
+         {
+          "text": "YOASOBI"
+         }
+        ]
+       }
+      }
+     }
+    ]
+   }
   }
  ],
  "responses": {

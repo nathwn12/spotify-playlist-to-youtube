@@ -10,6 +10,8 @@ set "PY=python3"
 %PY% -c "import sys" >nul 2>nul || set "PY=python"
 %PY% -X utf8 tests\acceptance.py
 if errorlevel 1 exit /b 1
+%PY% -X utf8 tests\test_lang.py
+if errorlevel 1 exit /b 1
 %PY% -X utf8 tests\check_page.py
 if errorlevel 1 exit /b 1
 %PY% -X utf8 tests\test_cookies.py

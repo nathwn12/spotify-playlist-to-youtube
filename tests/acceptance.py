@@ -361,6 +361,15 @@ def test_done_line_never_splits():
         return "FAIL done-line: %s: %s" % (type(e).__name__, e)
 
 
+def test_guess_summary():
+    s = backend._done_summary(3, 0, 0, 0, 3, 3, "none", guessed=1)
+    if "best guess 1" not in s:
+        return "FAIL guess summary: missing best guess count"
+    if "best guess" in backend._done_summary(3, 0, 0, 0, 3, 3, "none"):
+        return "FAIL guess summary: silent guesses still counted"
+    return None
+
+
 def test_running_motion():
     """Running state visibly moves without faking progress.
 
@@ -424,14 +433,19 @@ def main():
         print("0/0 fixtures")
         return 1
 
+    # A row may carry its own responses map: rows that share a source title
+    # issue the same query and still need different cards for their outcomes.
+    served = {"map": responses}
+
     def fake_urlopen(req, timeout=None):
         try:
             query = json.loads((req.data or b"{}").decode("utf-8", "ignore")).get("query", "")
         except Exception:
             query = ""
-        if query not in responses:
+        recorded = served["map"]
+        if query not in recorded:
             raise MissingResponse(f"no recorded response for search: {query!r}")
-        return FakeResponse(fixture_lib.envelope(responses[query]))
+        return FakeResponse(fixture_lib.envelope(recorded[query]))
 
     real_urlopen = urllib.request.urlopen
     urllib.request.urlopen = fake_urlopen
@@ -446,7 +460,11 @@ def main():
             expect = row.get("expect") or {}
             want_sig = expect.get("signature", "")
 
-            missing = [q for q in row.get("queries") or [] if q not in responses]
+            row_responses = dict(responses)
+            row_responses.update(row.get("responses") or {})
+            served["map"] = row_responses
+
+            missing = [q for q in row.get("queries") or [] if q not in row_responses]
             if missing:
                 failures.append(f"FAIL {rid}: fixture gap, no response recorded for {missing[0]!r}")
                 failed_ids.add(rid)
@@ -489,9 +507,18 @@ def main():
                                     f"('{result.get('title', '')}')")
                     failed_ids.add(rid)
                     continue
+                if bool(result.get("best_guess")) != bool(expect.get("guess")):
+                    failures.append(f"FAIL {rid}: best_guess={bool(result.get('best_guess'))}, "
+                                    f"fixture recorded guess={bool(expect.get('guess'))}")
+                    failed_ids.add(rid)
+                    continue
+                if expect.get("guess") and not result.get("why"):
+                    failures.append(f"FAIL {rid}: guess landed without a reason")
+                    failed_ids.add(rid)
+                    continue
                 seen = []
                 for q in row.get("queries") or []:
-                    env = fixture_lib.envelope(responses[q])
+                    env = fixture_lib.envelope(row_responses[q])
                     seen += [c.get("videoId") for c in backend._candidates_from_search_json(env)]
                 if expect["videoId"] not in seen:
                     failures.append(f"FAIL {rid}: recorded responses do not contain {expect['videoId']}")
@@ -553,7 +580,8 @@ def main():
     for fn in (test_reconcile_present_but_refused,
                test_reconcile_absent_stays_refused,
                test_timeout_retry_already_exists,
-               test_done_line_never_splits):
+               test_done_line_never_splits,
+               test_guess_summary):
         try:
             err = fn()
         except Exception as e:
