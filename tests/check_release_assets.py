@@ -1,5 +1,6 @@
-"""Release asset gate: the two README screenshots are real PNGs at 1200x800, neither is the
-0.1.0 shot, and the docs no longer describe the advanced drawer 0.2.0 removed.
+"""Release asset gate: the two README screenshots are real PNGs at 824x825 - the client area of
+the shipped 840x864 window - neither is the 0.1.0 shot, and the docs no longer describe the
+advanced drawer 0.2.0 removed.
 Stdlib only, no network. Exit 0 green, 1 red. Prints both dimensions on success."""
 import os
 import struct
@@ -8,7 +9,7 @@ import sys
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SHOTS = ("assets/app.png", "assets/app-setup.png")
-WANT = (1200, 800)
+WANT = (824, 825)
 BANNED = ("advanced drawer", "forget saved cookies", "#ytcookie")
 TAG = "v0.1.0"
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
