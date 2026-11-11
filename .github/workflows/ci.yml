@@ -20,8 +20,4 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - run: python -X utf8 tests/acceptance.py
-      - run: python -X utf8 tests/check_page.py
-      - run: python -X utf8 tests/test_cookies.py
-      - run: python -X utf8 tests/test_connect_card.py
-      - run: python -X utf8 tests/check_release_assets.py
+      - run: .\acceptance.cmd
