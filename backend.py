@@ -1810,6 +1810,79 @@ def yt_add_one(plid: str, vid: str, yt_cookie: str) -> str:
         return st2
     return st
 
+COVER_MAX = 8 * 1024 * 1024  # playlist thumbnail bytes accepted for upload
+
+def yt_set_playlist_cover(plid: str, cover_url: str, yt_cookie: str = "") -> dict:
+    """Best-effort: give a new YTM playlist the Spotify cover.
+
+    Downloads the image, uploads the bytes through the resumable playlist-thumbnail
+    handshake (start -> X-Goog-Upload-URL -> upload, finalize -> encryptedBlobId),
+    then attaches it with one browse/edit_playlist ACTION_SET_CUSTOM_THUMBNAIL call.
+    Always returns {"ok": bool, "why": str} and never raises: some accounts get a
+    403 here by design, and the transfer must not care."""
+    if not (cover_url or "").strip():
+        return {"ok": False, "why": "no cover"}
+    try:
+        req = urllib.request.Request(cover_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            if int(getattr(r, "status", 200) or 0) != 200:
+                return {"ok": False, "why": "download"}
+            img = r.read(COVER_MAX + 1)
+        if not img or len(img) > COVER_MAX:
+            return {"ok": False, "why": "download"}
+        if img.startswith(b"\xff\xd8\xff"):
+            ctype = "image/jpeg"
+        elif img.startswith(b"\x89PNG\r\n\x1a\n"):
+            ctype = "image/png"
+        else:
+            return {"ok": False, "why": "no image"}
+    except Exception:
+        return {"ok": False, "why": "download"}
+    try:
+        hs = yt_headers(yt_cookie)
+        hs.update({"Content-Type": "text/plain; charset=utf-8",
+                   "X-Goog-Upload-Command": "start",
+                   "X-Goog-Upload-Header-Content-Length": str(len(img)),
+                   "X-Goog-Upload-Protocol": "resumable",
+                   "X-Goog-AuthUser": "0"})
+        hr = urllib.request.urlopen(urllib.request.Request(
+            f"{YT_ORIGIN}/playlist_image_upload/playlist_custom_thumbnail?authuser=0",
+            data=b"", headers=hs), timeout=25)
+        up_url = (hr.headers.get("X-Goog-Upload-URL") or "") if hr.headers is not None else ""
+        if not up_url:
+            return {"ok": False, "why": "upload"}
+        uh = {h: v for h, v in yt_headers(yt_cookie).items() if h != "Content-Type"}
+        uh.update({"Content-Type": ctype, "X-Goog-Upload-Command": "upload, finalize",
+                   "X-Goog-Upload-Offset": "0"})
+        ur = urllib.request.urlopen(urllib.request.Request(
+            up_url, data=img, headers=uh), timeout=25)
+        j = json.loads(ur.read().decode("utf-8", "ignore"))
+        blob = str(j.get("encryptedBlobId") or j.get("playlistScottyEncryptedBlobId") or "")
+        if not blob:
+            return {"ok": False, "why": "upload"}
+    except Exception:
+        return {"ok": False, "why": "upload"}
+    try:
+        body = json.dumps({"context": {"client": CLIENT}, "playlistId": plid, "actions": [
+            {"action": "ACTION_SET_CUSTOM_THUMBNAIL", "addedCustomThumbnail": {
+                "imageKey": {"type": "PLAYLIST_IMAGE_TYPE_CUSTOM_THUMBNAIL",
+                             "name": "studio_square_thumbnail"},
+                "playlistScottyEncryptedBlobId": blob}}]}).encode()
+        eh = yt_headers(yt_cookie)
+        eh["X-Goog-AuthUser"] = "0"
+        er = urllib.request.urlopen(urllib.request.Request(
+            f"{YT_ORIGIN}/youtubei/v1/browse/edit_playlist?key={YT_KEY}&prettyPrint=false",
+            data=body, headers=eh), timeout=25)
+        txt = er.read().decode("utf-8", "ignore")
+        if int(getattr(er, "status", 200) or 0) not in range(200, 300) or '"error"' in txt:
+            return {"ok": False, "why": "attach"}
+        ej = json.loads(txt)
+        if isinstance(ej, dict) and "status" in ej and "SUCCEEDED" not in str(ej.get("status", "")):
+            return {"ok": False, "why": "attach"}
+    except Exception:
+        return {"ok": False, "why": "attach"}
+    return {"ok": True, "why": ""}
+
 def _repeat_count(video_ids: list, version_sigs=None) -> int:
     """Genuine repeats only: the same version, same videoId, twice in the source.
     Different versions resolve to different videoIds (the matcher rejects cross-
@@ -2478,6 +2551,12 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                 RUN["updated_at"] = time.time()
             blog("fail", f"run={run_id} {msg}")
             return
+        if not res.get("existing") and (sp.get("cover_url") or ""):
+            try:
+                cv = yt_set_playlist_cover(res.get("playlistId", ""), sp.get("cover_url", ""), yt_cookie)
+                blog("cover", f"run={run_id} {'ok' if cv.get('ok') else 'skip ' + str(cv.get('why', ''))}")
+            except Exception:
+                pass
         with _RUN_LOCK:
             if RUN.get("id") != run_id:
                 return
