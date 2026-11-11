@@ -23,7 +23,7 @@ Pin an exact version:
 ```bat
 git clone https://github.com/nathwn12/spotify-playlist-to-youtube
 cd spotify-playlist-to-youtube
-git checkout v0.2.1
+git checkout v0.3.1
 ```
 
 ## Use it
@@ -97,10 +97,7 @@ Four files: `backend.py` (server and transfer logic), `index.html` (page), `app.
 
 ## Status
 
-Experimental and still moving. It works today, but it is not a finished product:
-interfaces may change, features may be improved or removed, and a release can
-break the one before it. This is maintained by one person, not a team. If it
-breaks, open an issue with the command you ran and what you saw.
+**Unverified** — as-is, use at your own risk. The cover upload and cross-script matching are best-effort; verify a transfer before relying on it.
 
 ## Links
 
