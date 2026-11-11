@@ -14,3 +14,4 @@ sp2yt-app.exe
 *.prev.exe
 .venv/
 venv/
+.stack/
