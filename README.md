@@ -5,7 +5,7 @@
 <p align="center"><strong>Copy a public Spotify playlist into YouTube Music without an API key.</strong></p>
 
 <p align="center">
-  <img src="assets/app.png" width="520" alt="The sp2yt transfer deck at rest: a Spotify link field, the privacy selector, an empty track ledger and a Start transfer button." />
+  <img src="assets/app.png" width="520" alt="The sp2yt transfer deck with YouTube Music connected: the Connect card reads Connected and names the cookie file it uses, above an empty Spotify link field, the privacy selector and an empty track ledger." />
 </p>
 
 ## Install
@@ -23,16 +23,22 @@ Pin an exact version:
 ```bat
 git clone https://github.com/nathwn12/spotify-playlist-to-youtube
 cd spotify-playlist-to-youtube
-git checkout v0.1.0
+git checkout v0.2.0
 ```
 
 ## Use it
 
-1. Export your `music.youtube.com` cookie: open DevTools on music.youtube.com, go to Network, copy the `Cookie` request header — or save a cookie-export extension's `.txt` file.
-2. Open advanced and select the file or paste the header. The app also watches Desktop, Downloads and one extra folder, and re-latches a regenerated export by content.
-3. Paste a public playlist link. The title fills in; choose the privacy (Private is the default).
-4. Press Start transfer (or `Ctrl+Enter`). The counter moves against Spotify's declared track count.
-5. The new playlist appears as a chip in the top bar, linked to its `music.youtube.com/playlist?list=` page.
+Two steps: the first runs once, the second runs every transfer.
+
+<p align="center">
+  <img src="assets/app-setup.png" width="520" alt="The first-run Connect card: YouTube Music at Setup, Not connected yet, with Choose file and Paste, above an empty Spotify link field and an empty track ledger." />
+  <br /><sub>First run: the card asks for your cookie file once, and the cookie never leaves this PC.</sub>
+</p>
+
+1. Connect YouTube Music. The card finds `music.youtube.com_cookies.txt` on your Desktop or in Downloads and offers it; choose the file, or paste its header instead. Once it is connected, `Replace` and `Remove` sit on the card — `Remove` clears the saved cookie, and it stays removed until you choose a file again.
+2. Paste a public Spotify link, choose the privacy (Private is the default), then press Start transfer (or `Ctrl+Enter`). The counter moves against Spotify's declared track count, and the new playlist appears as a chip in the top bar, linked to its `music.youtube.com/playlist?list=` page.
+
+If the card does not find a file by itself, choose it by hand — an export from a cookie extension works the same way. `More options` holds the watch folder (one extra folder) and the copy button.
 
 `Ctrl+K` palette (start, stop, filters, copy, jump) · `Ctrl+Enter` start · `Esc` stop · `Alt+1…5` outcome filter · `/` focus the link field · `j`/`k` scroll the ledger · `Ctrl+Shift+N` new transfer. Reloading mid-run re-attaches and the counter never moves backwards.
 
@@ -49,8 +55,8 @@ git checkout v0.1.0
 | Setting | Where | Default | Notes |
 |---|---|---|---|
 | Privacy | Side rail | Private (`PRIVATE`/`UNLISTED`/`PUBLIC`) | Persisted server-side in the app's per-user data folder as `sp2yt/settings.json` |
-| YouTube Music cookie | Advanced | Unset | Pasted or uploaded, then held DPAPI-encrypted so it survives a restart; forget saved cookies clears it |
-| Watch folder | Advanced | Desktop and Downloads | One extra folder; regenerated exports re-latch by content |
+| YouTube Music cookie | Connect card | Unset | Auto-detected from Desktop or Downloads, or chosen by hand; held DPAPI-encrypted so it survives a restart; `Remove` on the card clears it |
+| Watch folder | `More options` | Desktop and Downloads | One extra folder; regenerated exports re-latch by content |
 | Port | Fixed | `8787` | Bound to 127.0.0.1 only |
 | Settings API | `GET`/`POST /api/settings` | `{"privacy": "PRIVATE"}` | Only privacy is persisted; unknown keys are ignored |
 
