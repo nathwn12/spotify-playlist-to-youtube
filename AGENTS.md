@@ -13,7 +13,7 @@ Keyless Spotify to YouTube Music playlist transfer for Windows. The server binds
 
 - **DEV (iterate here):** `python3 backend.py` (or `sp2yt-start.cmd`), open `http://127.0.0.1:8787`. No build step.
 - **PROD:** run `build.cmd` from the repo root (needs `pyinstaller` + `pywebview`). It backs up the exe, kills running instances, compiles one portable `sp2yt.exe`, smoke-tests `/health`, deletes the backup on green / restores it on red. Never invoke `pyinstaller` directly — the backup/restore + smoke logic is the build.
-- The gate is `acceptance.cmd`, which must print `30/30 fixtures` before anything ships.
+- The gate is `acceptance.cmd`, which must print `30/30 fixtures` and then pass the page-script parse check, the cookie tests, the connect-card checks and the release-asset checks — every one green — before anything ships.
 - Port is fixed at `8787`, bound to `127.0.0.1` only.
 
 ## Architecture quirks (unofficial surfaces)
@@ -29,7 +29,7 @@ Keyless Spotify to YouTube Music playlist transfer for Windows. The server binds
 - `normalize_cookie` accepts a typed `a=b; c=d` header **or** Netscape file content — preserve both paths.
 - The vault is DPAPI-encrypted per Windows user; disk watchers (Desktop + Downloads plus one optional extra folder) re-latch by content markers. Logs record lengths/flags only — **never log or print cookie values**.
 - Runtime state lives in the per-user application data folder (`sp2yt`), falling back to the repo dir if unwritable. All git-ignored — never commit `*.log`, vault/watch/created json, `sp2yt.exe`, `build/`, `dist/`, or `settings.json`.
-- Diagnose via `python3 watchdog.py` (or `--watch` loop); errors carry `kind` (`auth`/`throttle`/`transient`/`parse`/`user`/`write`/`unknown`) + `hint` via `classify()`.
+- Diagnose via `python3 watchdog.py` (or `--watch` loop); errors carry `kind` (`auth`/`throttle`/`transient`/`parse`/`source`/`user`/`write`/`unknown`) + `hint` via `classify()`.
 
 ## Fixtures
 

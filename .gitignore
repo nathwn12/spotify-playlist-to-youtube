@@ -1,5 +1,5 @@
-server.log
-build.log
+*.log
+settings.json
 created.json
 cookie_vault.json
 cookie_watch.json
