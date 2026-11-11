@@ -130,6 +130,10 @@ ok("paste box starts empty",
    re.search(r"<textarea[^>]*\bid=\"pasteinput\"[^>]*>\s*</textarea>", html) is not None,
    "#pasteinput carries content at rest")
 
+# 7 a guessed match is labelled in the ledger, in the slot the skip reason uses
+ok("guessed row shows its reason", 'r.guess?(r.status||"best guess")' in script,
+   "a matched row with r.guess renders no reason; it must show r.status || 'best guess'")
+
 print()
 if fails:
     sys.exit("CONNECT CARD RED - %d of %d checks failed: %s" % (len(fails), n[0], ", ".join(fails)))

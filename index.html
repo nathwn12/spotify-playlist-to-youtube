@@ -481,7 +481,7 @@ function render(){
       const d=document.createElement("div");
       d.className="lrow"+((LIVE.has(S.phase)&&r.state==="appending")?" inflight":"");
       d.style.top=(k*ROWH)+"px";d.style.height=ROWH+"px";
-      const rsn=(b==="skipped"||b==="refused")?(r.status||""):"";
+      const rsn=(b==="skipped"||b==="refused")?(r.status||""):(r.guess?(r.status||"best guess"):"");
       const a=document.createElement("span");a.className="c0";a.textContent=String(r.i).padStart(3,"0");
       const c=document.createElement("span");c.className="c1";
       const line1=`${r.title||"—"} — ${r.artist||"?"}`;
