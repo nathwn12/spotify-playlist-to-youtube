@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet.
 
+## [0.2.1] - 2026-11-11
+
+### Fixed
+
+- The link row reads as one row: the playlist input, the cover tile and the Public/Unlisted/Private control now share a single height and top edge instead of three staggered ones.
+- The PRIVACY label can no longer be stranded from its control when the row wraps in a narrow window (it could sit 61.5px away).
+- The cover placeholder no longer breaks mid-phrase and leaves a single orphaned word on its second line.
+- Key hints in the footer no longer clip by 2px.
+
 ## [0.2.0] - 2026-11-11
 
 ### Added
