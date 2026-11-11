@@ -1917,11 +1917,6 @@ def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PR
                             "repeats": repeats, "existing": True, "ledger": ledger,
                             "playlist_count": len(entries2) if isinstance(entries2, list) else 0,
                             "topped_up": newly}
-                    return {"playlistId": rec["yt_id"], "url": rec.get("url", ""),
-                            "added": rec.get("expected", len(ids)), "sent": len(ids),
-                            "rejected": 0, "missing": 0,
-                            "repeats": _repeat_count(ids, version_sigs), "existing": True, "ledger": [],
-                            "playlist_count": 0}
             else:
                 return _resume_incomplete(rec, yt_cookie, title, ids, spotify_id, hooks, version_sigs)
     r = _create_new(yt_cookie, title, description, ids, privacy, spotify_id, hooks, version_sigs)
