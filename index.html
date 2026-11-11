@@ -46,7 +46,7 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
 #newbtn:disabled{opacity:.45;cursor:default}
 /* body: 280px rail + fluid ledger; strip below 1024px */
 .deck{display:grid;grid-template-columns:280px minmax(0,1fr);min-height:0;min-width:0}
-.side{border-right:1px solid var(--line);background:var(--panel);padding:14px;
+.side{--chiph:48px;border-right:1px solid var(--line);background:var(--panel);padding:14px;
   display:flex;flex-direction:column;gap:10px;overflow-y:auto;overflow-x:hidden;min-height:0;min-width:0}
 .flab{font:700 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
 #srcurl{background:#060706;border:1px solid var(--line2);color:var(--tx);border-radius:8px;
@@ -65,7 +65,9 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
   border:1px solid var(--line2)}
 .pcover.gen{background:linear-gradient(135deg,#3DDC84 0 25%,#0E2A1A 25% 50%,#E3C15C 50% 75%,#111411 75%)}
 #pname{font:600 12.5px/1.3 var(--sans);color:var(--tx);min-width:0;overflow:hidden;
-  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2}
+  text-wrap:balance;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2}
+/* the privacy label and its control are one unit: they can never land on different rows */
+.privgroup{display:contents}
 .privseg{display:flex;border:1px solid var(--line2);border-radius:8px;overflow:hidden}
 .privseg button{flex:1;background:transparent;border:0;color:var(--mut);
   font:600 12px var(--sans);padding:8px 4px;cursor:pointer}
@@ -176,10 +178,10 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
   border-top:1px solid var(--line);background:var(--panel);flex-wrap:wrap;min-width:0}
 #phaseline{font:600 12px var(--mono);color:var(--mut);font-variant-numeric:tabular-nums;
   flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.keys{font:500 10.5px var(--sans);color:var(--dim);flex:1 1 auto;min-width:0;
+.keys{font:500 10.5px var(--sans);line-height:16px;color:var(--dim);flex:1 1 auto;min-width:0;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .keys kbd{font:600 10px var(--mono);border:1px solid var(--line2);border-radius:5px;
-  padding:1px 4px;color:var(--mut);background:#060706}
+  padding:1px 4px;vertical-align:top;color:var(--mut);background:#060706}
 .pair{display:flex;gap:6px;flex:0 0 auto;flex-wrap:nowrap;margin-left:auto;min-width:0}
 .go{background:var(--grn);color:#06110A;border:0;border-radius:8px;padding:9px 12px;
   font:700 13px var(--sans);cursor:pointer;white-space:nowrap;flex:0 0 auto}
@@ -202,9 +204,13 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
   .side{flex-direction:row;flex-wrap:wrap;align-items:center;border-right:0;
     border-bottom:1px solid var(--line);overflow:visible}
   .side .flab{flex:0 0 auto}
-  .srcwrap{flex:1 1 220px}
-  .pident{flex:1 1 200px}
-  .privseg{flex:0 1 260px}
+  .srcwrap{flex:1 1 180px;height:var(--chiph)}
+  .srcwrap #srcurl{height:100%}
+  .pident{flex:1 1 240px;height:var(--chiph);min-height:var(--chiph);padding:1px 10px}
+  .privgroup{display:flex;align-items:center;gap:8px;flex:0 1 auto;
+    height:var(--chiph);min-width:0}
+  .privseg{flex:0 1 auto;width:260px;max-width:100%;height:var(--chiph)}
+  .privseg button{padding:0 4px}
   .acct{flex:1 1 100%}
   .morebtn{margin-top:0}
   #bignum{font-size:27px}
@@ -254,9 +260,11 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
       title="Clear the link (the ledger keeps its results)" hidden>&#10005;</button>
     </div>
     <div class="pident"><img id="pcover" class="pcover gen" alt="" title="" width="44" height="44" referrerpolicy="no-referrer" decoding="async" onerror="this.classList.add('gen');this.removeAttribute('src')"><span id="pname">no playlist yet — paste a link</span></div>
+    <div class="privgroup">
     <span class="flab" id="privcap">Privacy</span>
     <div class="privseg" role="group" aria-labelledby="privcap">
       <button type="button" data-priv="PUBLIC" aria-pressed="false">Public</button><button type="button" data-priv="UNLISTED" aria-pressed="false">Unlisted</button><button type="button" data-priv="PRIVATE" aria-pressed="true">Private</button>
+    </div>
     </div>
     <button id="morebtn" class="morebtn" type="button">More options</button>
   </aside>

@@ -101,6 +101,27 @@ ok("start gate sentence", "Connect YouTube Music first \u2014 choose your cookie
 ok("using-file line", "Using ${" in script, "no `Using <file>` line")
 ok("needs pulse", "needs" in script and ".acct.needs" in html, "no .needs pulse on #acct")
 
+# 5 the link row: one height, one line, label welded to its control
+GROUP = re.search(r'<div class="privgroup"[^>]*>(.*?)</div>\s*<button id="morebtn"', html, re.S)
+ok("privacy label and control share a wrapper",
+   bool(GROUP) and 'id="privcap"' in GROUP.group(1) and 'class="privseg"' in GROUP.group(1),
+   "PRIVACY and .privseg are still separate children of .side, so the label strands on wrap")
+ok("segmented control is still labelled by #privcap", 'aria-labelledby="privcap"' in html,
+   "the group lost its accessible name")
+ok("one shared chip height token", re.search(r"--chiph:\s*\d+px", html) is not None,
+   "no --chiph token for the row chips to share")
+ok("input, cover block and privacy group take that height",
+   html.count("height:var(--chiph)") >= 3,
+   "expected .srcwrap, .pident and .privgroup to share --chiph")
+ok("placeholder caption balances its lines", "text-wrap:balance" in html,
+   "#pname may still orphan a single word")
+ok("caption keeps its two-line clamp", "-webkit-line-clamp:2" in html,
+   "a real playlist title lost its second line")
+ok("kbd chips are not clipped by .keys",
+   re.search(r"\.keys\{[^}]*line-height:16px", html) is not None
+   and re.search(r"\.keys kbd\{[^}]*vertical-align:top", html) is not None,
+   ".keys is still shorter than the kbd inline boxes")
+
 # 6 no cookie value is ever rendered
 ok("no cookie sample in the page", "SAPISID=" not in html, "a cookie value sample is in the markup")
 ok("no cookie-looking placeholder",
