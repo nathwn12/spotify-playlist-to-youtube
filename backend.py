@@ -478,10 +478,10 @@ def vault_remove(which: str):
     will not hand the same file back, and the user clears the block by choosing a file."""
     if which not in ("sp", "yt"):
         return
-    _cookie_hook("remove")
     with _COOKIE_LOCK:
         v = _vault_read()
         held = _decode(v, which)
+        _cookie_hook("remove")   # inside the section: a thread parked here already holds the lock
         v.pop(which, None)
         meta = v.get("_meta") if isinstance(v.get("_meta"), dict) else {}
         meta.pop(which, None)
@@ -500,13 +500,18 @@ def vault_remove(which: str):
             pass
 
 def vault_forget():
-    for site in ("sp", "yt"):
-        vault_remove(site)
-    for p in (VAULTF, COOKIEF):
-        try:
-            os.remove(p)
-        except Exception:
-            pass
+    """Reset. Both removals and the deletion of both files are one critical section, so a save
+    or an adoption that arrives mid-reset waits at the gate and lands whole, either before the
+    reset or after it — it can never be deleted by the reset's own file removal."""
+    with _COOKIE_LOCK:
+        for site in ("sp", "yt"):
+            vault_remove(site)
+        _cookie_hook("forget")
+        for p in (VAULTF, COOKIEF):
+            try:
+                os.remove(p)
+            except Exception:
+                pass
 
 def _vault_source(site: str) -> str:
     return _vault_meta(_vault_read(), site)["source"] or "unknown"

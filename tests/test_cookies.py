@@ -90,6 +90,66 @@ def api(path, body=None):
         srv.server_close()
 
 
+class LockProbe:
+    """Stands in for the shared cookie lock and records who reached the gate, who was let in,
+    and whether two threads were ever inside the section at the same time.
+
+    Ordering claims in the race tests come from these records, never from an elapsed time: a
+    test parks one operation inside its critical section, waits for the other to *arrive* at
+    the gate (an announcement), and then reads who is inside. A lock-free copy of `backend.py`
+    never enters the gate, so the first assertion goes red instead of racing.
+    """
+
+    def __init__(self, real):
+        self.real = real
+        self.cv = threading.Condition(threading.Lock())
+        self.arrived = []      # tids that called the gate, in call order
+        self.inside = []       # tids currently inside the section, entry order, repeats for a re-entrant hold
+        self.acquired = []     # tids, in the order the lock was granted
+        self.released = []     # tids, in the order the section was left
+        self.overlap = []      # (holder, intruder) pairs: a second thread got in while one was inside
+
+    def __enter__(self):
+        tid = threading.get_ident()
+        with self.cv:
+            self.arrived.append(tid)
+            self.cv.notify_all()
+        self.real.__enter__()
+        with self.cv:
+            others = [t for t in self.inside if t != tid]   # a re-entrant hold is the same thread
+            if others:
+                self.overlap.append((others[0], tid))
+            self.inside.append(tid)
+            self.acquired.append(tid)
+        return self
+
+    def __exit__(self, *exc):
+        tid = threading.get_ident()
+        with self.cv:
+            if tid in self.inside:
+                self.inside.remove(tid)      # one occurrence: a re-entrant hold leaves one level
+            self.released.append(tid)
+            self.cv.notify_all()
+        return self.real.__exit__(*exc)
+
+    def wait_arrival(self, not_tid, timeout=10):
+        """Block until a thread other than `not_tid` has reached the gate.
+        A liveness bound only: in the fixed code the other side always calls the lock, and the
+        caller passes as soon as it has. What is claimed afterwards is read from `inside`."""
+        deadline = time.time() + timeout
+        with self.cv:
+            while not [t for t in self.arrived if t != not_tid]:
+                left = deadline - time.time()
+                if left <= 0:
+                    return False
+                self.cv.wait(left)
+            return True
+
+    def inside_now(self):
+        with self.cv:
+            return list(self.inside)
+
+
 class CookieTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="sp2yt-cookie-")
@@ -115,6 +175,22 @@ class CookieTests(unittest.TestCase):
         if mtime is not None:
             os.utime(p, (mtime, mtime))
         return p
+
+    def probe_lock(self):
+        """Put the probe in front of the shared lock; every cookie writer then goes through it."""
+        real = backend._COOKIE_LOCK
+        probe = LockProbe(real)
+        backend._COOKIE_LOCK = probe
+        self.addCleanup(lambda: setattr(backend, "_COOKIE_LOCK", real))
+        return probe
+
+    def assert_shared_lock_held(self, probe, msg):
+        """The parked operation is inside the section and the lock really excludes: this thread
+        cannot acquire it. A no-op lock hands it over, so the case goes red instead of racing."""
+        got = probe.real.acquire(blocking=False)
+        if got:
+            probe.real.release()
+        self.assertFalse(got, msg)
 
     # 1
     def test_desktop_export_filename_is_a_yt_cookie(self):
@@ -476,50 +552,51 @@ class CookieTests(unittest.TestCase):
 
     # 21
     def test_a_removal_that_lands_during_the_verdict_write_still_wins(self):
-        """Remove between a check's record comparison and its state write must still win:
-        compare-plus-write is one critical section, shared with vault_remove.
-        Both sides synchronise on the boundary hook, so no test here depends on timing."""
+        """A removal cannot land between a check's record comparison and its state write.
+        The check is parked inside its window, so the probe can say who holds the shared lock:
+        the check is in, the removal arrives at the gate and stays out, and only a released
+        check lets it in. Nothing here waits a duration or infers an order from one."""
         self.assertTrue(backend.vault_save("yt", HEADER)["ok"])
-        at_barrier, resume = threading.Event(), threading.Event()
-        at_remove, removed = threading.Event(), threading.Event()
+        probe = self.probe_lock()
+        at_barrier, resume, out = threading.Event(), threading.Event(), {}
         real_hook, real = backend._COOKIE_HOOK, backend.check_yt_cookie
-        out = {}
 
         def hook(name):
             if name == "check":
                 at_barrier.set()
-                resume.wait(10)
-            elif name == "remove":
-                at_remove.set()
-
-        def drop():
-            backend.vault_remove("yt")
-            removed.set()
+                self.assertTrue(resume.wait(10), "the test never released the parked check")
 
         backend._COOKIE_HOOK = hook
         backend.check_yt_cookie = lambda c: {"ok": True, "msg": ""}
-        t = r = None
+        check = remove = None
         try:
-            t = threading.Thread(
+            check = threading.Thread(
                 target=lambda: out.update(backend.cookie_check("yt", backend.normalize_cookie(HEADER))))
-            t.start()
+            check.start()
             self.assertTrue(at_barrier.wait(10), "the check never reached its compare-and-write")
-            r = threading.Thread(target=drop, daemon=True)
-            r.start()
-            # the removal reached its boundary before the paused write was released;
-            # under the shared lock it then waits for that write, and lands last either way
-            self.assertTrue(at_remove.wait(10), "the removal never reached its boundary")
+            self.assertEqual(probe.inside_now(), [check.ident],
+                             "the check's compare-and-write does not hold the shared lock")
+            self.assert_shared_lock_held(probe, "the check's critical section holds no lock")
+            remove = threading.Thread(target=backend.vault_remove, args=("yt",))
+            remove.start()
+            self.assertTrue(probe.wait_arrival(check.ident),
+                            "the removal never reached the shared lock")
+            self.assertEqual(probe.inside_now(), [check.ident],
+                             "the removal got inside the check's critical section")
         finally:
             backend._COOKIE_HOOK = real_hook
             backend.check_yt_cookie = real
             resume.set()
-            for th in (t, r):
+            for th in (check, remove):
                 if th:
                     th.join(10)
-        self.assertTrue(removed.is_set(), "the removal never completed")
+        self.assertFalse(check.is_alive(), "the check never finished")
+        self.assertFalse(remove.is_alive(), "the removal never finished")
+        self.assertEqual(probe.overlap, [], "two threads were inside the critical section at once")
+        self.assertIn(remove.ident, probe.acquired, "the removal never took the shared lock")
+        self.assertLess(probe.released.index(check.ident), probe.acquired.index(remove.ident),
+                        "the removal was let in before the check's write finished")
         self.assertEqual(out.get("state"), "connected", "the verdict must still come back to its caller")
-        self.assertFalse(t.is_alive(), "the check never finished")
-        self.assertFalse(r.is_alive(), "the removal never finished")
         record = backend.cookie_states()["yt"]
         self.assertEqual(record["state"], "removed", "a verdict written during a removal overwrote it")
         self.assertEqual(record["hash"], backend.cookie_hash(HEADER), "the removed value lost its identity")
@@ -531,38 +608,47 @@ class CookieTests(unittest.TestCase):
 
     # 22
     def test_a_removal_that_lands_during_a_disk_adoption_still_wins(self):
-        """Adoption is a read-modify-write of the vault and the record. A removal that lands
-        between the stale read and the write must survive it, and the file must stay blocked.
-        Both sides meet at the boundary hook, so no assertion here depends on a sleep."""
+        """Adoption is a read-modify-write of the vault and the record, and so is a removal.
+        The adoption is parked inside its window; the probe reads who holds the shared lock:
+        the adoption is in, the removal waits at the gate, and the file stays blocked after."""
         self.assertTrue(backend.vault_save("yt", OLD_NETSCAPE)["ok"])
         self.write(DESKTOP_NAME, NETSCAPE, mtime=time.time() + 120)   # newer than the held value
-        at_adopt, resume, at_remove = threading.Event(), threading.Event(), threading.Event()
-        real_hook, out = backend._COOKIE_HOOK, {}
+        probe = self.probe_lock()
+        at_adopt, resume, out = threading.Event(), threading.Event(), {}
+        real_hook = backend._COOKIE_HOOK
 
         def hook(name):
             if name == "adopt":
                 at_adopt.set()
-                resume.wait(10)
-            elif name == "remove":
-                at_remove.set()
+                self.assertTrue(resume.wait(10), "the test never released the parked adoption")
 
         backend._COOKIE_HOOK = hook
-        t = r = None
+        adopt = remove = None
         try:
-            t = threading.Thread(target=lambda: out.update(backend.vault_load()))
-            t.start()
+            adopt = threading.Thread(target=lambda: out.update(backend.vault_load()))
+            adopt.start()
             self.assertTrue(at_adopt.wait(10), "the adoption never reached its write boundary")
-            r = threading.Thread(target=backend.vault_remove, args=("yt",), daemon=True)
-            r.start()
-            self.assertTrue(at_remove.wait(10), "the removal never reached its boundary")
+            self.assertEqual(probe.inside_now(), [adopt.ident],
+                             "the adoption does not hold the shared lock")
+            self.assert_shared_lock_held(probe, "the adoption's critical section holds no lock")
+            remove = threading.Thread(target=backend.vault_remove, args=("yt",))
+            remove.start()
+            self.assertTrue(probe.wait_arrival(adopt.ident),
+                            "the removal never reached the shared lock")
+            self.assertEqual(probe.inside_now(), [adopt.ident],
+                             "the removal got inside the adoption's critical section")
         finally:
             backend._COOKIE_HOOK = real_hook
             resume.set()
-            for th in (t, r):
+            for th in (adopt, remove):
                 if th:
                     th.join(10)
-        self.assertFalse(t.is_alive(), "the adoption never finished")
-        self.assertFalse(r.is_alive(), "the removal never finished")
+        self.assertFalse(adopt.is_alive(), "the adoption never finished")
+        self.assertFalse(remove.is_alive(), "the removal never finished")
+        self.assertEqual(probe.overlap, [], "two threads were inside the critical section at once")
+        self.assertIn(remove.ident, probe.acquired, "the removal never took the shared lock")
+        self.assertLess(probe.released.index(adopt.ident), probe.acquired.index(remove.ident),
+                        "the removal was let in before the adoption's write finished")
         record = backend.cookie_states()["yt"]
         self.assertEqual(record["state"], "removed", "an adoption wrote over a completed removal")
         self.assertEqual(record["hash"], backend.cookie_hash(NETSCAPE),
@@ -576,35 +662,45 @@ class CookieTests(unittest.TestCase):
     # 23
     def test_a_removal_that_lands_during_a_save_still_wins(self):
         """A save that read the vault before a removal must not write that stale view back.
-        Once the removal has completed, only a later explicit save stores a value again."""
+        The same probe reads the boundary: the save is inside the section, the removal waits."""
         self.assertTrue(backend.vault_save("yt", OLD_NETSCAPE)["ok"])
-        at_save, resume, at_remove = threading.Event(), threading.Event(), threading.Event()
-        real_hook, out = backend._COOKIE_HOOK, {}
+        probe = self.probe_lock()
+        at_save, resume, out = threading.Event(), threading.Event(), {}
+        real_hook = backend._COOKIE_HOOK
 
         def hook(name):
             if name == "save":
                 at_save.set()
-                resume.wait(10)
-            elif name == "remove":
-                at_remove.set()
+                self.assertTrue(resume.wait(10), "the test never released the parked save")
 
         backend._COOKIE_HOOK = hook
-        t = r = None
+        save = remove = None
         try:
-            t = threading.Thread(target=lambda: out.update(backend.vault_save("yt", HEADER)))
-            t.start()
+            save = threading.Thread(target=lambda: out.update(backend.vault_save("yt", HEADER)))
+            save.start()
             self.assertTrue(at_save.wait(10), "the save never reached its write boundary")
-            r = threading.Thread(target=backend.vault_remove, args=("yt",), daemon=True)
-            r.start()
-            self.assertTrue(at_remove.wait(10), "the removal never reached its boundary")
+            self.assertEqual(probe.inside_now(), [save.ident],
+                             "the save does not hold the shared lock")
+            self.assert_shared_lock_held(probe, "the save's critical section holds no lock")
+            remove = threading.Thread(target=backend.vault_remove, args=("yt",))
+            remove.start()
+            self.assertTrue(probe.wait_arrival(save.ident),
+                            "the removal never reached the shared lock")
+            self.assertEqual(probe.inside_now(), [save.ident],
+                             "the removal got inside the save's critical section")
         finally:
             backend._COOKIE_HOOK = real_hook
             resume.set()
-            for th in (t, r):
+            for th in (save, remove):
                 if th:
                     th.join(10)
-        self.assertFalse(t.is_alive(), "the save never finished")
-        self.assertFalse(r.is_alive(), "the removal never finished")
+        self.assertFalse(save.is_alive(), "the save never finished")
+        self.assertFalse(remove.is_alive(), "the removal never finished")
+        self.assertEqual(probe.overlap, [], "two threads were inside the critical section at once")
+        self.assertIn(remove.ident, probe.acquired, "the removal never took the shared lock")
+        self.assertLess(probe.released.index(save.ident), probe.acquired.index(remove.ident),
+                        "the removal was let in before the save's write finished")
+        self.assertTrue(out.get("ok"), "the save did not land: %r" % (out,))
         record = backend.cookie_states()["yt"]
         self.assertEqual(record["state"], "removed", "a save wrote over a completed removal")
         self.assertEqual(record["hash"], backend.cookie_hash(HEADER),
@@ -617,6 +713,53 @@ class CookieTests(unittest.TestCase):
         backend.vault_remove("yt")
         self.assertEqual(backend.vault_load()["yt_cookie"], "")
         self.assertEqual(backend.cookie_states()["yt"]["state"], "removed")
+
+    # 24
+    def test_a_reset_is_one_critical_section_and_a_concurrent_save_cannot_be_lost(self):
+        """Reset drops both cookies and deletes both files as one critical section. A save that
+        arrives inside that window waits at the gate, so it lands whole after the reset instead
+        of being deleted by its next statement, and vault and record still agree afterwards."""
+        self.assertTrue(backend.vault_save("yt", OLD_NETSCAPE)["ok"])
+        probe = self.probe_lock()
+        at_forget, resume, out = threading.Event(), threading.Event(), {}
+        real_hook = backend._COOKIE_HOOK
+
+        def hook(name):
+            if name == "forget":
+                at_forget.set()
+                self.assertTrue(resume.wait(10), "the test never released the parked reset")
+
+        backend._COOKIE_HOOK = hook
+        forget = save = None
+        try:
+            forget = threading.Thread(target=backend.vault_forget)
+            forget.start()
+            self.assertTrue(at_forget.wait(10), "the reset never reached its file deletion")
+            self.assertEqual(probe.inside_now(), [forget.ident],
+                             "reset does not hold the shared lock across its window")
+            self.assert_shared_lock_held(probe, "reset's window holds no lock")
+            save = threading.Thread(target=lambda: out.update(backend.vault_save("yt", HEADER)))
+            save.start()
+            self.assertTrue(probe.wait_arrival(forget.ident),
+                            "the save never reached the shared lock")
+            self.assertEqual(probe.inside_now(), [forget.ident],
+                             "the save got inside the reset's critical section")
+        finally:
+            backend._COOKIE_HOOK = real_hook
+            resume.set()
+            for th in (forget, save):
+                if th:
+                    th.join(10)
+        self.assertFalse(forget.is_alive(), "the reset never finished")
+        self.assertFalse(save.is_alive(), "the save never finished")
+        self.assertEqual(probe.overlap, [], "two threads were inside the critical section at once")
+        self.assertTrue(out.get("ok"), "the save did not land after the reset: %r" % (out,))
+        self.assertEqual(backend.vault_load()["yt_cookie"], backend.normalize_cookie(HEADER),
+                         "the save was lost to the reset")
+        record = backend.cookie_states()["yt"]
+        self.assertEqual(record["state"], "unverified", "the record did not describe the saved value")
+        self.assertEqual(record["hash"], backend.cookie_hash(HEADER),
+                         "vault and record disagree after a reset")
 
     # 8
     def test_api_cookies_never_carries_a_value(self):
