@@ -10,4 +10,8 @@ python3 -X utf8 tests\check_page.py
 if errorlevel 1 exit /b 1
 python3 -X utf8 tests\test_cookies.py
 if errorlevel 1 exit /b 1
+python3 -X utf8 tests\test_connect_card.py
+if errorlevel 1 exit /b 1
+python3 -X utf8 tests\check_release_assets.py
+if errorlevel 1 exit /b 1
 exit /b 0

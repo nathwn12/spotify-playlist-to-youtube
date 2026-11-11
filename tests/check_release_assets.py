@@ -1,5 +1,5 @@
 """Release asset gate: the two README screenshots are real PNGs at 824x825 - the client area of
-the shipped 840x864 window - neither is the 0.1.0 shot, and the docs no longer describe the
+the shipped 840x864 window - neither is the 0.2.0 shot, and the docs no longer describe the
 advanced drawer 0.2.0 removed.
 Stdlib only, no network. Exit 0 green, 1 red. Prints both dimensions on success."""
 import os
@@ -11,7 +11,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SHOTS = ("assets/app.png", "assets/app-setup.png")
 WANT = (824, 825)
 BANNED = ("advanced drawer", "forget saved cookies", "#ytcookie")
-TAG = "v0.1.0"
+TAG = "v0.2.0"
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
 
 
@@ -33,18 +33,26 @@ def png_size(path: str):
 
 
 def tagged_len(rel: str):
-    """Byte length of the same path at TAG, or None when the tag or the path is unreachable."""
+    """(byte length of the same path at TAG, None) or (None, why it is unreachable).
+
+    An unreachable tag is reported, never assumed equal: a shallow clone must stay green,
+    but it must not print a comparison it did not make."""
     try:
         r = subprocess.run(["git", "show", f"{TAG}:{rel}"], cwd=HERE,
-                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    except OSError:
-        return None
-    return len(r.stdout) if r.returncode == 0 and r.stdout else None
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as e:
+        return None, "git not runnable (%s)" % e.__class__.__name__
+    if r.returncode != 0:
+        return None, "tag or shot absent from this clone - fetch full history"
+    if not r.stdout:
+        return None, "empty blob at the tag"
+    return len(r.stdout), None
 
 
 def main() -> int:
     bad = []
     dims = {}
+    skips = []
     for rel in SHOTS:
         path = os.path.join(HERE, rel)
         if not os.path.isfile(path):
@@ -58,10 +66,12 @@ def main() -> int:
         if (w, h) != WANT:
             bad.append(f"{rel}: {w}x{h}, want {WANT[0]}x{WANT[1]}")
             continue
-        old = tagged_len(rel)
+        old, why = tagged_len(rel)
         if old is not None and old == os.path.getsize(path):
             bad.append(f"{rel}: byte-identical to the {TAG} shot ({old} bytes) - recapture it")
             continue
+        if old is None:
+            skips.append(f"{rel}: {why}")
         dims[rel] = (w, h)
 
     readme = os.path.join(HERE, "README.md")
@@ -82,6 +92,12 @@ def main() -> int:
     for rel in SHOTS:
         print(f"{rel}  {dims[rel][0]}x{dims[rel][1]}")
     print(f"README.md: clean of {len(BANNED)} retired phrases")
+    for line in skips:
+        print(f"skip: {TAG} shot comparison for {line}")
+    if skips:
+        print(f"tag comparison vs {TAG}: NOT verified for {len(skips)} of {len(SHOTS)} shots")
+    else:
+        print(f"tag comparison vs {TAG}: both shots differ from the tagged bytes")
     return 0
 
 
