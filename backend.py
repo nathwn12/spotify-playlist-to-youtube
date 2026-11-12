@@ -2554,14 +2554,17 @@ def _run_counts_locked() -> dict:
 def _stop_rows_locked(msg: str) -> None:
     """A run stopped early. The caller holds _RUN_LOCK.
 
-    A row whose copy may already be on the playlist is `unverified`, never
-    `skipped`: a matched row rode the inline create, an appending row was sent, and
-    either add may have been applied before the failure. `skipped` says the copy
-    was never attempted, and that is a claim this run cannot make."""
+    A row whose copy may already be on the playlist is unverified, never `skipped`:
+    a matched row rode the inline create, an appending row was sent, and either add
+    may have been applied before the failure. `skipped` says the copy was never
+    attempted, and that is a claim this run cannot make. The unproven shape is the
+    one every other path uses and the page reads - absent from no completed read,
+    flagged unverified - so the row chip and the count agree."""
     for row in RUN.get("rows") or []:
         if row.get("state") in ("landed", "refused", "missing", "skipped", "duplicate"):
             continue
-        row["state"] = "unverified"
+        row["state"] = "missing"
+        row["unverified"] = True
         row["status"] = f"stopped: {msg}"[:80]
         RUN["seq"] += 1
         row["row_seq"] = RUN["seq"]

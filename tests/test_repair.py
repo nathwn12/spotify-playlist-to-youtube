@@ -499,10 +499,13 @@ class Repair(unittest.TestCase):
         self.assertEqual(snap["phase"], "failed", snap.get("error"))
         self.assertEqual(snap["state"], "failed", "a failed phase must not claim a running state")
         self.assertEqual(snap["skipped"], 0)
-        states = [r["state"] for r in snap["rows"]]
-        self.assertEqual(states.count("unverified"), 30, states)
+        unproven = [r for r in snap["rows"] if r.get("unverified")]
+        self.assertEqual(len(unproven), 30, snap["rows"][:2])
+        self.assertTrue(all(r.get("state") == "missing" for r in unproven),
+                        "an unproven row must not be filed as a refusal")
         self.assertEqual(snap["counts"]["added"], 0)
         self.assertEqual(snap["counts"]["unverified"], 30)
+        self.assertEqual(snap["counts"]["refused"], 0)
         self.assertEqual(upstream.creates, 1)
 
     # --- 6: an unknown outcome is read before it is resent ------------------
