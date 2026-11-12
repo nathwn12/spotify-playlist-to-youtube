@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import json
 import os
+import random
 import re
 import struct
 import sys
@@ -35,10 +36,16 @@ HISTORY = []
 _HIST_LOCK = threading.Lock()
 _RUN_LOCK = threading.Lock()
 _RUN_COUNTER = [0]
+RUN_WAKE = threading.Event()   # set by /api/retry: ends a standby wait early
 RUN = {
     "id": "",
     "seq": 0,
     "phase": "idle",
+    "state": "idle",
+    "attempt": 0,
+    "next_attempt_at": 0.0,
+    "reason": "",
+    "residual": [],
     "started_at": 0.0,
     "updated_at": time.time(),
     "spotify_id": "",
@@ -106,6 +113,11 @@ def run_begin(spotify_id="", title=""):
         now = time.time()
         RUN["id"] = rid
         RUN["phase"] = "spotify"
+        RUN["state"] = "running"
+        RUN["attempt"] = 0
+        RUN["next_attempt_at"] = 0.0
+        RUN["reason"] = ""
+        RUN["residual"] = []
         RUN["started_at"] = now
         RUN["updated_at"] = now
         RUN["spotify_id"] = spotify_id
@@ -147,6 +159,11 @@ def run_reset() -> bool:
             return False
         RUN["id"] = ""
         RUN["phase"] = "idle"
+        RUN["state"] = "idle"
+        RUN["attempt"] = 0
+        RUN["next_attempt_at"] = 0.0
+        RUN["reason"] = ""
+        RUN["residual"] = []
         RUN["started_at"] = 0.0
         RUN["updated_at"] = time.time()
         RUN["spotify_id"] = ""
@@ -175,6 +192,19 @@ def run_reset() -> bool:
         RUN["kind"] = ""
         RUN["seq"] += 1
         return True
+
+def run_retry_now() -> bool:
+    """The page's Retry now: end the standby wait and verify immediately.
+    Only a standing-by run has a wait to cut short."""
+    with _RUN_LOCK:
+        if RUN.get("state") != "standby":
+            return False
+        RUN["next_attempt_at"] = time.time()
+        RUN["reason"] = "retry now"
+        _run_touch_locked()
+    RUN_WAKE.set()
+    return True
+
 VAULTF = os.path.join(STATE, "cookie_vault.json")
 WATCHF = os.path.join(STATE, "cookie_watch.json")
 COOKIEF = os.path.join(STATE, "cookie_state.json")
@@ -2132,27 +2162,37 @@ def _ledger(video_ids: list, entries, attempts: dict) -> list:
                             "outcome": "missing", "status": ""})
     return out
 
-def _persist_incomplete(spotify_id, plid, url, title, expected):
+def _persist_fields(spotify_id, **fields):
+    """Additive write: created.json keeps every field it already holds, so the
+    state machine's progress never erases the resume record it rides on."""
     if not spotify_id:
         return
     try:
         created = load_created()
-        created[spotify_id] = {"yt_id": plid, "url": url, "title": title,
-                               "expected": expected, "complete": False}
+        rec = created.get(spotify_id)
+        if not isinstance(rec, dict):
+            rec = {}
+        rec.update(fields)
+        created[spotify_id] = rec
         save_created(created)
     except Exception:
         pass
 
+def _persist_incomplete(spotify_id, plid, url, title, expected):
+    _persist_fields(spotify_id, yt_id=plid, url=url, title=title,
+                    expected=expected, complete=False)
+
 def _persist_final(spotify_id, plid, url, title, expected, complete):
-    if not spotify_id:
-        return
-    try:
-        created = load_created()
-        created[spotify_id] = {"yt_id": plid, "url": url, "title": title,
-                               "expected": expected, "complete": bool(complete)}
-        save_created(created)
-    except Exception:
-        pass
+    _persist_fields(spotify_id, yt_id=plid, url=url, title=title,
+                    expected=expected, complete=bool(complete))
+
+def _persist_progress(spotify_id, plid, url, title, expected, state, attempt,
+                      next_run_at=0.0, pending=None):
+    """Where the run stands, so a close and a reopen resume the same state
+    instead of starting a second playlist."""
+    _persist_fields(spotify_id, yt_id=plid, url=url or "", title=title,
+                    expected=expected, state=state, attempt=int(attempt or 0),
+                    next_run_at=float(next_run_at or 0), pending=list(pending or []))
 
 def _read_back_retry(plid, yt_cookie, tries: int = 5, minimum: int = 0):
     """The first full read wins: a read that followed its continuations to the end
@@ -2299,6 +2339,11 @@ def _append_todo(plid, video_ids, todo, yt_cookie, hooks=None):
                 on_one(idx, st)
             except Exception:
                 pass
+        if is_transport_status(st) or is_fatal_status(st):
+            # Stop the queue: hammering a throttled API re-adds what a lost reply
+            # already applied, and a dead cookie will not accept the next one either.
+            blog("add", f"stopped after {idx + 1}/{len(video_ids)}: {st[:60]}")
+            break
     return attempts
 
 def _seed_ledger(video_ids, entries):
@@ -2369,6 +2414,11 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
         except Exception:
             pass
     todo = [int(e["i"]) - 1 for e in seed_ledger if e["outcome"] != "landed"]
+    if not first_complete:
+        # A read that never reached the end proves nothing about its tail:
+        # appending off it is how a playlist ends up holding a track twice.
+        blog("create", f"id={plid} read incomplete — {len(todo)} append(s) withheld")
+        todo = []
     attempts = _append_todo(plid, video_ids, todo, yt_cookie, hooks)
     if on_phase:
         try:
@@ -2420,7 +2470,7 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
             on_phase("append")
         except Exception:
             pass
-    entries, _ = _read_back_retry(plid, yt_cookie, minimum=len(video_ids))
+    entries, entries_complete = _read_back_retry(plid, yt_cookie, minimum=len(video_ids))
     if entries is None:
         raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (read-back failed)")
     seed_ledger = _seed_ledger(video_ids, entries)
@@ -2430,7 +2480,10 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
         except Exception:
             pass
     todo = [int(e["i"]) - 1 for e in seed_ledger if e["outcome"] != "landed"]
-    blog("resume", f"id={plid} have={len(entries)} todo={len(todo)}")
+    blog("resume", f"id={plid} have={len(entries)} todo={len(todo)} complete={entries_complete}")
+    if not entries_complete:
+        blog("resume", f"id={plid} read incomplete — {len(todo)} append(s) withheld")
+        todo = []
     attempts = _append_todo(plid, video_ids, todo, yt_cookie, hooks)
     if on_phase:
         try:
@@ -2499,7 +2552,11 @@ def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PR
                         except Exception:
                             pass
                     plid = rec["yt_id"]
-                    blog("topup", f"id={plid} have={len(entries)} missing={len(todo)}")
+                    blog("topup", f"id={plid} have={len(entries)} missing={len(todo)} "
+                                  f"complete={entries_complete}")
+                    if not entries_complete:
+                        blog("topup", f"id={plid} read incomplete — {len(todo)} append(s) withheld")
+                        todo = []
                     attempts = _append_todo(plid, ids, todo, yt_cookie, hooks)
                     if on_phase:
                         try:
@@ -2541,6 +2598,152 @@ def yt_create_checked(spotify_id: str, yt_cookie: str, title: str, description: 
     Complete but short -> top up the same playlist, never a second playlist.
     Incomplete record -> resume the same playlist, never a second playlist."""
     return transfer_create_append(yt_cookie, title, description, video_ids, privacy, spotify_id or "", None)
+
+RUN_RETRY_MAX = 6  # retries per run: the budget is bounded by policy, not by luck
+_RETRY_DELAYS = (30.0, 60.0, 120.0, 300.0, 600.0, 1200.0)  # 30s, 1m, 2m, 5m, 10m, 20m
+_RETRY_CAP = 1200.0
+_RETRY_JITTER = 0.2
+
+def _retry_delay(attempt: int) -> float:
+    """Seconds to wait before retry `attempt` (1-based), with +/-20% jitter and a
+    20m cap, so a wall of runs cannot march in lockstep."""
+    base = _RETRY_DELAYS[min(max(int(attempt or 1), 1), len(_RETRY_DELAYS)) - 1]
+    return max(1.0, min(_RETRY_CAP, base + random.uniform(-base * _RETRY_JITTER,
+                                                          base * _RETRY_JITTER)))
+
+def _standby_wait(seconds: float):
+    """Wait where the transfer already waits: inside its own thread. The page is
+    not blocked; it polls /api/run for next_attempt_at and counts down itself.
+    /api/retry sets RUN_WAKE and ends the wait early."""
+    RUN_WAKE.wait(timeout=max(0.0, seconds))
+    RUN_WAKE.clear()
+
+def _append_missing(plid, yt_cookie, need):
+    """One send per verified-absent videoId, in intended order. Stops at the first
+    transport or fatal answer: a throttled API is not helped by the rest of the
+    queue, and a dead cookie cannot add anything."""
+    statuses = {}
+    for v in need:
+        st = yt_add_one(plid, v, yt_cookie)
+        statuses[v] = st
+        blog("repair", f"{plid} {v} -> {st[:70]}")
+        if is_transport_status(st) or is_fatal_status(st):
+            break
+    return statuses
+
+def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stalled=False):
+    """Realign the playlist to the intended copies: verify, repair, verify again,
+    bounded and quiet.
+
+    Every pass begins with a COMPLETE paginated read-back. A read that never
+    reached the end proves nothing about its tail, so nothing is appended on it -
+    appending off a short read is exactly what double-adds. The retry set is the
+    unique intended ids the playlist does not hold: YouTube Music refuses a second
+    copy of an id, so a repeated source id is excluded forever, not retried.
+
+    `stalled` says the pass just before this one died on the wire (an append that
+    answered 429/5xx or timed out), so the run stands by before it looks again
+    instead of hammering a throttled API.
+
+    -> {"state": "done"|"gaveup", "attempt": n, "reason": str,
+        "residual": [videoId...], "entries": [...]|None, "complete": bool,
+        "statuses": {videoId: status}}"""
+    intended = [v for v in (video_ids or []) if isinstance(v, str) and v]
+    uniq = list(dict.fromkeys(intended))
+    # An unfinished run resumes at the attempt it stopped at; a finished one starts
+    # with a fresh budget (it still never creates a second playlist).
+    attempt, prev = 0, {}
+    if spotify_id:
+        rec = load_created().get(spotify_id) or {}
+        prev = rec if isinstance(rec, dict) else {}
+        if str(prev.get("state", "")) in ("verifying", "repairing", "standby"):
+            attempt = int(prev.get("attempt", 0) or 0)
+    statuses, entries, complete = {}, None, False
+    last_need = []
+    short = 0   # reads that came back short while nothing was proven absent
+
+    def stand_by(reason, residual):
+        """One wait, or the end of the run. Never both."""
+        nonlocal attempt
+        if attempt >= RUN_RETRY_MAX:
+            run_set(state="gaveup", attempt=attempt, next_attempt_at=0.0,
+                    reason=reason, residual=residual)
+            _persist_progress(spotify_id, plid, url, title, len(intended),
+                              state="gaveup", attempt=attempt, pending=residual)
+            blog("gaveup", f"{plid} after {attempt} attempt(s): {reason}; still absent: "
+                           + ",".join(residual[:8]))
+            return True
+        attempt += 1
+        delay = _retry_delay(attempt)
+        nxt = time.time() + delay
+        run_set(state="standby", attempt=attempt, next_attempt_at=nxt,
+                reason=reason, residual=residual)
+        _persist_progress(spotify_id, plid, url, title, len(intended), state="standby",
+                          attempt=attempt, next_run_at=nxt, pending=residual)
+        blog("standby", f"{plid} attempt {attempt}/{RUN_RETRY_MAX} in {delay:.0f}s: {reason}")
+        _standby_wait(delay)
+        return False
+
+    def finish(state, reason="", residual=None, final_complete=False):
+        run_set(state=state, attempt=attempt, next_attempt_at=0.0, reason=reason,
+                residual=list(residual or []))
+        _persist_progress(spotify_id, plid, url, title, len(intended), state=state,
+                          attempt=attempt, pending=residual)
+        # complete is what a later run starts from: only a run whose read reached
+        # the end of the playlist and found nothing absent may claim it.
+        _persist_final(spotify_id, plid, url, title, len(intended), final_complete)
+        return {"state": state, "attempt": attempt, "reason": reason,
+                "residual": list(residual or []), "entries": entries,
+                "complete": complete, "statuses": statuses}
+
+    while True:
+        if stalled:
+            stalled = False
+            if stand_by("append failed on the wire", last_need):
+                return finish("gaveup", "append failed on the wire", last_need)
+            continue
+        run_set(state="verifying", attempt=attempt, next_attempt_at=0.0, reason="", residual=[])
+        got, got_complete = _read_back_retry(plid, yt_cookie)
+        if got is not None:
+            entries, complete = got, got_complete
+        if got is None or not got_complete:
+            reason = "read failed" if got is None else "read incomplete"
+            # Nothing is appended off this read, so nothing is proven absent.
+            if not last_need and got is not None and short >= 1:
+                # A repair that does not exist is not worth waiting out a budget
+                # for: the read has had its retry, nothing was proven absent, and
+                # the rows already say unverified. Report the proof, not a promise.
+                blog("converge", f"{plid} read still short at {len(got)} — nothing to repair")
+                return finish("done", reason)
+            short += 1
+            if stand_by(reason, last_need):
+                return finish("gaveup", reason, last_need)
+            continue
+        present = set(got)
+        need = [v for v in uniq if v not in present]
+        last_need = need
+        if not need:
+            blog("converge", f"{plid} verified {len(got)} entries, nothing absent")
+            return finish("done", final_complete=True)
+        run_set(state="repairing", attempt=attempt, reason=f"repairing {len(need)} tracks")
+        blog("converge", f"{plid} entry={len(got)} absent={len(need)}")
+        sent = _append_missing(plid, yt_cookie, need)
+        statuses.update(sent)
+        if any(is_fatal_status(s) for s in sent.values()):
+            run_set(state="gaveup", attempt=attempt, next_attempt_at=0.0,
+                    reason="append refused by YouTube Music", residual=need)
+            _persist_progress(spotify_id, plid, url, title, len(intended),
+                              state="gaveup", attempt=attempt, pending=need)
+            blog("gaveup", f"{plid} refused by YTM — reconnect the cookie; still absent: "
+                           + ",".join(need[:8]))
+            return {"state": "gaveup", "attempt": attempt,
+                    "reason": "append refused by YouTube Music", "residual": need,
+                    "entries": entries, "complete": complete, "statuses": statuses}
+        if any(is_transport_status(s) for s in sent.values()):
+            if stand_by("append failed on the wire", need):
+                return finish("gaveup", "append failed on the wire", need)
+            continue
+        # The append's own reply is never the truth: read the playlist again.
 
 def _transfer_thread(url, yt_cookie, title, privacy, run_id):
     try:
@@ -2809,10 +3012,18 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                 blog("cover", f"run={run_id} {'ok' if cv.get('ok') else 'skip ' + str(cv.get('why', ''))}")
             except Exception:
                 pass
+        # Phase 2: whatever the first pass could not prove, the playlist now
+        # decides. Bounded, verified, and never a second playlist.
+        stalled = any(is_transport_status(str((e or {}).get("status", "")))
+                      for e in (res.get("ledger") or []))
+        conv = _converge(res.get("playlistId", ""), yt_cookie, vids, sid, pname,
+                         res.get("url", ""), stalled=stalled)
+        entries_final = conv.get("entries")
+        attempts = {i: (conv.get("statuses") or {}).get(v, "") for i, v in enumerate(vids)}
+        ledger = _reconcile(vids, entries_final or [], attempts, bool(conv.get("complete")))
         with _RUN_LOCK:
             if RUN.get("id") != run_id:
                 return
-            ledger = res.get("ledger", []) or []
             sent_rows = [k for k, row in enumerate(RUN["rows"]) if row.get("videoId")]
             for pos, k in enumerate(sent_rows):
                 e = ledger[pos] if pos < len(ledger) else None
@@ -2840,6 +3051,14 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
             RUN["url"] = res.get("url", RUN.get("url", ""))
             RUN["created"] = True
             RUN["existing"] = bool(res.get("existing", False))
+            # The state machine's own words, served by /api/run: a run that stood
+            # by and realigned says so; a run that ran out of budget says gaveup
+            # and names what is still absent.
+            RUN["state"] = conv.get("state", "done")
+            RUN["attempt"] = int(conv.get("attempt", 0) or 0)
+            RUN["next_attempt_at"] = 0.0
+            RUN["reason"] = conv.get("reason", "")
+            RUN["residual"] = list(conv.get("residual") or [])
             # every row must carry a terminal state; reconcile strays as missing
             for row in RUN["rows"]:
                 if row.get("state") not in ("landed", "skipped", "refused", "missing", "duplicate"):
@@ -2878,7 +3097,8 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
             skipped_n = int(RUN.get("skipped", 0))
             parts = ", ".join(f"{buckets[k]} {k}" for k in sorted(buckets) if buckets[k]) if skipped_n else "none"
             dec = int(RUN.get("declared", 0) or RUN.get("total", 0))
-            n_pl = int(res.get("playlist_count", 0) or 0)
+            n_pl = (len(entries_final) if isinstance(entries_final, list)
+                    else int(res.get("playlist_count", 0) or 0))
             RUN["playlist_count"] = n_pl
             # Derived, never accumulated: rows were recounted from the reconciled
             # ledger above, so landed+refused+skipped+missing+unverified == declared
@@ -2930,7 +3150,10 @@ def _latest_incomplete():
             if isinstance(rec, dict) and rec.get("yt_id") and rec.get("complete") is not True:
                 return {"spotify_id": sid, "playlist_id": rec.get("yt_id", ""),
                         "url": rec.get("url", ""), "title": rec.get("title", ""),
-                        "expected": int(rec.get("expected", 0) or 0)}
+                        "expected": int(rec.get("expected", 0) or 0),
+                        "state": rec.get("state", ""),
+                        "attempt": int(rec.get("attempt", 0) or 0),
+                        "pending": list(rec.get("pending") or [])}
         except Exception:
             continue
     return None
@@ -2980,6 +3203,11 @@ class H(BaseHTTPRequestHandler):
                 rows = [r for r in rows if int(r.get("row_seq", 0) or 0) > since]
             out = {"ok": True, "run_id": snap.get("id", ""), "seq": snap.get("seq", 0),
                             "phase": snap.get("phase", "idle"),
+                            "state": snap.get("state", "idle"),
+                            "attempt": int(snap.get("attempt", 0) or 0),
+                            "next_attempt_at": float(snap.get("next_attempt_at", 0) or 0),
+                            "reason": snap.get("reason", ""),
+                            "residual": list(snap.get("residual") or []),
                             "started_at": snap.get("started_at", 0),
                             "updated_at": snap.get("updated_at", 0),
                             "age": max(0.0, now - float(snap.get("updated_at", now) or now)),
@@ -3092,6 +3320,11 @@ class H(BaseHTTPRequestHandler):
                                  args=(url, yt, title, privacy, rid),
                                  daemon=True).start()
                 return self.send_json({"ok": True, "run_id": rid})
+            if self.path == "/api/retry":
+                if not run_retry_now():
+                    return self.send_json({"ok": False, "error": "nothing is standing by"}, 409)
+                blog("retry", "retry now requested")
+                return self.send_json({"ok": True})
             if self.path == "/api/check":
                 sp = check_spotify_cookie(payload.get("spotify_cookie", ""))
                 yt_raw = payload.get("yt_cookie", "")

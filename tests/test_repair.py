@@ -27,6 +27,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 import urllib.error
 from unittest import mock
@@ -104,15 +105,18 @@ class Upstream:
     append of an id it already holds answers with the duplicate toast), and an
     optional throttle that answers the next append with 429."""
 
-    def __init__(self, page=PAGE, extra=(), throttle=0, paging_broken=False):
+    def __init__(self, page=PAGE, extra=(), throttle=0, paging_broken=False,
+                 break_after=0, drop=()):
         self.page = page
         self.playlist = list(extra)   # ids the playlist really holds, in order
         self.appends = []             # every id an ACTION_ADD_VIDEO asked for
-        self.appends_at_standby = None
         self.creates = 0
         self.throttle = throttle      # how many appends answer 429 before one lands
         self.throttled = 0
         self.paging_broken = paging_broken
+        self.break_after = break_after  # let this many page reads through, then stall
+        self.drop = set(drop)         # ids an append accepts but never stores
+        self.reads = 0
         self.continuations = []
 
     def __call__(self, req, timeout=None):
@@ -147,15 +151,17 @@ class Upstream:
         self.appends.append(v)
         if v in self.playlist:
             return Resp(DUP_REPLY)
-        self.playlist.append(v)
+        if v not in self.drop:
+            self.playlist.append(v)
         return Resp({"status": "STATUS_SUCCEEDED"})
 
     def browse(self, body):
+        self.reads += 1
         held = list(self.playlist)
         token = body.get("continuation")
         if token:
             self.continuations.append(token)
-            if self.paging_broken:
+            if self.paging_broken or (self.break_after and self.reads > self.break_after):
                 raise urllib.error.URLError("continuation stalled")
             start = int(re.sub(r"\D", "", token) or 0)
         else:
@@ -178,6 +184,7 @@ class Repair(unittest.TestCase):
         backend.CREATEDF = os.path.join(self.tmp, "created.json")
         backend._SEARCH_CACHE = {}
         self.waits = []
+        self.upstream = None
         self._patches = [mock.patch("time.sleep", lambda *a, **k: None),
                          mock.patch.object(backend, "_standby_wait", self._wait,
                                            create=True)]
@@ -187,7 +194,8 @@ class Repair(unittest.TestCase):
     def _wait(self, seconds):
         """What the transfer thread does while standing by: nothing but wait. The
         snapshot taken here is exactly what the page reads from /api/run."""
-        self.waits.append((seconds, backend.run_snapshot()))
+        self.waits.append({"delay": seconds, "snap": backend.run_snapshot(),
+                           "appends": list(self.upstream.appends) if self.upstream else []})
 
     def tearDown(self):
         for p in self._patches:
@@ -197,6 +205,7 @@ class Repair(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def transfer(self, upstream, tracks):
+        self.upstream = upstream
         with mock.patch("urllib.request.urlopen", upstream), \
                 mock.patch.object(backend, "fetch_spotify_tracks", fake_fetch(tracks)), \
                 mock.patch.object(backend, "yt_search_batch", fake_batch):
@@ -244,6 +253,134 @@ class Repair(unittest.TestCase):
         # A duplicate is unaddable, not unfinished: the record must not ask for
         # another resume of a playlist that is exactly as complete as it can be.
         self.assertIs(self.created()["SPOTREPAIR"]["complete"], True)
+
+    # --- 2: a 429 stands by, appends nothing, then realigns -----------------
+    def test_a_throttled_append_stands_by_and_resumes_with_exactly_the_missing_copies(self):
+        tracks = tracks_for(60)                   # 50 inline at create, 10 appended
+        upstream = Upstream(throttle=2)           # both attempts on one append answer 429
+        snap = self.transfer(upstream, tracks)
+
+        self.assertEqual(snap["phase"], "done", snap.get("error"))
+        self.assertEqual(snap["state"], "done")
+        # The run stood by once, with a clock and a reason, and appended nothing
+        # while it could not see whether the throttled copy had landed.
+        self.assertTrue(self.waits, "the run never stood by")
+        stood = self.waits[0]
+        self.assertEqual(stood["snap"]["state"], "standby")
+        self.assertEqual(stood["snap"]["attempt"], 1)
+        self.assertGreater(stood["snap"]["next_attempt_at"], 0)
+        self.assertEqual(stood["snap"]["reason"], "append failed on the wire")
+        self.assertEqual(stood["appends"], [])
+        # Resumed: exactly the verified-absent copies, once each.
+        self.assertEqual(upstream.appends, [vid(i) for i in range(51, 61)])
+        self.assertEqual(len(upstream.playlist), 60)
+        self.assertEqual(len(upstream.playlist), len(set(upstream.playlist)))
+        self.assertEqual(snap["landed"], 60)
+        self.assertEqual(snap["playlist_count"], 60)
+        rec = self.created()["SPOTREPAIR"]
+        self.assertEqual(rec["state"], "done")
+        self.assertIs(rec["complete"], True)
+
+    # --- 3: an incomplete read-back appends nothing -------------------------
+    def test_an_incomplete_read_back_stands_by_and_appends_nothing(self):
+        tracks = tracks_for(40)                   # all 40 land inline at create
+        extras = ["X%010d" % i for i in range(70)]
+        upstream = Upstream(extra=extras, paging_broken=True)   # 110 entries, tail unreadable
+        snap = self.transfer(upstream, tracks)
+
+        self.assertEqual(len(self.waits), 1, "one wait, for a repair that does not exist")
+        stood = self.waits[0]
+        self.assertEqual(stood["snap"]["state"], "standby")
+        self.assertEqual(stood["snap"]["reason"], "read incomplete")
+        self.assertEqual(stood["snap"]["attempt"], 1)
+        self.assertGreater(stood["snap"]["next_attempt_at"], 0)
+        # Appending off a read that never reached the end is what double-adds.
+        self.assertEqual(stood["appends"], [])
+        self.assertEqual(upstream.appends, [])
+        # The read never completed, so the run reports what it proved and nothing
+        # more: 30 of the 40 are in the page it read, ten are unverified.
+        self.assertEqual(snap["unverified"], 10)
+        self.assertEqual(snap["refused"], 0)
+        self.assertEqual(snap["missing"], 0)
+        self.assertIn("unverified 10", snap["summary"])
+        self.assertEqual(len(upstream.playlist), 110)
+
+    # --- 3b: a pending repair is never attempted off an incomplete read ------
+    def test_an_incomplete_read_back_holds_back_a_pending_repair(self):
+        tracks = tracks_for(60)
+        extras = ["X%010d" % i for i in range(70)]      # 130 entries: two pages
+        # The playlist accepts vid(60) and never stores it, and paging stalls once
+        # the create pass is done - so a repair is pending exactly when the read
+        # stops being complete.
+        upstream = Upstream(extra=extras, break_after=6, drop={vid(60)})
+        snap = self.transfer(upstream, tracks)
+
+        self.assertTrue(self.waits, "the run never stood by")
+        stood = self.waits[0]
+        self.assertEqual(stood["snap"]["state"], "standby")
+        self.assertEqual(stood["snap"]["reason"], "read incomplete")
+        held_at_standby = len(stood["appends"])
+        self.assertEqual(len(upstream.appends), held_at_standby,
+                         "an append was sent while the read was incomplete")
+        self.assertEqual(snap["state"], "gaveup")
+        self.assertEqual(snap["residual"], [vid(60)])
+        self.assertEqual(len(self.waits), backend.RUN_RETRY_MAX)
+        self.assertEqual(upstream.creates, 1)
+
+    # --- 4: the budget is bounded and the give-up names the residue ---------
+    def test_an_exhausted_budget_gives_up_with_the_residual_list(self):
+        tracks = tracks_for(60)
+        upstream = Upstream(throttle=99)          # every append answers 429
+        snap = self.transfer(upstream, tracks)
+
+        self.assertEqual(len(self.waits), backend.RUN_RETRY_MAX)
+        self.assertEqual([w["snap"]["attempt"] for w in self.waits], [1, 2, 3, 4, 5, 6])
+        self.assertEqual(snap["state"], "gaveup")
+        self.assertEqual(snap["residual"], [vid(i) for i in range(51, 61)])
+        # Quiet and truthful: it names what is still absent and claims no more.
+        self.assertEqual(snap["refused"], 0)
+        self.assertNotIn("refused 10", snap["summary"])
+        self.assertIn("10", snap["summary"])
+        # The wait lengthens: 30s, 1m, 2m, 5m, 10m, 20m, +/-20% jitter, capped.
+        delays = [w["delay"] for w in self.waits]
+        self.assertLess(delays[0], delays[-1])
+        for seconds, base in zip(delays, (30, 60, 120, 300, 600, 1200), strict=True):
+            self.assertGreaterEqual(seconds, base * 0.8 - 0.001)
+            self.assertLessEqual(seconds, min(1200, base * 1.2) + 0.001)
+        # No second playlist: the run repaired the one it had.
+        self.assertEqual(upstream.creates, 1)
+        rec = self.created()["SPOTREPAIR"]
+        self.assertEqual(rec["state"], "gaveup")
+        self.assertEqual(rec["attempt"], backend.RUN_RETRY_MAX)
+        self.assertEqual(rec["pending"], [vid(i) for i in range(51, 61)])
+        self.assertIs(rec["complete"], False)
+
+    # --- 4b: a resume continues the same run and never creates a playlist ---
+    def test_a_persisted_run_resumes_in_place_with_its_own_attempt_count(self):
+        tracks = tracks_for(60)
+        upstream = Upstream()                        # holds everything it is given
+        upstream.playlist = [vid(i) for i in range(1, 61)]
+        with open(backend.CREATEDF, "w", encoding="utf-8") as f:
+            json.dump({"SPOTREPAIR": {"yt_id": PLID, "url": "https://example.invalid/p",
+                                      "title": "Repair Test", "expected": 60,
+                                      "complete": False, "state": "standby",
+                                      "attempt": 3, "pending": []}}, f)
+        snap = self.transfer(upstream, tracks)
+
+        self.assertEqual(upstream.creates, 0, "a resume must never create a playlist")
+        self.assertEqual(snap["state"], "done")
+        self.assertEqual(snap["attempt"], 3, "the resumed run kept its own attempt count")
+        self.assertEqual(snap["landed"], 60)
+
+    # --- 5: Retry now only has a wait to cut short --------------------------
+    def test_retry_now_only_cuts_short_a_standby(self):
+        backend.run_set(state="done", next_attempt_at=0.0)
+        self.assertFalse(backend.run_retry_now())
+        backend.run_set(state="standby", next_attempt_at=time.time() + 600)
+        self.assertTrue(backend.run_retry_now())
+        self.assertLess(backend.RUN["next_attempt_at"], time.time() + 600)
+        self.assertEqual(backend.RUN["reason"], "retry now")
+        backend.RUN_WAKE.clear()
 
 
 if __name__ == "__main__":
