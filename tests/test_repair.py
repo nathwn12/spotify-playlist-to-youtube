@@ -246,8 +246,8 @@ class Repair(unittest.TestCase):
         # The repeated videoId is on the playlist once and is not re-sent.
         self.assertEqual(upstream.playlist.count(vid(3)), 1)
         self.assertEqual(upstream.appends.count(vid(3)), 1)
-        self.assertIn("duplicate 1", snap["summary"])
-        self.assertNotIn("refused 1", snap["summary"])
+        self.assertIn("1 duplicate", snap["summary"])
+        self.assertNotIn("1 refused", snap["summary"])
         self.assertEqual(snap["duplicate"], 1)
         self.assertEqual(snap["refused"], 0)
         # A duplicate is unaddable, not unfinished: the record must not ask for
@@ -302,7 +302,7 @@ class Repair(unittest.TestCase):
         self.assertEqual(snap["unverified"], 10)
         self.assertEqual(snap["refused"], 0)
         self.assertEqual(snap["missing"], 0)
-        self.assertIn("unverified 10", snap["summary"])
+        self.assertIn("10 unverified", snap["summary"])
         self.assertEqual(len(upstream.playlist), 110)
 
     # --- 3b: a pending repair is never attempted off an incomplete read ------

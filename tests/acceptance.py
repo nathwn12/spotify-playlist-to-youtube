@@ -27,6 +27,17 @@ class MissingResponse(BaseException):
     """BaseException on purpose: yt_match must not swallow a fixture gap."""
 
 
+def done_counts(added=0, refused=0, skipped=0, unverified=0, duplicate=0,
+                source=None, unique=None):
+    """The seven counts _done_summary takes. `source`/`unique` default to the
+    sum, which is what a reconciling run reports; the split cases pass source."""
+    total = added + refused + skipped + unverified + duplicate
+    return {"source": total if source is None else source,
+            "unique": total if unique is None else unique,
+            "added": added, "skipped": skipped, "duplicate": duplicate,
+            "unverified": unverified, "refused": refused}
+
+
 class FakeResponse:
     status = 200
 
@@ -252,7 +263,7 @@ def test_reconcile_present_but_refused():
         refused = sum(1 for e in ledger if e["outcome"] == "rejected")
         if landed != len(entries) or refused:
             return "FAIL reconcile-present: landed=%d refused=%d, want 5/0" % (landed, refused)
-        s = backend._done_summary(landed, refused, 0, 0, 5, len(entries), "none")
+        s = backend._done_summary(done_counts(added=landed, refused=refused, source=5), len(entries))
         if "landed 5 of 5" not in s or "verified against the playlist (holds 5)" not in s:
             return "FAIL reconcile-present: done line %r" % (s,)
         print("reconcile-present: refused-but-present flips to landed, done line verified (holds 5)")
@@ -278,7 +289,8 @@ def test_reconcile_absent_stays_refused():
         landed = sum(1 for e in ledger if e["outcome"] == "landed")
         if landed != len(entries):
             return "FAIL reconcile-absent: landed=%d, read-back holds %d" % (landed, len(entries))
-        s = backend._done_summary(landed, 1, 0, 1, 5, len(entries), "none")
+        s = backend._done_summary(done_counts(added=landed, refused=1, unverified=1, source=5),
+                                  len(entries))
         if "holds 3" not in s or "verified against the playlist" not in s:
             return "FAIL reconcile-absent: done line %r" % (s,)
         print("reconcile-absent: absent stays refused/missing, done line holds 3")
@@ -346,7 +358,8 @@ def test_done_line_never_splits():
     try:
         bad = []
         for landed, n in [(48, 73), (73, 48), (0, 5), (5, 0)]:
-            s = backend._done_summary(landed, 0, 0, 0, 75 if landed == 48 else 5, n, "none")
+            s = backend._done_summary(
+                done_counts(added=landed, source=75 if landed == 48 else 5), n)
             if f"holds {n}" not in s:
                 bad.append("no holds in %r" % (s,))
             if landed != n and "verified against the playlist" in s:
@@ -363,10 +376,10 @@ def test_done_line_never_splits():
 
 
 def test_guess_summary():
-    s = backend._done_summary(3, 0, 0, 0, 3, 3, "none", guessed=1)
+    s = backend._done_summary(done_counts(added=3), 3, guessed=1)
     if "best guess 1" not in s:
         return "FAIL guess summary: missing best guess count"
-    if "best guess" in backend._done_summary(3, 0, 0, 0, 3, 3, "none"):
+    if "best guess" in backend._done_summary(done_counts(added=3), 3):
         return "FAIL guess summary: silent guesses still counted"
     return None
 

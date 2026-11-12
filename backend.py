@@ -72,6 +72,8 @@ RUN = {
     "declared": 0,
     "summary": "",
     "playlist_count": 0,
+    "counts": {"source": 0, "unique": 0, "added": 0, "skipped": 0,
+               "duplicate": 0, "unverified": 0, "refused": 0},
 }
 
 def _run_touch_locked():
@@ -140,6 +142,8 @@ def run_begin(spotify_id="", title=""):
         RUN["declared"] = 0
         RUN["summary"] = ""
         RUN["playlist_count"] = 0
+        RUN["counts"] = {"source": 0, "unique": 0, "added": 0, "skipped": 0,
+                         "duplicate": 0, "unverified": 0, "refused": 0}
         RUN["rows"] = []
         RUN["error"] = ""
         RUN["hint"] = ""
@@ -186,6 +190,8 @@ def run_reset() -> bool:
         RUN["declared"] = 0
         RUN["summary"] = ""
         RUN["playlist_count"] = 0
+        RUN["counts"] = {"source": 0, "unique": 0, "added": 0, "skipped": 0,
+                         "duplicate": 0, "unverified": 0, "refused": 0}
         RUN["rows"] = []
         RUN["error"] = ""
         RUN["hint"] = ""
@@ -1696,7 +1702,8 @@ def sapisid_hash(cookie: str, origin: str = YT_ORIGIN) -> str:
 
 CREATEDF = os.path.join(STATE, "created.json")
 SETTINGF = os.path.join(STATE, "settings.json")
-_SETTING_KEYS = ("privacy",)
+_SETTING_KEYS = ("privacy", "one_to_one")
+DEFAULT_ONE_TO_ONE = True   # a transfer is 1:1 with the Spotify playlist unless told otherwise
 
 def load_settings() -> dict:
     try:
@@ -1712,6 +1719,27 @@ def save_settings(d: dict):
             json.dump({k: d[k] for k in _SETTING_KEYS if k in d}, f)
     except Exception:
         pass
+
+def one_to_one_setting() -> bool:
+    """The persisted 1:1 toggle: True unless settings.json says otherwise, so a
+    fresh install already asks YouTube Music to accept a second copy of a videoId
+    the playlist holds (DEDUPE_OPTION_SKIP)."""
+    v = load_settings().get("one_to_one")
+    return DEFAULT_ONE_TO_ONE if v is None else bool(v)
+
+def _settings_payload(cur: dict) -> dict:
+    """/api/settings, one key per setting. A boolean is returned as itself: the
+    old `x or ""` shape turned False into an empty string."""
+    out = {}
+    for k in _SETTING_KEYS:
+        if k == "privacy":
+            out[k] = cur.get(k) or "PRIVATE"
+        elif k == "one_to_one":
+            v = cur.get("one_to_one")
+            out[k] = DEFAULT_ONE_TO_ONE if v is None else bool(v)
+        else:
+            out[k] = cur.get(k) or ""
+    return out
 
 def clear_created(spotify_id: str = "") -> None:
     """Forget the local created-playlist record(s) (created.json).
@@ -1989,19 +2017,29 @@ def _is_duplicate_reply(body: str, status: str) -> bool:
             and _DUPLICATE_TOAST in (body or "").lower())
 
 
-def yt_add_one(plid: str, vid: str, yt_cookie: str) -> str:
+def yt_add_one(plid: str, vid: str, yt_cookie: str, one_to_one=None) -> str:
     """Append one entry. -> YTM's own status string ("STATUS_SUCCEEDED" /
     "STATUS_FAILED"), STATUS_DUPLICATE for a copy YTM already holds, or
     "STATUS_TRANSPORT <why>" for a transport failure. Fresh SAPISIDHASH per call:
     it goes stale within minutes.
+
+    `one_to_one` decides whether this action entry carries
+    "dedupeOption": "DEDUPE_OPTION_SKIP", which is what asks YouTube Music to
+    accept a second copy of a videoId the playlist already holds. None reads the
+    persisted toggle. Nothing else is attested, so no other dedupe option is sent.
 
     A transport failure comes back as a transport failure: retryable, and never
     success, so nothing downstream inherits a count that was never observed. The
     one exception is YTM saying, after a retried transport failure, that the video
     is already on the playlist — that copy really is there, and the read-back
     confirms it before anything prints."""
-    b2 = json.dumps({"context": {"client": CLIENT}, "playlistId": plid, "actions": [
-        {"action": "ACTION_ADD_VIDEO", "addedVideoId": vid}]}).encode()
+    if one_to_one is None:
+        one_to_one = one_to_one_setting()
+    act = {"action": "ACTION_ADD_VIDEO", "addedVideoId": vid}
+    if one_to_one:
+        act["dedupeOption"] = "DEDUPE_OPTION_SKIP"
+    b2 = json.dumps({"context": {"client": CLIENT}, "playlistId": plid,
+                     "actions": [act]}).encode()
 
     def once():
         """-> (status, body, transport). The body is kept: a refusal is an HTTP
@@ -2278,50 +2316,59 @@ def _reconcile(video_ids, entries, attempts: dict, complete: bool = True) -> lis
             out.append({"i": i + 1, "videoId": v, "outcome": "missing", "status": ""})
     return out
 
-def _done_summary(landed, refused, skipped, missing, declared, n_pl, parts, topped_up=None, sent=None,
-                  guessed=0, unverified=0, duplicate=0):
-    """The done line is derived from reconciled rows plus the read-back whose
-    length is printed: refused rows were proven absent from that same read, so
-    the line can never print N landed beside a different holds count without
-    naming the split in the same sentence.
+def _done_summary(counts, n_pl, topped_up=None, sent=None, guessed=0, tail_unverified=0):
+    """The human done line: one line, and the seven counts in the shape the page
+    reads. The counted head is exactly
 
-    `missing` and `unverified` are counted apart: missing is absent from a read
-    that reached the end of the playlist (proof), unverified is present but
-    unproven because the read stopped short. The page calls both Unverified, so
-    the line prints that one word for both and never claims a count it cannot
-    support. `duplicate` is its own word too: a copy YouTube Music refuses to add
-    because the playlist already holds that videoId is not a refusal by us and
-    not a failure to retry — it is printed apart from both, and it counts toward
-    the source total so the counts still reconcile."""
-    landed, refused, skipped = int(landed or 0), int(refused or 0), int(skipped or 0)
-    missing, unverified = int(missing or 0), int(unverified or 0)
-    dup = int(duplicate or 0)
-    m, n = int(declared or 0), int(n_pl or 0)
+        landed {added} of {unique} · {skipped} skipped · {duplicate} duplicate ·
+        {unverified} unverified · {refused} refused · {source} in source
+
+    and the sentence that follows it names the proof those counts were reconciled
+    against - the read-back's holds count - so the line can never print N landed
+    beside a different holds count without naming the split in the same sentence.
+    A labelled guess and a topped-up run are named there too, never dropped.
+
+    `unverified` is one word for both halves of "present in no completed read": a
+    copy absent from a read that reached the end of the playlist, and a copy the
+    read never reached. `tail_unverified` is the second half alone, which is what
+    decides whether the read itself stopped short."""
+    c = dict(counts or {})
+    added = int(c.get("added", 0) or 0)
+    unique = int(c.get("unique", 0) or 0)
+    skipped = int(c.get("skipped", 0) or 0)
+    dup = int(c.get("duplicate", 0) or 0)
+    unverified = int(c.get("unverified", 0) or 0)
+    refused = int(c.get("refused", 0) or 0)
+    source = int(c.get("source", 0) or 0)
+    n = int(n_pl or 0)
+    line = (f"landed {added} of {unique} \u00b7 {skipped} skipped \u00b7 {dup} duplicate "
+            f"\u00b7 {unverified} unverified \u00b7 {refused} refused \u00b7 {source} in source")
+    aside = []
+    if int(guessed or 0) > 0:
+        aside.append(f"best guess {int(guessed)}")
     if topped_up is not None:
-        head = f"topped up {int(topped_up)} of {int(sent or 0)} — "
-    else:
-        head = "done — "
-    guesses = int(guessed or 0)
-    guess_part = f"best guess {guesses} \u00b7 " if guesses > 0 else ""
-    dup_part = f"duplicate {dup} \u00b7 " if dup > 0 else ""
-    line = (f"{head}landed {landed} of {m} \u00b7 not found {skipped} ({parts or 'none'}) "
-            f"\u00b7 {guess_part}refused {refused} \u00b7 {dup_part}unverified {missing + unverified} \u00b7 ")
-    if landed + refused + skipped + missing + unverified + dup != m:
-        return line + (f"counts do not reconcile "
-                       f"({landed}+{refused}+{skipped}+{missing}+{unverified}+{dup}!={m}) "
-                       f"— playlist holds {n}")
-    if unverified:
-        return line + (f"playlist read stopped at {n} entries, so the last {unverified} are "
-                       f"unverified (resume re-verifies, no re-transfer)")
-    if landed == n:
-        return line + f"verified against the playlist (holds {n})"
-    if landed < n:
-        return line + (f"playlist holds {n} — {n - landed} entries not attributed to this run "
-                       f"(outside adds?) — refused rows proven absent from that read-back")
-    return line + (f"playlist holds {n} — read-back short of {landed} landed "
-                   f"(resume re-verifies, no re-transfer)")
+        aside.append(f"topped up {int(topped_up)} of {int(sent or 0)}")
+    if added + skipped + dup + unverified + refused != source:
+        aside.append(f"counts do not reconcile "
+                     f"({added}+{skipped}+{dup}+{unverified}+{refused}!={source}) "
+                     f"— playlist holds {n}")
+        return line + " \u00b7 " + " \u00b7 ".join(aside)
+    if int(tail_unverified or 0) > 0:
+        return line + " \u00b7 " + " \u00b7 ".join(aside + [
+            f"playlist read stopped at {n} entries, so the last {int(tail_unverified)} are "
+            f"unverified (resume re-verifies, no re-transfer)"])
+    if added == n:
+        return line + " \u00b7 " + " \u00b7 ".join(aside + [
+            f"verified against the playlist (holds {n})"])
+    if added < n:
+        return line + " \u00b7 " + " \u00b7 ".join(aside + [
+            f"playlist holds {n} — {n - added} entries not attributed to this run "
+            f"(outside adds?) — refused rows proven absent from that read-back"])
+    return line + " \u00b7 " + " \u00b7 ".join(aside + [
+        f"playlist holds {n} — read-back short of {added} landed "
+        f"(resume re-verifies, no re-transfer)"])
 
-def _append_todo(plid, video_ids, todo, yt_cookie, hooks=None):
+def _append_todo(plid, video_ids, todo, yt_cookie, hooks=None, one_to_one=None):
     attempts = {}
     on_start = (hooks or {}).get("on_append_start")
     on_one = (hooks or {}).get("on_append_one")
@@ -2331,7 +2378,7 @@ def _append_todo(plid, video_ids, todo, yt_cookie, hooks=None):
                 on_start(idx)
             except Exception:
                 pass
-        st = yt_add_one(plid, video_ids[idx], yt_cookie)
+        st = yt_add_one(plid, video_ids[idx], yt_cookie, one_to_one)
         attempts[idx] = st
         blog("add", f"copy {idx + 1}/{len(video_ids)} {video_ids[idx]} -> {st}")
         if on_one:
@@ -2357,6 +2404,38 @@ def _ledger_counts(ledger):
     duplicate = sum(1 for e in ledger if e["outcome"] == "duplicate")
     return added, rejected, missing, duplicate
 
+def _counts_from_rows(source, rows) -> dict:
+    """The seven integers /api/run serves as `counts`, each read from what the
+    run observed: {source, unique, added, skipped, duplicate, unverified, refused}.
+
+    `source` is every track the Spotify read returned, repeats included - the read
+    number, never a sum of the others, so a capped or resumed run still reports
+    the real one. `unique` is the distinct videoIds of the intended plan, counted
+    through _repeat_count so the repeat information lives in one place. The rest
+    are the reconciled rows: a copy present in no completed read is counted once
+    and no copy twice, so added+skipped+duplicate+unverified+refused == source.
+
+    `duplicate` is read from the rows, not from the plan's repeats: with the 1:1
+    toggle on the server accepts those copies, and then there is no duplicate."""
+    rows = list(rows or [])
+    ids = [r.get("videoId") for r in rows if isinstance(r, dict) and r.get("videoId")]
+    out = {"source": int(source or 0),
+           "unique": max(0, len(ids) - _repeat_count(ids)),
+           "added": 0, "skipped": 0, "duplicate": 0, "unverified": 0, "refused": 0}
+    for r in rows:
+        state = (r or {}).get("state")
+        if state == "landed":
+            out["added"] += 1
+        elif state == "skipped":
+            out["skipped"] += 1
+        elif state == "duplicate":
+            out["duplicate"] += 1
+        elif state == "refused":
+            out["refused"] += 1
+        else:
+            out["unverified"] += 1
+    return out
+
 def yt_delete_playlist(plid: str, yt_cookie: str) -> bool:
     try:
         body = json.dumps({"context": {"client": CLIENT}, "playlistId": plid}).encode()
@@ -2369,7 +2448,7 @@ def yt_delete_playlist(plid: str, yt_cookie: str) -> bool:
         return False
 
 def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, hooks=None,
-                version_sigs=None):
+                version_sigs=None, one_to_one=None):
     on_created = (hooks or {}).get("on_created")
     on_phase = (hooks or {}).get("on_phase")
     if on_phase:
@@ -2419,7 +2498,7 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
         # appending off it is how a playlist ends up holding a track twice.
         blog("create", f"id={plid} read incomplete — {len(todo)} append(s) withheld")
         todo = []
-    attempts = _append_todo(plid, video_ids, todo, yt_cookie, hooks)
+    attempts = _append_todo(plid, video_ids, todo, yt_cookie, hooks, one_to_one)
     if on_phase:
         try:
             on_phase("verify")
@@ -2455,7 +2534,7 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
             "playlist_count": len(entries) if isinstance(entries, list) else 0}
 
 def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
-                       version_sigs=None):
+                       version_sigs=None, one_to_one=None):
     on_created = (hooks or {}).get("on_created")
     on_phase = (hooks or {}).get("on_phase")
     plid = rec.get("yt_id", "")
@@ -2484,7 +2563,7 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
     if not entries_complete:
         blog("resume", f"id={plid} read incomplete — {len(todo)} append(s) withheld")
         todo = []
-    attempts = _append_todo(plid, video_ids, todo, yt_cookie, hooks)
+    attempts = _append_todo(plid, video_ids, todo, yt_cookie, hooks, one_to_one)
     if on_phase:
         try:
             on_phase("verify")
@@ -2515,11 +2594,17 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
             "playlist_count": len(entries2) if isinstance(entries2, list) else 0}
 
 def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PRIVATE",
-                           spotify_id="", hooks=None, version_sigs=None):
+                           spotify_id="", hooks=None, version_sigs=None, one_to_one=None):
     """One implementation, two entry points: sync /api/create-playlist and the
     async /api/transfer worker. Never dedupes video_ids. The ledger works on
     the videoId multiset: a present Slowed never satisfies a missing Super
-    Slowed, because versions resolve to distinct videoIds (or skip)."""
+    Slowed, because versions resolve to distinct videoIds (or skip).
+
+    `one_to_one` is the 1:1 toggle for every add this transfer sends, the repair
+    pass included; None reads the persisted setting once, here, so a run cannot
+    change flag halfway through."""
+    if one_to_one is None:
+        one_to_one = one_to_one_setting()
     yt_cookie = normalize_cookie(yt_cookie)
     ids = [v for v in (video_ids or []) if isinstance(v, str) and v]
     if not ids:
@@ -2557,7 +2642,7 @@ def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PR
                     if not entries_complete:
                         blog("topup", f"id={plid} read incomplete — {len(todo)} append(s) withheld")
                         todo = []
-                    attempts = _append_todo(plid, ids, todo, yt_cookie, hooks)
+                    attempts = _append_todo(plid, ids, todo, yt_cookie, hooks, one_to_one)
                     if on_phase:
                         try:
                             on_phase("verify")
@@ -2582,8 +2667,10 @@ def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PR
                             "playlist_count": len(entries2) if isinstance(entries2, list) else 0,
                             "topped_up": newly}
             else:
-                return _resume_incomplete(rec, yt_cookie, title, ids, spotify_id, hooks, version_sigs)
-    r = _create_new(yt_cookie, title, description, ids, privacy, spotify_id, hooks, version_sigs)
+                return _resume_incomplete(rec, yt_cookie, title, ids, spotify_id, hooks, version_sigs,
+                                          one_to_one)
+    r = _create_new(yt_cookie, title, description, ids, privacy, spotify_id, hooks, version_sigs,
+                    one_to_one)
     return r
 
 def yt_create_playlist(yt_cookie: str, title: str, description: str, video_ids: list, privacy: str = "PRIVATE"):
@@ -2618,28 +2705,29 @@ def _standby_wait(seconds: float):
     RUN_WAKE.wait(timeout=max(0.0, seconds))
     RUN_WAKE.clear()
 
-def _append_missing(plid, yt_cookie, need):
+def _append_missing(plid, yt_cookie, need, one_to_one=None):
     """One send per verified-absent videoId, in intended order. Stops at the first
     transport or fatal answer: a throttled API is not helped by the rest of the
     queue, and a dead cookie cannot add anything."""
     statuses = {}
     for v in need:
-        st = yt_add_one(plid, v, yt_cookie)
+        st = yt_add_one(plid, v, yt_cookie, one_to_one)
         statuses[v] = st
         blog("repair", f"{plid} {v} -> {st[:70]}")
         if is_transport_status(st) or is_fatal_status(st):
             break
     return statuses
 
-def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stalled=False):
+def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stalled=False,
+              one_to_one=None):
     """Realign the playlist to the intended copies: verify, repair, verify again,
     bounded and quiet.
 
     Every pass begins with a COMPLETE paginated read-back. A read that never
     reached the end proves nothing about its tail, so nothing is appended on it -
     appending off a short read is exactly what double-adds. The retry set is the
-    unique intended ids the playlist does not hold: YouTube Music refuses a second
-    copy of an id, so a repeated source id is excluded forever, not retried.
+    unique intended ids the playlist does not hold: a copy the playlist already
+    carries needs no repair, so a repeated source id is not re-sent here.
 
     `stalled` says the pass just before this one died on the wire (an append that
     answered 429/5xx or timed out), so the run stands by before it looks again
@@ -2727,7 +2815,7 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
             return finish("done", final_complete=True)
         run_set(state="repairing", attempt=attempt, reason=f"repairing {len(need)} tracks")
         blog("converge", f"{plid} entry={len(got)} absent={len(need)}")
-        sent = _append_missing(plid, yt_cookie, need)
+        sent = _append_missing(plid, yt_cookie, need, one_to_one)
         statuses.update(sent)
         if any(is_fatal_status(s) for s in sent.values()):
             run_set(state="gaveup", attempt=attempt, next_attempt_at=0.0,
@@ -2747,6 +2835,9 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
 
 def _transfer_thread(url, yt_cookie, title, privacy, run_id):
     try:
+        # One run, one toggle: it is read once here and carried to every add the
+        # run sends, the repair pass included, so a flip mid-run cannot split it.
+        one_to_one = one_to_one_setting()
         with _RUN_LOCK:
             if RUN.get("id") != run_id:
                 return
@@ -2986,7 +3077,8 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
         hooks = {"on_created": _on_created, "on_append_start": _on_start,
                  "on_append_one": _on_one, "on_phase": _on_phase, "on_seed": _on_seed}
         try:
-            res = transfer_create_append(yt_cookie, pname, "", vids, privacy, sid, hooks, sigs_for_pos)
+            res = transfer_create_append(yt_cookie, pname, "", vids, privacy, sid, hooks, sigs_for_pos,
+                                         one_to_one=one_to_one)
         except Exception as e:
             msg = f"{type(e).__name__}: {e}"
             c = classify(msg)
@@ -3002,6 +3094,8 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                         row["state"] = "skipped"
                         row["status"] = f"stopped: {msg}"[:80]
                 RUN["skipped"] = sum(1 for row in RUN["rows"] if row.get("state") == "skipped")
+                # A failed run still reports the real arithmetic of what it observed.
+                RUN["counts"] = _counts_from_rows(RUN.get("total", 0) or 0, RUN["rows"])
                 RUN["seq"] += 1
                 RUN["updated_at"] = time.time()
             blog("fail", f"run={run_id} {msg}")
@@ -3017,7 +3111,7 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
         stalled = any(is_transport_status(str((e or {}).get("status", "")))
                       for e in (res.get("ledger") or []))
         conv = _converge(res.get("playlistId", ""), yt_cookie, vids, sid, pname,
-                         res.get("url", ""), stalled=stalled)
+                         res.get("url", ""), stalled=stalled, one_to_one=one_to_one)
         entries_final = conv.get("entries")
         attempts = {i: (conv.get("statuses") or {}).get(v, "") for i, v in enumerate(vids)}
         ledger = _reconcile(vids, entries_final or [], attempts, bool(conv.get("complete")))
@@ -3077,41 +3171,23 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                                     if row.get("state") == "missing" and row.get("unverified"))
             RUN["missing"] = sum(1 for row in RUN["rows"]
                                  if row.get("state") == "missing" and not row.get("unverified"))
-            buckets = {}
-            for row in RUN["rows"]:
-                if row.get("state") == "skipped":
-                    s = (row.get("status") or "no reason").lower()
-                    if "ambigu" in s:
-                        b = "ambiguous"
-                    elif "unavailable" in s:
-                        b = "unavailable"
-                    elif ("transport" in s or "timed out" in s or "timeout" in s or "urlopen" in s
-                          or "urlerror" in s or "connection" in s or " 429" in s or "429 " in s
-                          or "503" in s or "temporary failure" in s or "reset by peer" in s):
-                        b = "transport"
-                    elif "no match" in s or "confident" in s or "no ytm result" in s:
-                        b = "no match"
-                    else:
-                        b = "other"
-                    buckets[b] = buckets.get(b, 0) + 1
-            skipped_n = int(RUN.get("skipped", 0))
-            parts = ", ".join(f"{buckets[k]} {k}" for k in sorted(buckets) if buckets[k]) if skipped_n else "none"
-            dec = int(RUN.get("declared", 0) or RUN.get("total", 0))
             n_pl = (len(entries_final) if isinstance(entries_final, list)
                     else int(res.get("playlist_count", 0) or 0))
             RUN["playlist_count"] = n_pl
             # Derived, never accumulated: rows were recounted from the reconciled
-            # ledger above, so landed+refused+skipped+missing+unverified == declared
-            # and the holds count is the read-back the ledger consumed. Guesses are
-            # landed rows that were labelled, counted so the line can name them.
+            # ledger above, so added+skipped+duplicate+unverified+refused == source
+            # and the holds count is the read-back the ledger consumed. `source` is
+            # the Spotify read itself, so a capped or resumed plan still reports it.
+            # Guesses are landed rows that were labelled, counted so the line can
+            # name them.
             RUN["guessed"] = sum(1 for row in RUN["rows"]
                                  if row.get("guess") and row.get("state") == "landed")
+            RUN["counts"] = _counts_from_rows(len(tracks), RUN["rows"])
             RUN["summary"] = _done_summary(
-                RUN.get("landed", 0), RUN.get("refused", 0), skipped_n,
-                RUN.get("missing", 0), dec, n_pl, parts,
+                RUN["counts"], n_pl,
                 topped_up=(int(res.get("topped_up", 0)) if res.get("topped_up") is not None else None),
                 sent=int(res.get("sent", 0) or 0), guessed=RUN["guessed"],
-                unverified=RUN.get("unverified", 0), duplicate=RUN.get("duplicate", 0))
+                tail_unverified=RUN.get("unverified", 0))
             RUN["phase"] = "done"
             RUN["error"] = ""
             RUN["seq"] += 1
@@ -3133,6 +3209,7 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                             row["state"] = "skipped"
                             row["status"] = f"stopped: {msg}"[:80]
                     RUN["skipped"] = sum(1 for row in RUN["rows"] if row.get("state") == "skipped")
+                    RUN["counts"] = _counts_from_rows(RUN.get("total", 0) or 0, RUN["rows"])
                     RUN["seq"] += 1
                     RUN["updated_at"] = time.time()
             except Exception:
@@ -3188,8 +3265,7 @@ class H(BaseHTTPRequestHandler):
                 recent = list(HISTORY[-20:])
             self.send_json({"ok": True, "recent": recent})
         elif self.path == "/api/settings":
-            cur = load_settings()
-            self.send_json({"ok": True, **{k: (cur.get(k) or ("PRIVATE" if k == "privacy" else "")) for k in _SETTING_KEYS}})
+            self.send_json({"ok": True, **_settings_payload(load_settings())})
         elif self.path == "/api/run" or self.path.startswith("/api/run?"):
             try:
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -3230,6 +3306,8 @@ class H(BaseHTTPRequestHandler):
                             "missing": int(snap.get("missing", 0) or 0),
                             "unverified": int(snap.get("unverified", 0) or 0),
                             "duplicate": int(snap.get("duplicate", 0) or 0),
+                            "counts": dict(snap.get("counts") or {}),
+                            "oneToOne": one_to_one_setting(),
                             "playlist_count": int(snap.get("playlist_count", 0) or 0),
                             "rows": rows,
                             "error": snap.get("error", ""),
@@ -3442,11 +3520,22 @@ class H(BaseHTTPRequestHandler):
                         if v not in ("PRIVATE", "PUBLIC", "UNLISTED"):
                             continue
                         cur[k] = v
+                    elif k == "one_to_one":
+                        cur[k] = bool(payload.get(k))
                     else:
                         cur[k] = payload.get(k)
                 save_settings(cur)
                 blog("settings", "saved")
-                return self.send_json({"ok": True, **{k: (cur.get(k) or ("PRIVATE" if k == "privacy" else "")) for k in _SETTING_KEYS}})
+                return self.send_json({"ok": True, **_settings_payload(cur)})
+            if self.path == "/api/one-to-one":
+                on = payload.get("on")
+                if not isinstance(on, bool):
+                    return self.send_json({"ok": False, "error": "on must be true or false"}, 400)
+                cur = load_settings()
+                cur["one_to_one"] = on
+                save_settings(cur)
+                blog("settings", f"one_to_one={on}")
+                return self.send_json({"ok": True, "oneToOne": on})
             if self.path == "/api/watch":
                 if not payload.get("extra"):
                     return self.send_json({"ok": True, "dirs": cookie_dirs()})
