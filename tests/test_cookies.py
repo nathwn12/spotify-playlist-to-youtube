@@ -401,7 +401,7 @@ class CookieTests(unittest.TestCase):
         self.assertFalse(body["sp"]["ok"])
         self.assertEqual(body["sp"]["state"], "junk")
         self.assertTrue(body["sp"]["msg"])
-        self.assertFalse([l for l in backend.HISTORY if "cookies latched" in l],
+        self.assertFalse([ev for ev in backend.HISTORY if "cookies latched" in ev],
                          "a junk Spotify paste was logged as latched")
         self.assertEqual(backend.vault_load()["yt_cookie"], backend.normalize_cookie(HEADER),
                          "the yt path is unchanged: a valid yt cookie is still saved")

@@ -49,7 +49,7 @@ def raises(fn, contains, label):
         fn()
     except RuntimeError as e:
         if contains not in str(e):
-            raise AssertionError(f"{label}: raised {e!r}, want text containing {contains!r}")
+            raise AssertionError(f"{label}: raised {e!r}, want text containing {contains!r}") from e
         return str(e)
     raise AssertionError(f"{label}: did not raise")
 

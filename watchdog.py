@@ -30,7 +30,7 @@ def check_once():
     print(f"--- last {len(recent)} events ---")
     for line in recent[-20:]:
         print(" ", line)
-    fails = [l for l in recent if l.split(" ", 1)[-1].startswith("fail") or "FAIL" in l]
+    fails = [ev for ev in recent if ev.split(" ", 1)[-1].startswith("fail") or "FAIL" in ev]
     if not fails:
         print("verdict: no failures in window. If your browser shows an error, copy the DIAGNOSIS line here.")
         return 0

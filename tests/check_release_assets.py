@@ -38,8 +38,7 @@ def tagged_len(rel: str):
     An unreachable tag is reported, never assumed equal: a shallow clone must stay green,
     but it must not print a comparison it did not make."""
     try:
-        r = subprocess.run(["git", "show", f"{TAG}:{rel}"], cwd=HERE,
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        r = subprocess.run(["git", "show", f"{TAG}:{rel}"], cwd=HERE, capture_output=True)
     except OSError as e:
         return None, "git not runnable (%s)" % e.__class__.__name__
     if r.returncode != 0:

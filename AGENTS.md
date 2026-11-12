@@ -6,7 +6,7 @@ Keyless Spotify to YouTube Music playlist transfer for Windows. The server binds
 
 ## Stack
 
-- Python 3.12+, standard library only — no requirements file, no venv. Do not add dependencies (`backend.py` imports stdlib plus an optional `Crypto`, which is tolerated missing).
+- Python 3.12+, standard library only — no requirements file, no venv. Do not add dependencies (`backend.py` imports only the standard library).
 - Three files do everything: `backend.py` (server + all transfer logic), `app.py` (PROD WebView2 shell), `index.html` (single-page UI). `watchdog.py` diagnoses failures from the audit log.
 
 ## Run / build

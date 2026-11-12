@@ -22,12 +22,6 @@ import webbrowser
 from ctypes import wintypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-try:
-    from Crypto.Cipher import AES
-    HAVE_AES = True
-except Exception:
-    HAVE_AES = False
-
 APP_VERSION = "0.3.1"
 
 HERE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -330,7 +324,6 @@ class DATA_BLOB(ctypes.Structure):
     _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
 
 def _dpapi_blob(fn, data: bytes) -> bytes:
-    lib = ctypes.windll.crypt32
     fn.argtypes = [ctypes.POINTER(DATA_BLOB), ctypes.c_wchar_p, ctypes.POINTER(DATA_BLOB),
                    ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(DATA_BLOB)]
     fn.restype = wintypes.BOOL
@@ -715,7 +708,7 @@ def _sp_http(url, data=None, headers=None, timeout=25):
         except Exception:
             return e.code, b""
     except Exception as e:
-        raise RuntimeError(f"network: {type(e).__name__} {e}")
+        raise RuntimeError(f"network: {type(e).__name__} {e}") from e
 
 def _sp_totp(key: bytes, ts_ms: int) -> str:
     ctr = int(ts_ms // 1000 // 30)
@@ -777,7 +770,7 @@ def _sp_anon_token():
         j = json.loads(tb.decode())
         tok, exp = j["accessToken"], int(j.get("accessTokenExpirationTimestampMs") or 0)
     except Exception:
-        raise RuntimeError("spotify keyless token unreadable (player api changed?)")
+        raise RuntimeError("spotify keyless token unreadable (player api changed?)") from None
     if not tok:
         raise RuntimeError("spotify keyless token empty (player api changed?)")
     _SP_TOK["token"] = tok
@@ -829,7 +822,7 @@ def _sp_playlist_page(pid, offset, limit, token, qhash):
         try:
             return j["data"]["playlistV2"]
         except Exception:
-            raise RuntimeError("spotify full-list unreadable (partner shape changed?)")
+            raise RuntimeError("spotify full-list unreadable (partner shape changed?)") from None
     raise RuntimeError(f"spotify full-list refused ({last})")
 
 def _sp_cover(pl):
