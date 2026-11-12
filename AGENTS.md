@@ -6,7 +6,7 @@ Keyless Spotify to YouTube Music playlist transfer for Windows. The server binds
 
 ## Stack
 
-- Python 3.10+, standard library only — no requirements file, no venv. Do not add dependencies (`backend.py` imports stdlib plus an optional `Crypto`, which is tolerated missing).
+- Python 3.12+, standard library only — no requirements file, no venv. Do not add dependencies (`backend.py` imports stdlib plus an optional `Crypto`, which is tolerated missing).
 - Three files do everything: `backend.py` (server + all transfer logic), `app.py` (PROD WebView2 shell), `index.html` (single-page UI). `watchdog.py` diagnoses failures from the audit log.
 
 ## Run / build
@@ -14,6 +14,7 @@ Keyless Spotify to YouTube Music playlist transfer for Windows. The server binds
 - **DEV (iterate here):** `python3 backend.py` (or `sp2yt-start.cmd`), open `http://127.0.0.1:8787`. No build step.
 - **PROD:** run `build.cmd` from the repo root (needs `pyinstaller` + `pywebview`). It backs up the exe, kills running instances, compiles one portable `sp2yt.exe`, smoke-tests `/health`, deletes the backup on green / restores it on red. Never invoke `pyinstaller` directly — the backup/restore + smoke logic is the build.
 - The gate is `acceptance.cmd`, which must print `36/36 fixtures` and then pass the language tests, the cover tests, the page-script parse check, the cookie tests, the connect-card checks and the release-asset checks — every one green — before anything ships.
+- **Lint / format:** `python3 -m ruff check .` and `python3 -m ruff format .`; the config is `pyproject.toml` (`target-version = "py312"`, rules `E,F,W,I,UP,B`). Outstanding findings are real debt, not a gate yet: fix them rule by rule, never with a mass reflow or `--unsafe-fixes`.
 - Port is fixed at `8787`, bound to `127.0.0.1` only.
 
 ## Architecture quirks (unofficial surfaces)

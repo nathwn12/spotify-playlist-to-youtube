@@ -16,7 +16,7 @@ Windows 10/11 x64, with the Microsoft Edge WebView2 runtime (it ships with Edge)
 
 ### Offline or pinned
 
-`python3 backend.py`, then open http://127.0.0.1:8787. Python 3.10+ with the standard library only — nothing to install.
+`python3 backend.py`, then open http://127.0.0.1:8787. Python 3.12+ with the standard library only — nothing to install.
 
 Pin an exact version:
 
@@ -75,7 +75,7 @@ Both surfaces are unofficial: a shape change stops the run with a parse or auth 
 ## Requirements
 
 - Windows 10/11 x64 for the exe, with WebView2 from Edge.
-- Python 3.10+ standard library only for the source route.
+- Python 3.12+ standard library only for the source route.
 - A `music.youtube.com` cookie for the account that should own the playlist.
 - A public Spotify playlist.
 

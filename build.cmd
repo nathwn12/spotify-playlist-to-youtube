@@ -1,7 +1,7 @@
 @echo off
 rem sp2yt PROD build: compile app+backend+UI to single portable sp2yt.exe (WebView2 window).
 rem DEV stays source-only: sp2yt-start.cmd / sp2yt-dev shortcut (localhost server, no build).
-rem Usage: build.cmd  (run from repo root, needs python3 + pyinstaller + pywebview)
+rem Usage: build.cmd  (run from repo root, needs python3 3.12+ + pyinstaller + pywebview)
 setlocal
 cd /d "%~dp0"
 echo [1/6] acceptance gate...

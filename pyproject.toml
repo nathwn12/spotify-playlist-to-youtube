@@ -1,0 +1,21 @@
+# Lint and format configuration for sp2yt.
+#
+# This is not a package: the app is standard library only, ships as one
+# PyInstaller exe, and is never installed. There is no [project] table, no
+# dependency list, no lockfile and no resolver, because there is nothing to
+# resolve. The declared interpreter floor is Python 3.12+, stated for the
+# linter by target-version below and in README.md / AGENTS.md.
+[tool.ruff]
+target-version = "py312"
+# The code is written to a ~120 column page; the default 88 would flag existing
+# lines for a mass reflow, which is not a lint fix.
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+# E501 is the one E rule that reports instead of fixing; kept on so the debt is
+# visible and stays counted, even while the code is over it.
+
+# `ruff format` reads line-length from [tool.ruff] above and otherwise uses its
+# defaults (double quotes, magic trailing comma honoured). It has not been run
+# over the tree: the code is hand-wrapped, and a whole-file reflow is not a fix.
