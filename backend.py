@@ -2842,7 +2842,7 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
     short = 0   # reads that came back short while nothing was proven absent
     passes = 0  # loop iterations, whatever they did: the outer bound
     floor = 0        # entries a complete read of this run has already proved
-    proven = set()   # ids a COMPLETE read has already proved present
+    prev_present = None  # what the immediately previous complete read held
     applied = False  # the last repair was accepted in full, and landed nowhere
     stuck = 0   # passes whose complete read proved nothing new
 
@@ -2918,11 +2918,17 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
         if not need:
             blog("converge", f"{plid} verified {len(got)} entries, nothing absent")
             return finish("done", final_complete=True)
-        if applied and not (present - proven):
-            # The append this loop sent was accepted and the playlist did not
-            # change at all between two complete reads: progress is zero. Do not
-            # wait for a count - name the stall once, then end the run rather
+        grew = prev_present is None or bool(present - prev_present)
+        prev_present = present
+        if applied and not grew:
+            # The append this loop sent was accepted and the playlist is unchanged
+            # between the two complete reads either side of it: progress is zero. Do
+            # not wait for a count - name the stall once, then end the run rather
             # than re-send a copy the server keeps dropping.
+            #
+            # Compared with the read just before this one, never with the union of
+            # every read so far: {A} -> {B} -> {A} is a playlist that changed twice,
+            # and a union makes the third read look like no change at all.
             stuck += 1
             reason = "append accepted but the playlist did not grow"
             blog("converge", f"{plid} {reason} (pass {passes}, {stuck}/2, "
@@ -2932,8 +2938,7 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
             if stand_by(reason, need):
                 return finish("gaveup", reason, need)
             continue
-        proven |= present
-        stuck = 0   # the read proved something new: the stall counter starts over
+        stuck = 0   # the read changed: the stall counter starts over
         run_set(state="repairing", attempt=attempt, reason=f"repairing {len(need)} tracks")
         blog("converge", f"{plid} entry={len(got)} absent={len(need)}")
         sent = _append_missing(plid, yt_cookie, need, one_to_one)

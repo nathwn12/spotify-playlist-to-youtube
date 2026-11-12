@@ -494,6 +494,29 @@ class Repair(unittest.TestCase):
                          "an append was sent while the outcome was unknown")
         self.assertEqual(out["state"], "done", out)
 
+    def test_progress_is_measured_against_the_previous_read_not_the_union(self):
+        """Present ids {A} -> {B} -> {A}: the third read shows a playlist that
+        changed, so there was progress. Judged against the union of every read of
+        the run it looks like none, and the run gives up on a live playlist."""
+        a, b, c = vid(1), vid(2), vid(3)
+        scripted = [[a], [b], [a], [a, b, c]]
+        calls = []
+
+        def reader(plid, cookie):
+            calls.append(plid)
+            entries = scripted[min(len(calls) - 1, len(scripted) - 1)]
+            return {"entries": list(entries), "complete": True, "why": ""}
+
+        upstream = Upstream()
+        self.upstream = upstream
+        with mock.patch("urllib.request.urlopen", upstream), \
+                mock.patch.object(backend, "yt_playlist_read", reader):
+            out = backend._converge(PLID, COOKIE, [a, b, c])
+
+        self.assertEqual(out["state"], "done", out)
+        self.assertEqual(self.waits, [], "a playlist that changed was read as no progress")
+        self.assertEqual(len(calls), 4, "the run stopped before it could see the whole list")
+
     # --- 7: a short complete read is short, not complete --------------------
     def test_a_token_complete_read_below_the_minimum_is_not_complete(self):
         """Three entries served with no continuation is a token-complete read; when
