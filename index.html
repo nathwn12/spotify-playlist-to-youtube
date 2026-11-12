@@ -39,11 +39,18 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
 #statepill .pdot{width:8px;height:8px;border-radius:50%;background:currentColor;flex:0 0 8px}
 #statepill.run .pdot{animation:pulse 1.1s ease-in-out infinite}
 @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(.7)}}
-#newbtn{font:600 11px var(--sans);letter-spacing:.04em;background:transparent;color:var(--mut);
+/* The pill's tone is the terminal truth, not a decoration: green only for a run
+   whose playlist read confirmed every row, amber for a run that is waiting or
+   could not confirm, red for one that gave up. Declared after .run so an honest
+   tone wins over the live green. */
+#statepill[data-t="ok"]{color:var(--grn);border-color:var(--grn)}
+#statepill[data-t="warn"]{color:var(--amb);border-color:var(--amb)}
+#statepill[data-t="bad"]{color:var(--red);border-color:var(--red)}
+#newbtn,#retrybtn{font:600 11px var(--sans);letter-spacing:.04em;background:transparent;color:var(--mut);
   border:1px solid var(--line2);border-radius:99px;padding:6px 12px;cursor:pointer;
   white-space:nowrap;flex:0 0 auto;margin-left:auto}
-#newbtn[hidden]{display:none}
-#newbtn:disabled{opacity:.45;cursor:default}
+#newbtn[hidden],#retrybtn[hidden]{display:none}
+#newbtn:disabled,#retrybtn:disabled{opacity:.45;cursor:default}
 /* body: 280px rail + fluid ledger; strip below 1024px */
 .deck{display:grid;grid-template-columns:280px minmax(0,1fr);min-height:0;min-width:0}
 .side{--chiph:48px;border-right:1px solid var(--line);background:var(--panel);padding:14px;
@@ -132,10 +139,19 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
 #filelist{font-size:12px;color:var(--dim)}
 /* workspace: counter, counts, hairline, filters, virtual ledger */
 .work{display:flex;flex-direction:column;min-height:0;min-width:0;background:var(--panel)}
-.totals{display:flex;align-items:baseline;gap:12px;padding:14px 16px 10px;flex-wrap:wrap}
+/* The totals row is one line at every width, in every state: the counter, the
+   server's counts, then the two pills. Only the counts may shrink, so a run with
+   fewer numbers can never reflow the row under the ledger. */
+.totals{display:flex;align-items:baseline;gap:12px;padding:14px 16px 10px;flex-wrap:nowrap;min-width:0}
 #bignum{font:700 34px/1 var(--mono);font-variant-numeric:tabular-nums;letter-spacing:-.02em;flex:0 0 auto}
 #bignum::after{content:" / " attr(data-den);font-size:16px;color:var(--mut);font-weight:600}
-#breakdown{font:600 12px/1.4 var(--mono);color:var(--mut);font-variant-numeric:tabular-nums;min-width:0}
+/* The counts row is one physical line at every width: these seven numbers come
+   from the server and their length varies with the run (a zero part drops out), so
+   a wrap here would move the ledger between states. The ellipsis keeps the row one
+   line and the title carries the whole sentence; the chips below repeat every one
+   of the seven numbers. */
+#breakdown{font:600 12px/1.4 var(--mono);color:var(--mut);font-variant-numeric:tabular-nums;min-width:0;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #breakdown b{color:var(--tx)}
 /* "what's missing" way out: the filter chips' pill, tertiary colour, pinned to
    the right of the counts row so it appears without moving the counts.
@@ -224,6 +240,11 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
 @media (max-width:1023px){
   .deck{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
+  /* Below the rail breakpoint the counter, the counts and the two pills stack in
+     three fixed rows whatever the numbers say, so a run with fewer counts cannot
+     reflow the row under the ledger. */
+  .totals{flex-wrap:wrap}
+  #breakdown{flex:1 1 100%}
   .work{min-height:0;min-width:0}
   .side{flex-direction:row;flex-wrap:wrap;align-items:center;border-right:0;
     border-bottom:1px solid var(--line);overflow:visible}
@@ -255,6 +276,7 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
   <span class="brand" aria-hidden="true">Y</span>
   <a id="ytchip" hidden href="" target="_blank" rel="noopener"></a>
   <span id="statepill" class="on" role="status"><span class="pdot" aria-hidden="true"></span><span class="ptxt">Idle</span></span>
+  <button id="retrybtn" type="button" hidden title="End the wait and verify the playlist now">Retry now</button>
   <button id="newbtn" type="button" hidden disabled>New transfer</button>
 </header>
 <div class="deck">
@@ -299,7 +321,7 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
       <button id="oneone" class="missbtn" type="button" aria-pressed="false"
         title="1:1 on: a song that appears twice in the source appears twice in the playlist. Off: the second copy is refused and counted as duplicate. Applies to the next transfer.">1:1 off</button>
       <button id="missbtn" class="missbtn" type="button" hidden
-        aria-label="Copy the tracks that are not on the playlist"><span class="misslab">Copy</span><span class="missdone" aria-hidden="true">Copied</span></button>
+        aria-label="Copy the tracks that were not added"><span class="misslab">Copy</span><span class="missdone" aria-hidden="true">Copied</span></button>
       <span id="misssay" class="sr" role="status" aria-live="polite"></span>
     </div>
     <div class="rule" id="rule" aria-hidden="true"></div>
@@ -355,7 +377,7 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
    row states: queued|matched|appending|landed|skipped|refused|missing
    GET/POST /api/settings {privacy} (server-persisted; only persisted field) */
 const $=id=>document.getElementById(id);
-const chip=$("ytchip"),pill=$("statepill"),newbtn=$("newbtn"),big=$("bignum"),brk=$("breakdown"),rule=$("rule");
+const chip=$("ytchip"),pill=$("statepill"),newbtn=$("newbtn"),retryBtn=$("retrybtn"),big=$("bignum"),brk=$("breakdown"),rule=$("rule");
 const ledger=$("ledger"),pad=$("pad"),zero=$("zerostate"),phaseEl=$("phaseline");
 const startB=$("startbtn"),stopB=$("stopbtn"),clearB=$("clearbtn"),pname=$("pname");
 new MutationObserver(()=>{pname.title=pname.textContent;}).observe(pname,{childList:true,characterData:true,subtree:true});
@@ -383,28 +405,50 @@ const S={runId:"",since:0,phase:"idle",total:0,declared:0,landed:0,refused:0,ski
   rows:new Map(),filter:"all",timer:null,tick:null,fails:0,lastOk:Date.now(),ceil:0,
   localT0:0,aborted:false,privacy:"PRIVATE",deadNoted:false,hist:[],interrupted:null,
   follow:true,_prog:0,yt:{},ytState:"none",ytHelp:"",detected:null,
-  counts:null,oneToOne:false,oneBusy:false};
+  counts:null,oneToOne:false,oneBusy:false,
+  /* the run's own state machine, straight off /api/run: phase is a label now,
+     state is the truth (running|verifying|repairing|standby|gaveup|done) */
+  state:"idle",reason:"",residual:[],attempt:0,nextAt:0,nextIn:0,nextSeen:0};
 const mmss=ms=>{const s=Math.max(0,Math.round(ms/1000));
   return String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");};
 function elapsedMs(){if(S.phase==="idle")return 0;
   if(window.__t0srv)return Math.max(0,Date.now()-window.__t0srv);return Date.now()-S.localT0;}
 function tickStart(){if(S.tick)return;S.tick=setInterval(()=>{paintFacts();},1000);}
 function tickStop(){if(S.tick){clearInterval(S.tick);S.tick=null;}}
+/* The run's state, or - when the payload carries none - the word the phase can
+   still support, so an older backend renders by phase and its unverified count
+   still decides whether that counts as success. */
+function runState(){const st=S.state||"";
+  if(st&&st!=="idle")return st;
+  if(S.phase==="done")return"done";
+  if(S.phase==="failed")return"failed";
+  return st;}
 /* Pill: pulsing dot + live count from the same landedNow()/declared numbers
-   the chips use, so it can never disagree. Static when idle. */
-function pillLabel(p){if(LIVE.has(p)){const a=landedNow(),dec=S.declared||S.total||0;
+   the chips use, so it can never disagree. Static when idle. The word comes from
+   the run's state: a gave-up run says so, and a done run names what it could not
+   confirm instead of wearing the success word bare. */
+function pillLabel(p){
+  const st=runState();
+  if(st==="gaveup")return"Gave up";
+  if(st==="standby")return"Standby";
+  if(st==="done"){const n=vCount();return n?`Done, ${n} unverified`:"Done";}
+  if(LIVE.has(p)){const a=landedNow(),dec=S.declared||S.total||0;
     return`${human(p)} · ${a}/${dec||"?"}`;}return human(p);}
 function paintPill(){let dot=pill.querySelector(".pdot"),txt=pill.querySelector(".ptxt");
   if(!dot||!txt){pill.textContent="";dot=document.createElement("span");
     dot.className="pdot";dot.setAttribute("aria-hidden","true");
     txt=document.createElement("span");txt.className="ptxt";pill.append(dot,txt);}
-  txt.textContent=pillLabel(S.phase);}
+  txt.textContent=pillLabel(S.phase);
+  const tone=termTone();
+  if(tone)pill.dataset.t=tone;else delete pill.dataset.t;}
 function setPhase(p){S.phase=p;const live=LIVE.has(p);
   pill.classList.add("on");pill.classList.toggle("run",live);paintPill();
-  if(live)tickStart();else tickStop();paintNewBtn();}
+  if(live)tickStart();else tickStop();if(S.state==="standby")tickStart();paintNewBtn();}
+function paintRetry(){retryBtn.hidden=S.state!=="standby";}
 function paintNewBtn(){
   const show=(S.phase==="done"||S.phase==="failed"||S.phase==="aborted")&&!LIVE.has(S.phase);
-  newbtn.hidden=!show; newbtn.disabled=!show||LIVE.has(S.phase);}
+  newbtn.hidden=!show; newbtn.disabled=!show||LIVE.has(S.phase);
+  paintRetry();}
 function setRunning(on){
   startB.disabled=on; stopB.disabled=!on; clearB.disabled=on;
   startB.classList.toggle("ghost",on); stopB.classList.toggle("ghost",!on);
@@ -413,8 +457,88 @@ function tally(){const t={};
   for(const row of S.rows.values()){const b=bucketsOf(row);t[b]=(t[b]||0)+1;}
   return t;}
 /* Landed once: a row is landed when its video is on the playlist, seeds included.
-   Chips, big counter and footer all read this one number. */
-function landedNow(){return tally().added||0;}
+   The server's `counts.added` counts only rows a completed read confirmed, so it
+   is the one number the counter, the pill and the chips may show; a sent row the
+   read never confirmed stays pending. The row tally is the fallback for a payload
+   that carries no counts, never a second opinion beside it. */
+function landedNow(){const c=S.counts;
+  if(c&&c.added!=null)return Math.max(0,+c.added||0);
+  return tally().added||0;}
+const nz=(c,k)=>Math.max(0,+((c||{})[k])||0);
+/* Rows sent but not yet confirmed by a read. Derived from the server's own seven
+   numbers when it does not serve `pending` itself; clamped, because a count that
+   went backwards is still zero rows waiting. */
+function countsPending(c){
+  if(!c)return 0;
+  if(c.pending!=null)return nz(c,"pending");
+  return Math.max(0,nz(c,"source")-nz(c,"added")-nz(c,"skipped")
+    -nz(c,"duplicate")-nz(c,"unverified")-nz(c,"refused"));}
+function vCount(){const c=S.counts;
+  if(c&&c.unverified!=null)return nz(c,"unverified");
+  return tally().notverified||0;}
+/* nextAttemptAt is epoch seconds; a bare small number is a relative wait, so both
+   shapes count down from the moment the page saw them. */
+function setNextAt(v){const n=+v||0;
+  if(!n){S.nextAt=0;S.nextIn=0;return;}
+  S.nextAt=n>1e9?n:0;S.nextIn=n>1e9?0:n;S.nextSeen=Date.now();}
+function secsLeft(){
+  if(S.nextAt)return Math.max(0,Math.ceil(S.nextAt-Date.now()/1000));
+  if(S.nextIn)return Math.max(0,Math.ceil(S.nextIn-(Date.now()-S.nextSeen)/1000));
+  return null;}
+function attemptsPhrase(){const n=+S.attempt||0;
+  return n?` after ${n} attempt${n===1?"":"s"}`:"";}
+/* Residual tracks as names: a video id the ledger knows becomes its track title, so
+   the line names the song rather than an opaque id, and the artist stays on the row
+   where there is room for it. Six names, then the remainder counted; the count leads
+   so the number survives a narrow window trimming the tail. */
+function residualNames(max){
+  const list=Array.isArray(S.residual)?S.residual:[];
+  if(!list.length)return"";
+  const byId=new Map();
+  for(const r of S.rows.values())
+    if(r.videoId&&!byId.has(r.videoId))byId.set(r.videoId,(r.title||"").trim()||missName(r));
+  const name=v=>typeof v==="string"?byId.get(v)||v
+    :((v&&(v.title||v.name||v.videoId||v.id))||String(v));
+  const head=list.slice(0,max).map(name), k=list.length-max;
+  return head.join(", ")+(k>0?` and ${k} more`:"");}
+/* The count leads the list, so a window too narrow for the names still reports how
+   many tracks the run could not confirm. */
+function residualPhrase(){
+  const n=Array.isArray(S.residual)?S.residual.length:0;
+  return n?`${n} ${n===1?"track":"tracks"} still absent: ${residualNames(6)}`:"";}
+/* Standing by is a live state, not a failure: attempt, reason, and the countdown
+   the page owns (no extra request per second). */
+function standbyLine(){
+  const left=secsLeft();
+  let s=`Standing by${attemptsPhrase()}`;
+  s+=left===null?" — waiting to verify again":left>0?` — verifying again in ${mmss(left*1000)}`
+    :" — verifying again now";
+  if(S.reason)s+=` · ${S.reason}`;
+  const res=residualPhrase();
+  if(res)s+=` · ${res}`;
+  return s;}
+/* Gave up is terminal and it is not success: the reason, the attempts it spent and
+   what is still absent are the whole point of the line. */
+function gaveupLine(){
+  let s=`Gave up${attemptsPhrase()}`;
+  if(S.reason)s+=` — ${S.reason}`;
+  const res=residualPhrase();
+  return s+(res?` · ${res}`:" · no residual was recorded");}
+/* A run the read never confirmed is done with the work, never done with proof. */
+function unprovenLine(){
+  const n=vCount(), res=residualPhrase();
+  let s=`Done${attemptsPhrase()} — ${n} ${n===1?"track is":"tracks are"} unverified`;
+  if(S.reason)s+=` · ${S.reason}`;
+  return s+(res?` · ${res}`:" · the playlist read never confirmed them");}
+/* Green only for a run whose read confirmed every row, including a payload with no
+   state of its own. */
+function termTone(){
+  const st=runState();
+  if(st==="gaveup")return"bad";
+  if(st==="standby")return"warn";
+  if(st==="done")return vCount()>0?"warn":"ok";
+  if(st==="failed"||S.phase==="failed")return"bad";
+  return"";}
 /* The counts row is the server's own ledger from /api/run (counts: source,
    unique, added, skipped, duplicate, unverified, refused), never arithmetic
    over the rows a second time. Order leads with the source breakdown, so the
@@ -423,7 +547,9 @@ function landedNow(){return tally().added||0;}
    non-zero, and they stay distinguishable words - duplicate is not refused. */
 const countParts=c=>{const out=[["in source",c.source],["unique",c.unique],
     ["added",c.added],["skipped",c.skipped]];
-  for(const k of["duplicate","unverified","refused"])if(+c[k])out.push([k,c[k]]);
+  for(const k of["pending","duplicate","unverified","refused"]){
+    const n=k==="pending"?countsPending(c):+c[k]||0;
+    if(n)out.push([k,n]);}
   return out;};
 function countsLine(){
   if(!S.total&&!S.declared)return $("srcurl").value.trim()?"link loaded — Ctrl+Enter to start":"paste a link to begin";
@@ -466,7 +592,15 @@ function factsStr(){
   const pending=Math.max(0,(S.declared||S.total||0)-a);
   const left=pending/rate*60000;
   return`${mmss(e)} elapsed · ${Math.round(rate)}/min · ~${mmss(left)} left`;}
-function liveLabel(){const dec=S.declared||S.total||0, a=landedNow();
+/* The line under the totals names the run by its state, because the state is
+   what the server proved: standing by says so with its countdown, gave up says
+   why and what is still absent, and done never claims success the read did not
+   establish. Phase names are the fallback for a payload with no state. */
+function liveLabel(){const dec=S.declared||S.total||0, a=landedNow(), st=runState();
+  if(st==="standby")return standbyLine();
+  if(st==="gaveup")return gaveupLine();
+  if(st==="done")return vCount()>0?unprovenLine()
+    :(S.summary||`Done — ${a} of ${dec} on the playlist`);
   switch(S.phase){
     case"spotify":return`Reading playlist — fetching declared tracks, no rows yet…`;
     case"search":return`Reading playlist — ${S.matched||0} of ${dec} matched`;
@@ -478,25 +612,42 @@ function liveLabel(){const dec=S.declared||S.total||0, a=landedNow();
     case"aborted":return`Detached at ${a} of ${dec||"?"} — still running on the server · press Ctrl+Enter to re-attach.`;
     default:return human(S.phase);}}
 function paintFacts(){
-  if(S.pin){phaseEl.textContent=S.pin;phaseEl.title=S.pinTitle||"";return;}
-  phaseEl.title="";
-  if(S.phase==="idle"){phaseEl.textContent=$("srcurl").value.trim()?"link loaded — Ctrl+Enter to start":"paste a Spotify link, then Ctrl+Enter";return;}
-  phaseEl.textContent=`${liveLabel()} · ${factsStr()}`;return;}
-function paintChips(){const t=tally();
-  const dec=S.declared||S.total||0, n=dec,
-    labels={all:n,added:t.added||0,skipped:t.skipped||0,duplicate:t.duplicate||0,
-      refused:t.refused||0,notverified:t.notverified||0,pending:t.pending||0};
+  if(S.pin){phaseEl.textContent=S.pin;phaseEl.title=S.pinTitle||S.pin;return;}
+  if(S.phase==="idle"){const t=$("srcurl").value.trim()?"link loaded — Ctrl+Enter to start":"paste a Spotify link, then Ctrl+Enter";
+    phaseEl.textContent=t;phaseEl.title=t;return;}
+  const line=`${liveLabel()} · ${factsStr()}`;
+  phaseEl.textContent=line;
+  /* One visual line, but never an unreachable sentence: a narrow window trims
+     the tail, and the title carries the complete line - the counts and the
+     verification words included - so nothing is lost to the ellipsis. */
+  phaseEl.title=line;return;}
+function paintChips(){
+  /* The chips are the server's ledger, never a second tally of the rows: during a
+     run the rows are still arriving, and a row cannot tell a sent add from a
+     stored one. `added` is what a completed read proved; everything sent and not
+     yet proved is pending. */
+  const c=S.counts, dec=S.declared||S.total||0;
+  const labels={all:c?nz(c,"source"):dec,added:nz(c,"added"),skipped:nz(c,"skipped"),
+    duplicate:nz(c,"duplicate"),refused:nz(c,"refused"),
+    notverified:nz(c,"unverified"),pending:countsPending(c)};
+  const show=c||S.total||S.declared;
   document.querySelectorAll(".fbtn").forEach(b=>{
     const f=b.dataset.f;
     /* duplicate is its own outcome, so its chip is only there when one exists:
        a 0 duplicate chip is noise, a non-zero one is what the user came to see */
     if(f==="duplicate")b.hidden=!labels.duplicate;
-    b.textContent=`${(DISP[f]||f).toLowerCase()} ${S.total||S.declared?labels[f]||0:0}`;
+    b.textContent=`${(DISP[f]||f).toLowerCase()} ${show?labels[f]||0:0}`;
     b.setAttribute("aria-pressed",String(S.filter===f));});}
-/* Missing list: every row the ledger does not count as landed, selected with
-   bucketsOf() - the same function the chips read - so this list can never hold
-   a second opinion about which states didn't make it. Order is ledger order. */
+/* Missing list: every row that is not landed, selected with bucketsOf() - the one
+   place a row state becomes a bucket. The chips read the server's counts instead,
+   so this list is the ledger's own answer to "which tracks", never a second count. */
 const missBtn=$("missbtn"),missSay=$("misssay"),missLab=missBtn.querySelector(".misslab");
+/* What each bucket actually proves, in the words the list may claim: duplicate
+   means the playlist already holds the song, unverified means the read never
+   reached it, skipped means it was never attempted. Only a proven absence could
+   claim a track is absent from the playlist, and nothing here proves that. */
+const CLAIM={added:"added",skipped:"not attempted",duplicate:"already in the playlist",
+  refused:"refused by YouTube Music",notverified:"not verified",pending:"pending"};
 function missingRows(){return[...S.rows.values()].filter(r=>bucketsOf(r)!=="added")
   .sort((x,y)=>x.i-y.i);}
 const missName=r=>{const t=(r.title||"").trim(),a=(r.artist||"").trim();
@@ -504,18 +655,18 @@ const missName=r=>{const t=(r.title||"").trim(),a=(r.artist||"").trim();
   return r.videoId||`track ${r.i}`;};
 function missingText(rows){
   const list=rows||missingRows();
-  return[`sp2yt — ${list.length} tracks not in the playlist`,
+  return[`sp2yt — ${list.length} tracks not added`,
     `playlist: ${S.url||"(no playlist link yet)"}`,
     `generated: ${new Date().toISOString()}`,"",
-    ...list.map((r,k)=>`${k+1}. ${missName(r)}  [${(DISP[bucketsOf(r)]||bucketsOf(r)).toLowerCase()}]`)
+    ...list.map((r,k)=>`${k+1}. ${missName(r)}  [${CLAIM[bucketsOf(r)]||bucketsOf(r)}]`)
   ].join("\n");}
 function paintMissBtn(){
   const n=missingRows().length;
   missBtn.hidden=!n;
   if(!n)return;
   missLab.textContent=`Copy ${n}`;
-  missBtn.setAttribute("aria-label",`Copy the ${n} ${n===1?"track":"tracks"} that are not on the playlist`);
-  missBtn.title=`Paste-ready list of the ${n} ${n===1?"track":"tracks"} not on the playlist`;}
+  missBtn.setAttribute("aria-label",`Copy the ${n} ${n===1?"track":"tracks"} that were not added`);
+  missBtn.title=`Paste-ready list of the ${n} ${n===1?"track":"tracks"} not added`;}
 let missT=null;
 /* Copy is the action; a refused/unavailable clipboard downloads the same text. */
 function missFlash(ok){missBtn.classList.add("is-copied");
@@ -597,6 +748,7 @@ function render(){
   }
   paintCounter();paintFacts();paintPill();
   brk.innerHTML=countsLine();
+  brk.title=brk.textContent;
   paintChips();
   paintMissBtn();
   /* Rule: indeterminate sweep while the total is unknown, determinate fill
@@ -651,6 +803,15 @@ function mergeRun(d,full){
     "error","hint","kind"]){
     if(d[k]!==undefined)S[k]=d[k];}
   if(d.phase)S.phase=d.phase;
+  /* The run's own state machine, straight through. A field the payload does not
+     carry keeps its last value instead of throwing, so an older payload still
+     renders by its phase. */
+  if(d.state!==undefined)S.state=String(d.state||"");
+  if(d.reason!==undefined)S.reason=String(d.reason||"");
+  if(d.attempt!==undefined)S.attempt=+d.attempt||0;
+  if(d.residual!==undefined)S.residual=Array.isArray(d.residual)?d.residual:[];
+  if(d.nextAttemptAt!==undefined)setNextAt(d.nextAttemptAt);
+  else if(d.next_attempt_at!==undefined)setNextAt(d.next_attempt_at);
   /* counts is the server's ledger for the row; oneToOne is its stored setting */
   if(d.counts&&typeof d.counts==="object")S.counts=d.counts;
   if(!S.oneBusy)oneFrom(d);
@@ -681,7 +842,7 @@ async function pollOnce(){
     S.fails=0;S.lastOk=Date.now();S.deadNoted=false;
     if(!d.ok)return;
     if(d.interrupted&&!d.run_id&&S.phase==="idle"){showInterrupted(d.interrupted);return;}
-    mergeRun(d,false);render();
+    mergeRun(d,false);if(S.state==="standby")tickStart();render();
     if(LIVE.has(d.phase)){setRunning(true);setPhase(d.phase);S.pin=null;S.pinTitle="";S.interrupted=null;paintChip();render();}
     else if(d.phase==="done"){halt();setPhase("done");S.pin=null;S.pinTitle="";paintChip();render();}
     else if(d.phase==="failed"){halt();setPhase("failed");S.pin=
@@ -733,7 +894,7 @@ async function startTransfer(){
   S.aborted=false;S.ceil=0;S.hist=[];window.__t0srv=0;S.localT0=Date.now();
   S.runId=t.run_id;S.created=false;S.url="";S.title="";S.summary="";
   S.total=0;S.declared=0;S.attempted=0;S.landed=0;S.refused=0;S.skipped=0;S.missing=0;
-  S.counts=null;
+  S.counts=null;S.state="running";S.reason="";S.residual=[];S.attempt=0;S.nextAt=0;S.nextIn=0;
   paintChip();S._prog++;ledger.scrollTop=0;S.follow=true;S._prog--;render();
   poll();pollOnce();
 }
@@ -769,7 +930,7 @@ function clearLocal(){
   S.created=false;S.existing=false;S.url="";S.title="";S.summary="";
   S.rows=new Map();S.filter="all";S.fails=0;S.lastOk=Date.now();S.deadNoted=false;
   S.ceil=0;S.hist=[];S.localT0=0;S.aborted=false;S.pin=null;S.pinTitle="";S.interrupted=null;
-  S.counts=null;
+  S.counts=null;S.state="idle";S.reason="";S.residual=[];S.attempt=0;S.nextAt=0;S.nextIn=0;
   window.__t0srv=0;
   $("srcurl").value="";wipeDetect();paintSrcX();
   setCover("","");
@@ -798,6 +959,13 @@ $("srcx").addEventListener("click",wipeSrcField);
 newbtn.addEventListener("click",doNewTransfer);
 startB.addEventListener("click",startTransfer);
 stopB.addEventListener("click",abortRun);
+/* Retry now: the wait belongs to the server, so the control only asks it to end
+   the wait early, then re-reads the run. The countdown itself never asks. */
+retryBtn.addEventListener("click",async()=>{
+  retryBtn.disabled=true;
+  try{await postJSON("/api/retry",{},15000);}catch(e){}
+  retryBtn.disabled=false;
+  pollOnce();});
 /* command palette: 12 commands, options rendered only while open */
 const CMDS=[["Start transfer","Ctrl+Enter","start"],["Detach from run","Esc","stop"],
   ["New transfer — clears the ledger and the link","Ctrl+Shift+N","new"],
