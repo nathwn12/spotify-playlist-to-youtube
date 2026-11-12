@@ -1724,12 +1724,19 @@ def load_settings() -> dict:
     except Exception:
         return {}
 
-def save_settings(d: dict):
+def save_settings(d: dict) -> bool:
+    """Persist the settings. -> True when the bytes are on disk.
+
+    A caller that acknowledges a setting must be able to tell a write that landed
+    from one that did not: a page claiming a value the file never took is a promise
+    the next transfer breaks."""
     try:
         with open(SETTINGF, "w", encoding="utf-8") as f:
             json.dump({k: d[k] for k in _SETTING_KEYS if k in d}, f)
-    except Exception:
-        pass
+        return True
+    except Exception as e:
+        blog("settings", f"write failed: {type(e).__name__}")
+        return False
 
 def one_to_one_setting() -> bool:
     """The persisted 1:1 toggle: True unless settings.json says otherwise, so a
@@ -3741,7 +3748,13 @@ class H(BaseHTTPRequestHandler):
                         cur[k] = bool(payload.get(k))
                     else:
                         cur[k] = payload.get(k)
-                save_settings(cur)
+                if not save_settings(cur):
+                    # The file kept the old values, so that is what the page must be
+                    # told: no acknowledgement for a setting that did not persist.
+                    return self.send_json({"ok": False,
+                                           "error": "could not save the setting - it will not "
+                                                    "survive a restart",
+                                           **_settings_payload(load_settings())}, 500)
                 blog("settings", "saved")
                 return self.send_json({"ok": True, **_settings_payload(cur)})
             if self.path == "/api/one-to-one":
@@ -3750,7 +3763,13 @@ class H(BaseHTTPRequestHandler):
                     return self.send_json({"ok": False, "error": "on must be true or false"}, 400)
                 cur = load_settings()
                 cur["one_to_one"] = on
-                save_settings(cur)
+                if not save_settings(cur):
+                    # The in-memory value did not move, so the reply carries what the
+                    # file still holds, not what was asked for.
+                    return self.send_json({"ok": False,
+                                           "error": "could not save the setting - it will not "
+                                                    "survive a restart",
+                                           "oneToOne": one_to_one_setting()}, 500)
                 blog("settings", f"one_to_one={on}")
                 return self.send_json({"ok": True, "oneToOne": on})
             if self.path == "/api/watch":

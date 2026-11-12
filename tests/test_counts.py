@@ -312,6 +312,53 @@ class Counts(unittest.TestCase):
         self.assertIn("1 refused", snap["summary"])
         self.assertNotIn("1 duplicate", snap["summary"])
 
+    # --- (e2) a write that fails is an error, not an acknowledgement --------
+    def _serve(self):
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), backend.H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        base = "http://127.0.0.1:%d" % srv.server_address[1]
+
+        def post(p, obj):
+            req = urllib.request.Request(base + p, data=json.dumps(obj).encode(),
+                                         headers={"Content-Type": "application/json"})
+            try:
+                return json.loads(urllib.request.urlopen(req, timeout=10).read()), 200
+            except urllib.error.HTTPError as e:
+                try:
+                    return json.loads(e.read()), e.code
+                finally:
+                    e.close()
+
+        return srv, post
+
+    def test_a_settings_write_that_fails_is_an_error_not_an_acknowledgement(self):
+        """If settings.json cannot be written the toggle did not change, so the
+        endpoint must say so: a page that claims a value which will not survive a
+        restart is the defect this pins."""
+        backend.save_settings({"privacy": "UNLISTED"})
+        broken = os.path.join(self.tmp, "settings-is-a-directory")
+        os.makedirs(broken, exist_ok=True)
+        backend.SETTINGF = broken
+        before = backend.one_to_one_setting()
+        srv, post = self._serve()
+        try:
+            body, code = post("/api/one-to-one", {"on": not before})
+            self.assertEqual(code, 500, body)
+            self.assertIs(body.get("ok"), False, body)
+            self.assertEqual(body.get("oneToOne"), before,
+                             "the reply acknowledged a value that was never saved")
+            self.assertEqual(backend.one_to_one_setting(), before, "the toggle moved anyway")
+
+            body, code = post("/api/settings", {"privacy": "PUBLIC"})
+            self.assertEqual(code, 500, body)
+            self.assertIs(body.get("ok"), False, body)
+            self.assertNotEqual(body.get("privacy"), "PUBLIC",
+                                "the reply acknowledged a privacy value that was never saved")
+        finally:
+            srv.shutdown()
+            srv.server_close()
+            backend.run_reset()
+
     # --- (d) the done line: one line, the shared shape ----------------------
     def test_the_done_line_is_one_line_in_the_shared_shape(self):
         upstream = Upstream()
