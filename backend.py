@@ -2068,6 +2068,14 @@ def yt_add_one(plid: str, vid: str, yt_cookie: str, one_to_one=None) -> str:
 
     st, body, transport = once()
     if transport or _is_transport_text(st):
+        # A lost reply is not a lost add: the request may have been applied before
+        # the wire failed, and resending blind is how 1:1 mode ends up with two
+        # copies. Only a COMPLETE read of the playlist says what the playlist
+        # holds, so re-read first, and stand by when the read cannot prove it.
+        entries, complete = _read_back_retry(plid, yt_cookie, tries=1)
+        if entries is None or not complete:
+            blog("add", f"{vid} outcome unknown after {st[:60]} — read incomplete, not resending")
+            return f"{STATUS_TRANSPORT} {st}".strip()
         _pause(1.5)
         st2, body2, transport2 = once()
         blog("add", f"retry {vid} first={st[:60]} second={st2[:60]}")

@@ -106,7 +106,8 @@ class Upstream:
     optional throttle that answers the next append with 429."""
 
     def __init__(self, page=PAGE, extra=(), throttle=0, paging_broken=False,
-                 break_after=0, drop=(), blind_rows=False, empty_reads=0):
+                 break_after=0, drop=(), blind_rows=False, empty_reads=0,
+                 lose_reply=(), fail_read_after_loss=False):
         self.page = page
         self.playlist = list(extra)   # ids the playlist really holds, in order
         self.appends = []             # every id an ACTION_ADD_VIDEO asked for
@@ -118,6 +119,8 @@ class Upstream:
         self.drop = set(drop)         # ids an append accepts but never stores
         self.blind_rows = blind_rows  # rows the parser cannot name (no videoId)
         self.empty_reads = empty_reads  # initial browses served as a stale empty shelf
+        self.lose_reply = set(lose_reply)  # appends YTM applies, whose reply is lost
+        self.fail_read_after_loss = fail_read_after_loss  # the read after one cannot complete
         self.deletes = []             # every playlist id a delete asked for
         self.reads = 0
         self.continuations = []
@@ -159,10 +162,20 @@ class Upstream:
             return Resp(DUP_REPLY)
         if v not in self.drop:
             self.playlist.append(v)
+        if v in self.lose_reply:
+            # Applied, and the reply was lost on the way back: the caller cannot
+            # know whether the copy landed.
+            self.lose_reply.discard(v)
+            if self.fail_read_after_loss:
+                self._fail_next_read = True
+            raise urllib.error.URLError("reply lost")
         return Resp({"status": "STATUS_SUCCEEDED"})
 
     def browse(self, body):
         self.reads += 1
+        if getattr(self, "_fail_next_read", False):
+            self._fail_next_read = False
+            raise urllib.error.URLError("browse failed after a lost reply")
         held = list(self.playlist)
         token = body.get("continuation")
         if not token and self.empty_reads:
@@ -438,6 +451,47 @@ class Repair(unittest.TestCase):
         self.assertEqual(upstream.deletes, [], "a stale empty read deleted the playlist")
         self.assertEqual(len(upstream.playlist), len(tracks))
         self.assertNotIn("husk deleted", snap.get("error", ""))
+
+    # --- 6: an unknown outcome is read before it is resent ------------------
+    def test_an_ambiguous_add_is_not_resent_without_a_complete_read(self):
+        """The add was applied and its reply was lost. A resend may only follow a
+        COMPLETE read; when the read cannot prove the playlist, nothing is sent."""
+        upstream = Upstream(lose_reply={vid(1)}, paging_broken=True)
+        upstream.playlist = ["X%010d" % i for i in range(150)]   # more than one page
+        with mock.patch("urllib.request.urlopen", upstream):
+            st = backend.yt_add_one(PLID, vid(1), COOKIE, one_to_one=True)
+
+        self.assertTrue(backend.is_transport_status(st), st)
+        self.assertEqual(upstream.appends.count(vid(1)), 1,
+                         "an ambiguous add was resent without a complete read")
+
+    def test_a_lost_reply_on_an_append_is_never_sent_twice(self):
+        """The appended copy's outcome was unknown: the run reads before it sends
+        again, and the copy ends up on the playlist exactly once."""
+        tracks = tracks_for(60)
+        upstream = Upstream(lose_reply={vid(55)}, fail_read_after_loss=True)
+        snap = self.transfer(upstream, tracks)
+
+        self.assertEqual(upstream.appends.count(vid(55)), 1,
+                         "an ambiguous add was resent without a complete read")
+        self.assertEqual(upstream.playlist.count(vid(55)), 1)
+        self.assertEqual(snap["phase"], "done", snap.get("error"))
+        self.assertEqual(snap["landed"], 60)
+
+    def test_a_lost_reply_in_the_repair_pass_is_not_resent_either(self):
+        """The repair sender has the same rule: read first, resend only off proof."""
+        upstream = Upstream(lose_reply={vid(6)}, fail_read_after_loss=True)
+        self.upstream = upstream
+        upstream.playlist = [vid(i) for i in range(1, 6)]
+        with mock.patch("urllib.request.urlopen", upstream):
+            out = backend._converge(PLID, COOKIE, [vid(i) for i in range(1, 7)])
+
+        self.assertEqual(upstream.appends.count(vid(6)), 1,
+                         "the repair resent an add whose outcome was unknown")
+        self.assertTrue(self.waits, "the repair never stood by")
+        self.assertEqual(self.waits[0]["appends"].count(vid(6)), 1,
+                         "an append was sent while the outcome was unknown")
+        self.assertEqual(out["state"], "done", out)
 
     # --- 5: Retry now only has a wait to cut short --------------------------
     def test_retry_now_only_cuts_short_a_standby(self):
