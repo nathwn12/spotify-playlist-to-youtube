@@ -2274,14 +2274,21 @@ def _persist_progress(spotify_id, plid, url, title, expected, state, attempt,
 
 def _read_back_retry(plid, yt_cookie, tries: int = 5, minimum: int = 0):
     """The first full read wins: a read that followed its continuations to the end
-    and holds at least `minimum` entries is returned at once, so the common case
+    AND holds at least `minimum` entries is returned at once, so the common case
     costs one pass instead of N re-reads of page one. A read that came back short
     but complete is retried — InnerTube browse reads go short straight after an
     inline create (an empty list was observed live) — and the longest of those wins.
     A read whose continuation failed is not retried here: it already retried its own
     page, and the pages it proved are the honest answer, returned with complete
-    False so no caller scores the unread tail as absent. All None -> (None, False),
-    and callers keep their read-back-failed errors.
+    False so no caller scores the unread tail as absent.
+
+    `minimum` is the least a complete read of this playlist must hold. A read that
+    is token-complete but below it proves the playlist is short, never that the
+    pages it served are all of it, so it is returned with complete False: the
+    entries a stale snapshot hides are exactly the ones a caller would re-add.
+    0 means no floor is genuinely known — the window right after a create, when the
+    list is still filling — and then a short complete read is the honest answer.
+    All None -> (None, False), and callers keep their read-back-failed errors.
     -> (entries|None, complete: bool)"""
     best, best_complete, seen = None, False, set()
     for a in range(max(1, tries)):
@@ -2304,7 +2311,10 @@ def _read_back_retry(plid, yt_cookie, tries: int = 5, minimum: int = 0):
         blog("readback", f"{plid} short reads {sorted(seen)} settled longest={len(best)}")
     if best is not None and not best_complete:
         blog("readback", f"{plid} incomplete read {len(best)} entries")
-    return best, best_complete
+    short = bool(minimum) and best is not None and best_complete and len(best) < minimum
+    if short:
+        blog("readback", f"{plid} complete read {len(best)} entries is below the {minimum} expected")
+    return best, best_complete and not short
 
 def _reconcile(video_ids, entries, attempts: dict, complete: bool = True) -> list:
     """Final ledger: the read-back multiset is the only source of truth.
@@ -2537,7 +2547,10 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
             on_created(plid, url, False)
         except Exception:
             pass
-    first, first_complete = _read_back_retry(plid, yt_cookie, minimum=len(video_ids))
+    # The create accepted these distinct ids, so a complete read must hold them:
+    # anything less is a stale snapshot of a playlist that is still filling.
+    first, first_complete = _read_back_retry(plid, yt_cookie,
+                                             minimum=len(set(inline)))
     blog("create", f"id={plid} inline={len(inline)} back={-1 if first is None else len(first)} "
                    f"complete={first_complete}")
     if first is None:
@@ -2566,7 +2579,9 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
             on_phase("verify")
         except Exception:
             pass
-    entries, entries_complete = _read_back_retry(plid, yt_cookie, minimum=len(video_ids))
+    # The playlist only grows during a run, so the entries the first read proved
+    # are a floor this one must still reach.
+    entries, entries_complete = _read_back_retry(plid, yt_cookie, minimum=len(first))
     if entries is None:
         raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (final read-back failed)")
     ledger = _reconcile(video_ids, entries, attempts, entries_complete)
@@ -2611,7 +2626,9 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
             on_phase("append")
         except Exception:
             pass
-    entries, entries_complete = _read_back_retry(plid, yt_cookie, minimum=len(video_ids))
+    # A resume knows nothing yet: the record's plan may predate anything the
+    # playlist now holds, so no floor is invented for the first read.
+    entries, entries_complete = _read_back_retry(plid, yt_cookie)
     if entries is None:
         raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (read-back failed)")
     seed_ledger = _seed_ledger(video_ids, entries)
@@ -2631,7 +2648,7 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
             on_phase("verify")
         except Exception:
             pass
-    entries2, entries2_complete = _read_back_retry(plid, yt_cookie, minimum=len(video_ids))
+    entries2, entries2_complete = _read_back_retry(plid, yt_cookie, minimum=len(entries))
     if entries2 is None:
         raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (final read-back failed)")
     ledger = _reconcile(video_ids, entries2, attempts, entries2_complete)
@@ -2675,7 +2692,8 @@ def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PR
         rec = load_created().get(spotify_id)
         if rec and rec.get("yt_id"):
             if rec.get("complete") is True:
-                entries, entries_complete = _read_back_retry(rec["yt_id"], yt_cookie, minimum=len(ids))
+                entries, entries_complete = _read_back_retry(rec["yt_id"], yt_cookie,
+                                                             minimum=len(set(ids)))
                 if entries is None:
                     entries = []
                 if entries is not None:
@@ -2710,7 +2728,8 @@ def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PR
                             on_phase("verify")
                         except Exception:
                             pass
-                    entries2, entries2_complete = _read_back_retry(plid, yt_cookie, minimum=len(ids))
+                    entries2, entries2_complete = _read_back_retry(plid, yt_cookie,
+                                                                   minimum=len(entries))
                     if entries2 is None:
                         raise RuntimeError(f"playlist topped up at {rec.get('url')} — appends sent but the rest could not be verified (final read-back failed)")
                     ledger = _reconcile(ids, entries2, attempts, entries2_complete)
@@ -2824,6 +2843,7 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
     last_need = []
     short = 0   # reads that came back short while nothing was proven absent
     passes = 0  # loop iterations, whatever they did: the outer bound
+    floor = 0        # entries a complete read of this run has already proved
     proven = set()   # ids a COMPLETE read has already proved present
     applied = False  # the last repair was accepted in full, and landed nowhere
     stuck = 0   # passes whose complete read proved nothing new
@@ -2874,7 +2894,10 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
                 return finish("gaveup", "append failed on the wire", last_need)
             continue
         run_set(state="verifying", attempt=attempt, next_attempt_at=0.0, reason="", residual=[])
-        got, got_complete = _read_back_retry(plid, yt_cookie)
+        # A playlist never shrinks while a run is repairing it, so the entries an
+        # earlier complete read proved are the floor this read must still reach.
+        # Below it the reply is a stale page, and a stale page is what re-adds.
+        got, got_complete = _read_back_retry(plid, yt_cookie, minimum=floor)
         if got is not None:
             entries, complete = got, got_complete
         if got is None or not got_complete:
@@ -2891,6 +2914,7 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
                 return finish("gaveup", reason, last_need)
             continue
         present = set(got)
+        floor = max(floor, len(got))
         need = [v for v in uniq if v not in present]
         last_need = need
         if not need:

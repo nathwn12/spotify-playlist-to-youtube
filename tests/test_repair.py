@@ -445,12 +445,13 @@ class Repair(unittest.TestCase):
         """The browse served after a create can be token-complete and hold nothing
         for a playlist that does hold rows: one such read must never delete it."""
         tracks = tracks_for(40)
-        upstream = Upstream(empty_reads=10)     # ten stale empty replies, then the truth
+        upstream = Upstream(empty_reads=6)      # the stale window, then the truth
         snap = self.transfer(upstream, tracks)
 
         self.assertEqual(upstream.deletes, [], "a stale empty read deleted the playlist")
         self.assertEqual(len(upstream.playlist), len(tracks))
         self.assertNotIn("husk deleted", snap.get("error", ""))
+        self.assertEqual(snap["phase"], "failed", snap)
 
     # --- 6: an unknown outcome is read before it is resent ------------------
     def test_an_ambiguous_add_is_not_resent_without_a_complete_read(self):
@@ -492,6 +493,45 @@ class Repair(unittest.TestCase):
         self.assertEqual(self.waits[0]["appends"].count(vid(6)), 1,
                          "an append was sent while the outcome was unknown")
         self.assertEqual(out["state"], "done", out)
+
+    # --- 7: a short complete read is short, not complete --------------------
+    def test_a_token_complete_read_below_the_minimum_is_not_complete(self):
+        """Three entries served with no continuation is a token-complete read; when
+        five are expected it proves the playlist is short, not that it is whole."""
+        upstream = Upstream()
+        upstream.playlist = ["A%010d" % i for i in range(3)]
+        with mock.patch("urllib.request.urlopen", upstream):
+            entries, complete = backend._read_back_retry(PLID, COOKIE, tries=2, minimum=5)
+        self.assertEqual(entries, ["A%010d" % i for i in range(3)])
+        self.assertFalse(complete, "a read below the expected minimum called itself complete")
+        # No minimum (the window straight after a create) and the same read is the
+        # honest answer, so the floor is never invented.
+        upstream.reads = 0
+        with mock.patch("urllib.request.urlopen", upstream):
+            entries, complete = backend._read_back_retry(PLID, COOKIE, tries=2, minimum=0)
+        self.assertTrue(complete, "an unknown minimum was treated as a short read")
+
+    def test_a_repair_read_shorter_than_the_last_one_is_incomplete(self):
+        """A playlist does not shrink during a run: a complete read that lost an
+        entry is a stale page, so the repair waits instead of trusting it."""
+        scripted = [[vid(1), vid(2), vid(3), vid(4)], [vid(1), vid(2), vid(3)]]
+        calls = []
+
+        def reader(plid, cookie):
+            calls.append(plid)
+            entries = scripted[min(len(calls) - 1, len(scripted) - 1)]
+            return {"entries": list(entries), "complete": True, "why": ""}
+
+        upstream = Upstream()
+        self.upstream = upstream
+        with mock.patch("urllib.request.urlopen", upstream), \
+                mock.patch.object(backend, "yt_playlist_read", reader):
+            backend._converge(PLID, COOKIE, [vid(i) for i in range(1, 6)])
+
+        self.assertTrue(self.waits, "a read that shrank was trusted")
+        self.assertEqual(self.waits[0]["snap"]["reason"], "read incomplete")
+        self.assertEqual(self.waits[0]["appends"], [vid(5)], "one send for the absent copy")
+        self.assertGreaterEqual(len(scripted), 2)
 
     # --- 5: Retry now only has a wait to cut short --------------------------
     def test_retry_now_only_cuts_short_a_standby(self):
