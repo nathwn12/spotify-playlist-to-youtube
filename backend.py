@@ -3,18 +3,32 @@
 Spotify: scrapes public embed __NEXT_DATA__ (optional user Cookie forwarded).
 YTM: InnerTube WEB_REMIX + user-supplied Cookie (SAPISIDHASH derived server-side).
 """
-APP_VERSION = "0.3.1"
-import json, re, sys, time, base64, hashlib, hmac, struct, shutil, sqlite3, subprocess, tempfile, threading, unicodedata, urllib.request, urllib.parse, webbrowser
-import difflib
+import base64
 import ctypes
+import difflib
+import hashlib
+import hmac
+import json
+import os
+import re
+import struct
+import sys
+import threading
+import time
+import unicodedata
+import urllib.parse
+import urllib.request
+import webbrowser
 from ctypes import wintypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import os
+
 try:
     from Crypto.Cipher import AES
     HAVE_AES = True
 except Exception:
     HAVE_AES = False
+
+APP_VERSION = "0.3.1"
 
 HERE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 STATE = os.path.join(os.environ.get("APPDATA", HERE), "sp2yt")

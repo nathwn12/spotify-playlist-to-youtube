@@ -2,7 +2,12 @@
 """watchdog: inspects sp2yt audit log + live status, diagnoses failures.
 Usage: python3 watchdog.py [--watch]  (single check; --watch loops every 15s)
 Never prints cookie values — log contains lengths only by design."""
-import json, sys, time, urllib.request, os, re
+import json
+import os
+import sys
+import time
+import urllib.request
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 BASE = os.environ.get("SP2YT", "http://127.0.0.1:8787")
 

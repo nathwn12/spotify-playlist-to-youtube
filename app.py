@@ -8,8 +8,9 @@ PORT = 8787
 
 
 def serve():
-    import backend
     from http.server import ThreadingHTTPServer
+
+    import backend
 
     ThreadingHTTPServer(("127.0.0.1", PORT), backend.H).serve_forever()
 

@@ -18,8 +18,9 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
 
-import backend  # noqa: E402
 import fixture_lib  # noqa: E402
+
+import backend  # noqa: E402
 
 
 class MissingResponse(BaseException):
