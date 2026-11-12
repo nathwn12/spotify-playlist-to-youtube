@@ -5,7 +5,7 @@
 <p align="center"><strong>Copy a public Spotify playlist into YouTube Music without an API key.</strong></p>
 
 <p align="center">
-  <img src="assets/app.png" width="520" alt="The sp2yt transfer deck with YouTube Music connected: the Connect card reads Connected and names the cookie file it uses, above an empty Spotify link field, the privacy selector and an empty track ledger." />
+  <img src="assets/app.png" width="520" alt="The sp2yt transfer deck with YouTube Music connected: the Connect card reads Connected and Your account is ready, above an empty Spotify link field, the privacy selector, the 1:1 toggle and an empty track ledger with every outcome count at zero." />
 </p>
 
 ## Install
