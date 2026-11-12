@@ -2693,6 +2693,11 @@ def yt_create_checked(spotify_id: str, yt_cookie: str, title: str, description: 
     return transfer_create_append(yt_cookie, title, description, video_ids, privacy, spotify_id or "", None)
 
 RUN_RETRY_MAX = 6  # retries per run: the budget is bounded by policy, not by luck
+# One convergence pass is a complete read-back plus the repair it proves. The
+# budgeted stalls already stop a run at RUN_RETRY_MAX, so this bound is for a
+# loop that is not standing by at all: twice the budget, and it only fires on a
+# loop that ignores both the counter and the no-progress proof below.
+CONVERGE_MAX_PASSES = 2 * RUN_RETRY_MAX
 _RETRY_DELAYS = (30.0, 60.0, 120.0, 300.0, 600.0, 1200.0)  # 30s, 1m, 2m, 5m, 10m, 20m
 _RETRY_CAP = 1200.0
 _RETRY_JITTER = 0.2
@@ -2739,6 +2744,13 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
     answered 429/5xx or timed out), so the run stands by before it looks again
     instead of hammering a throttled API.
 
+    Bounded twice, because the append's reply is never the truth. `proven` is what
+    a COMPLETE read has already proved present: a pass that adds nothing to it
+    proved nothing new, so the repair it just sent was dropped and progress is
+    zero. That is detected on the read, not waited out on a count: one standby
+    names the stall, a second no-progress pass gives up carrying the residual.
+    CONVERGE_MAX_PASSES is the outer bound for anything the proof misses.
+
     -> {"state": "done"|"gaveup", "attempt": n, "reason": str,
         "residual": [videoId...], "entries": [...]|None, "complete": bool,
         "statuses": {videoId: status}}"""
@@ -2755,6 +2767,10 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
     statuses, entries, complete = {}, None, False
     last_need = []
     short = 0   # reads that came back short while nothing was proven absent
+    passes = 0  # loop iterations, whatever they did: the outer bound
+    proven = set()   # ids a COMPLETE read has already proved present
+    applied = False  # the last repair was accepted in full, and landed nowhere
+    stuck = 0   # passes whose complete read proved nothing new
 
     def stand_by(reason, residual):
         """One wait, or the end of the run. Never both."""
@@ -2791,6 +2807,11 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
                 "complete": complete, "statuses": statuses}
 
     while True:
+        passes += 1
+        if passes > CONVERGE_MAX_PASSES:
+            reason = f"no progress after {CONVERGE_MAX_PASSES} passes"
+            blog("gaveup", f"{plid} {reason}; still absent: " + ",".join(last_need[:8]))
+            return finish("gaveup", reason, last_need)
         if stalled:
             stalled = False
             if stand_by("append failed on the wire", last_need):
@@ -2819,10 +2840,30 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
         if not need:
             blog("converge", f"{plid} verified {len(got)} entries, nothing absent")
             return finish("done", final_complete=True)
+        if applied and not (present - proven):
+            # The append this loop sent was accepted and the playlist did not
+            # change at all between two complete reads: progress is zero. Do not
+            # wait for a count - name the stall once, then end the run rather
+            # than re-send a copy the server keeps dropping.
+            stuck += 1
+            reason = "append accepted but the playlist did not grow"
+            blog("converge", f"{plid} {reason} (pass {passes}, {stuck}/2, "
+                             f"still absent: " + ",".join(need[:8]) + ")")
+            if stuck >= 2:
+                return finish("gaveup", reason, need)
+            if stand_by(reason, need):
+                return finish("gaveup", reason, need)
+            continue
+        proven |= present
+        stuck = 0   # the read proved something new: the stall counter starts over
         run_set(state="repairing", attempt=attempt, reason=f"repairing {len(need)} tracks")
         blog("converge", f"{plid} entry={len(got)} absent={len(need)}")
         sent = _append_missing(plid, yt_cookie, need, one_to_one)
         statuses.update(sent)
+        # Only a repair the wire and the server both accepted is evidence that
+        # nothing changed; a 429 or a timeout has its own budget below.
+        applied = bool(sent) and not any(is_transport_status(s) or is_fatal_status(s)
+                                         for s in sent.values())
         if any(is_fatal_status(s) for s in sent.values()):
             run_set(state="gaveup", attempt=attempt, next_attempt_at=0.0,
                     reason="append refused by YouTube Music", residual=need)

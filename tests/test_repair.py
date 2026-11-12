@@ -327,6 +327,37 @@ class Repair(unittest.TestCase):
         self.assertEqual(len(self.waits), backend.RUN_RETRY_MAX)
         self.assertEqual(upstream.creates, 1)
 
+    # --- 3c: an append accepted but never reflected is not an endless loop --
+    def test_a_dropped_append_terminates_instead_of_spinning(self):
+        """60 intended; the server accepts the append of #60 and never stores it.
+
+        The read-back is complete every pass, so nothing here is transport-
+        retryable: the verified-present set is identical pass after pass, which
+        is progress zero. The loop must stop on that proof - one standby naming
+        the stall, a second no-progress pass gives up carrying the residual -
+        never spin, and never claim the dropped copy landed.
+
+        Implemented as `gaveup` after the second no-progress pass: a repair the
+        server accepted and dropped will be dropped again, so waiting out the
+        retry budget would only spend six minutes on the same reply. The first
+        no-progress pass still goes through the existing standby machinery, so a
+        genuinely slow read-back gets its wait.
+        """
+        tracks = tracks_for(60)
+        upstream = Upstream(drop={vid(60)})      # accepted, never stored
+        started = time.monotonic()
+        snap = self.transfer(upstream, tracks)
+        elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 5.0, "the bounded loop took %.1fs" % elapsed)
+        self.assertIn(snap["state"], ("standby", "gaveup"), snap)
+        self.assertEqual(snap["state"], "gaveup")
+        self.assertEqual(snap["residual"], [vid(60)])
+        self.assertNotEqual(snap["rows"][-1]["state"], "landed",
+                            "a copy no complete read-back proved must never land")
+        # Never spin: one send by the create pass, at most one by the repair pass.
+        self.assertLessEqual(upstream.appends.count(vid(60)), 2, upstream.appends)
+
     # --- 4: the budget is bounded and the give-up names the residue ---------
     def test_an_exhausted_budget_gives_up_with_the_residual_list(self):
         tracks = tracks_for(60)
