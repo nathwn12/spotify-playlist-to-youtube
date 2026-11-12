@@ -2265,12 +2265,40 @@ def _persist_final(spotify_id, plid, url, title, expected, complete):
                     expected=expected, complete=bool(complete))
 
 def _persist_progress(spotify_id, plid, url, title, expected, state, attempt,
-                      next_run_at=0.0, pending=None):
+                      next_run_at=0.0, pending=None, plan=None, one_to_one=None):
     """Where the run stands, so a close and a reopen resume the same state
-    instead of starting a second playlist."""
-    _persist_fields(spotify_id, yt_id=plid, url=url or "", title=title,
-                    expected=expected, state=state, attempt=int(attempt or 0),
-                    next_run_at=float(next_run_at or 0), pending=list(pending or []))
+    instead of starting a second playlist.
+
+    The plan it was sent and the 1:1 toggle it was sent with are part of that
+    state: a resume replays them instead of rematching into a different plan or
+    silently flipping the toggle under the interrupted run."""
+    fields = dict(yt_id=plid, url=url or "", title=title,
+                  expected=expected, state=state, attempt=int(attempt or 0),
+                  next_run_at=float(next_run_at or 0), pending=list(pending or []))
+    if plan is not None:
+        fields["video_ids"] = [v for v in plan if isinstance(v, str) and v]
+    if isinstance(one_to_one, bool):
+        fields["one_to_one"] = one_to_one
+    _persist_fields(spotify_id, **fields)
+
+def _honour_retry_clock(rec, reason="waiting out the paused retry time") -> float:
+    """A resume must not buy a shorter backoff than the interrupted run chose: wait
+    out whatever of its persisted next retry time is still in the future, so a
+    close and a reopen cannot be used to skip the wait and resend early.
+    -> seconds waited (0 when nothing was due)."""
+    try:
+        nxt = float((rec or {}).get("next_run_at", 0) or 0)
+    except Exception:
+        return 0.0
+    left = nxt - _now()
+    if left <= 0:
+        return 0.0
+    run_set(state="standby", attempt=int((rec or {}).get("attempt", 0) or 0),
+            next_attempt_at=nxt, reason=reason,
+            residual=list((rec or {}).get("pending") or []))
+    blog("standby", f"resume waits {left:.0f}s for the retry time the run persisted")
+    _standby_wait(left)
+    return left
 
 def _read_back_retry(plid, yt_cookie, tries: int = 5, minimum: int = 0):
     """The first full read wins: a read that followed its continuations to the end
@@ -2649,6 +2677,13 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
     on_phase = (hooks or {}).get("on_phase")
     plid = rec.get("yt_id", "")
     url = rec.get("url", f"https://music.youtube.com/playlist?list={plid}")
+    # The interrupted run left a retry time behind. Nothing may be sent before it:
+    # a resume that appends first turns a restart into a way round the backoff.
+    if _honour_retry_clock(rec) > 0:
+        _persist_progress(spotify_id, plid, url, title, len(video_ids),
+                          state="standby", attempt=int(rec.get("attempt", 0) or 0),
+                          next_run_at=0.0, pending=rec.get("pending") or [],
+                          plan=video_ids, one_to_one=one_to_one)
     if on_created:
         try:
             on_created(plid, url, False)
@@ -2783,6 +2818,14 @@ def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PR
                             "playlist_count": len(entries2) if isinstance(entries2, list) else 0,
                             "topped_up": newly}
             else:
+                # The interrupted run's plan and toggle are part of its state: replay
+                # them, so a resume cannot rematch into a different plan (its
+                # playlist was built from this one) or flip 1:1 under it.
+                saved = [v for v in (rec.get("video_ids") or []) if isinstance(v, str) and v]
+                if saved:
+                    ids = saved
+                if isinstance(rec.get("one_to_one"), bool):
+                    one_to_one = rec["one_to_one"]
                 return _resume_incomplete(rec, yt_cookie, title, ids, spotify_id, hooks, version_sigs,
                                           one_to_one)
     r = _create_new(yt_cookie, title, description, ids, privacy, spotify_id, hooks, version_sigs,
@@ -2874,6 +2917,9 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
         prev = rec if isinstance(rec, dict) else {}
         if str(prev.get("state", "")) in ("verifying", "repairing", "standby"):
             attempt = int(prev.get("attempt", 0) or 0)
+            # The interrupted run's own retry time still stands: a restart does not
+            # buy a shorter backoff than it chose.
+            _honour_retry_clock(prev)
     statuses, entries, complete = {}, None, False
     last_need = []
     short = 0   # reads that came back short while nothing was proven absent
@@ -2890,7 +2936,8 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
             run_set(state="gaveup", attempt=attempt, next_attempt_at=0.0,
                     reason=reason, residual=residual)
             _persist_progress(spotify_id, plid, url, title, len(intended),
-                              state="gaveup", attempt=attempt, pending=residual)
+                              state="gaveup", attempt=attempt, pending=residual,
+                              plan=intended, one_to_one=one_to_one)
             blog("gaveup", f"{plid} after {attempt} attempt(s): {reason}; still absent: "
                            + ",".join(residual[:8]))
             return True
@@ -2900,7 +2947,8 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
         run_set(state="standby", attempt=attempt, next_attempt_at=nxt,
                 reason=reason, residual=residual)
         _persist_progress(spotify_id, plid, url, title, len(intended), state="standby",
-                          attempt=attempt, next_run_at=nxt, pending=residual)
+                          attempt=attempt, next_run_at=nxt, pending=residual,
+                          plan=intended, one_to_one=one_to_one)
         blog("standby", f"{plid} attempt {attempt}/{RUN_RETRY_MAX} in {delay:.0f}s: {reason}")
         _standby_wait(delay)
         return False
@@ -2909,7 +2957,8 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
         run_set(state=state, attempt=attempt, next_attempt_at=0.0, reason=reason,
                 residual=list(residual or []))
         _persist_progress(spotify_id, plid, url, title, len(intended), state=state,
-                          attempt=attempt, pending=residual)
+                          attempt=attempt, pending=residual,
+                          plan=intended, one_to_one=one_to_one)
         # complete is what a later run starts from: only a run whose read reached
         # the end of the playlist and found nothing absent may claim it.
         _persist_final(spotify_id, plid, url, title, len(intended), final_complete)
@@ -2984,7 +3033,8 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
             run_set(state="gaveup", attempt=attempt, next_attempt_at=0.0,
                     reason="append refused by YouTube Music", residual=need)
             _persist_progress(spotify_id, plid, url, title, len(intended),
-                              state="gaveup", attempt=attempt, pending=need)
+                              state="gaveup", attempt=attempt, pending=need,
+                              plan=intended, one_to_one=one_to_one)
             blog("gaveup", f"{plid} refused by YTM — reconnect the cookie; still absent: "
                            + ",".join(need[:8]))
             return {"state": "gaveup", "attempt": attempt,

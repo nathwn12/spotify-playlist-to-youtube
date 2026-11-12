@@ -21,6 +21,7 @@ the playlist machinery alone.
 
 Run: python -X utf8 tests/test_repair.py   (exit 0 only when every check passes)
 """
+import contextlib
 import json
 import os
 import re
@@ -123,6 +124,7 @@ class Upstream:
         self.fail_read_after_loss = fail_read_after_loss  # the read after one cannot complete
         self.browse_broken = browse_broken  # every read fails on the wire
         self.deletes = []             # every playlist id a delete asked for
+        self.actions = []             # every ACTION_ADD_VIDEO entry an edit carried
         self.reads = 0
         self.continuations = []
 
@@ -159,6 +161,7 @@ class Upstream:
             self.throttled += 1
             raise urllib.error.HTTPError(url, 429, "Too Many Requests", {}, None)
         self.appends.append(v)
+        self.actions.append(dict((body.get("actions") or [{}])[0]))
         if v in self.playlist:
             return Resp(DUP_REPLY)
         if v not in self.drop:
@@ -232,11 +235,15 @@ class Repair(unittest.TestCase):
             setattr(backend, k, v)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def transfer(self, upstream, tracks):
+    def transfer(self, upstream, tracks, one_to_one=None):
         self.upstream = upstream
-        with mock.patch("urllib.request.urlopen", upstream), \
-                mock.patch.object(backend, "fetch_spotify_tracks", fake_fetch(tracks)), \
-                mock.patch.object(backend, "yt_search_batch", fake_batch):
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch("urllib.request.urlopen", upstream))
+            stack.enter_context(mock.patch.object(backend, "fetch_spotify_tracks", fake_fetch(tracks)))
+            stack.enter_context(mock.patch.object(backend, "yt_search_batch", fake_batch))
+            if one_to_one is not None:
+                stack.enter_context(mock.patch.object(backend, "one_to_one_setting",
+                                                      lambda: one_to_one))
             rid = backend.run_begin("", "")
             backend._transfer_thread(SPOTIFY_URL, COOKIE, "", "PRIVATE", rid)
         return backend.run_snapshot()
@@ -423,18 +430,38 @@ class Repair(unittest.TestCase):
     def test_a_persisted_run_resumes_in_place_with_its_own_attempt_count(self):
         tracks = tracks_for(60)
         upstream = Upstream()                        # holds everything it is given
-        upstream.playlist = [vid(i) for i in range(1, 61)]
+        upstream.playlist = [vid(i) for i in range(1, 56)]      # five copies still absent
+        due = time.time() + 600
+        # The interrupted run: attempt 3, a retry time ten minutes out, 1:1 off, and
+        # the plan it was sent - the last five in an order a fresh match would not
+        # produce, so a rematch cannot pass for a resume.
+        plan = [vid(i) for i in range(1, 56)] + [vid(i) for i in range(60, 55, -1)]
         with open(backend.CREATEDF, "w", encoding="utf-8") as f:
             json.dump({"SPOTREPAIR": {"yt_id": PLID, "url": "https://example.invalid/p",
                                       "title": "Repair Test", "expected": 60,
                                       "complete": False, "state": "standby",
-                                      "attempt": 3, "pending": []}}, f)
-        snap = self.transfer(upstream, tracks)
+                                      "attempt": 3, "next_run_at": due,
+                                      "one_to_one": False, "video_ids": plan,
+                                      "pending": []}}, f)
+        snap = self.transfer(upstream, tracks, one_to_one=True)
 
         self.assertEqual(upstream.creates, 0, "a resume must never create a playlist")
         self.assertEqual(snap["state"], "done")
         self.assertEqual(snap["attempt"], 3, "the resumed run kept its own attempt count")
         self.assertEqual(snap["landed"], 60)
+        # The persisted retry time is honoured: a restart is not a shorter backoff,
+        # so nothing is sent before the time the interrupted run chose.
+        self.assertTrue(self.waits, "the resume ignored the persisted retry time")
+        stood = self.waits[0]
+        self.assertEqual(stood["snap"]["state"], "standby")
+        self.assertEqual(stood["snap"]["attempt"], 3)
+        self.assertGreaterEqual(stood["delay"], 590, "the resume waited less than the record asked")
+        self.assertEqual(stood["appends"], [], "the resume appended before its retry time")
+        # ...and it replays the plan and the toggle it was interrupted with.
+        self.assertEqual(upstream.appends, [vid(i) for i in range(60, 55, -1)])
+        self.assertTrue(upstream.actions, "no append was sent")
+        for act in upstream.actions:
+            self.assertNotIn("dedupeOption", act, "the persisted 1:1 off was flipped on resume")
 
     # --- 5: an empty parse is not an empty playlist -------------------------
     def test_a_read_that_parsed_no_ids_never_deletes_the_playlist(self):
