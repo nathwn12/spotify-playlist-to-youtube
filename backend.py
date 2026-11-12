@@ -2537,11 +2537,19 @@ def _run_counts_locked() -> dict:
     RUN["skipped"] = skipped
     RUN["refused"] = refused
     RUN["duplicate"] = duplicate
-    RUN["counts"] = _counts_from_rows(int(RUN.get("total", 0) or 0), rows)
-    RUN["unverified"] = int(RUN["counts"].get("unverified", 0) or 0)
+    counts = _counts_from_rows(int(RUN.get("total", 0) or 0), rows)
+    # A copy that was sent and not yet read back is pending, not unverified: it is
+    # not proven absent, it is not proven present, and the page counts the rows in
+    # its pending chip. Reported apart so a chip and a row can never disagree.
+    pending = sum(1 for r in rows if r.get("state") in ("pending", "appending"))
+    if pending:
+        counts["unverified"] = max(0, int(counts.get("unverified", 0) or 0) - pending)
+        counts["pending"] = pending
+    RUN["counts"] = counts
+    RUN["unverified"] = int(counts.get("unverified", 0) or 0)
     RUN["missing"] = sum(1 for r in rows
                          if r.get("state") == "missing" and not r.get("unverified"))
-    return RUN["counts"]
+    return counts
 
 def _stop_rows_locked(msg: str) -> None:
     """A run stopped early. The caller holds _RUN_LOCK.
@@ -3231,6 +3239,7 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                 if row.get("state") == "landed":
                     return
                 row["state"] = "appending"
+                _run_counts_locked()
                 RUN["seq"] += 1
                 row["row_seq"] = RUN["seq"]
                 RUN["updated_at"] = time.time()
@@ -3247,14 +3256,17 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                 except Exception:
                     return
                 if ok:
+                    # An accepted add is not an add: the copy is on the playlist only
+                    # when a COMPLETE read shows it, so the row waits as pending and
+                    # the counter follows the rows instead of the reply.
                     row["status"] = ""
                     if row.get("state") != "landed":
-                        row["state"] = "landed"
-                        RUN["landed"] = int(RUN.get("landed", 0)) + 1
+                        row["state"] = "pending"
                 else:
                     row["status"] = (st or "")[:80]
                     if row.get("state") != "landed":
                         row["state"] = "appending"
+                _run_counts_locked()
                 RUN["seq"] += 1
                 row["row_seq"] = RUN["seq"]
                 RUN["updated_at"] = time.time()
@@ -3263,7 +3275,6 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                 if RUN.get("id") != run_id:
                     return
                 if isinstance(arg, list):
-                    n = 0
                     for e in arg:
                         if (e or {}).get("outcome") != "landed":
                             continue
@@ -3279,12 +3290,11 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                             RUN["rows"][rk]["status"] = ""
                             RUN["seq"] += 1
                             RUN["rows"][rk]["row_seq"] = RUN["seq"]
-                            n += 1
                         except Exception:
                             pass
-                    RUN["landed"] = int(n)
-                else:
-                    RUN["landed"] = int(arg or 0)
+                # The seed is a completed read, so those rows are landed - and the
+                # counter is recounted from them, never set from an argument.
+                _run_counts_locked()
                 RUN["seq"] += 1
                 RUN["updated_at"] = time.time()
         def _on_phase(ph):

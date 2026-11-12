@@ -608,6 +608,30 @@ class Repair(unittest.TestCase):
         self.assertEqual(self.waits[0]["appends"], [vid(5)], "one send for the absent copy")
         self.assertGreaterEqual(len(scripted), 2)
 
+    def test_a_sent_row_is_pending_until_a_completed_read_confirms_it(self):
+        """An accepted add is not an add. Until a complete read shows the copy, the
+        row is pending, and the live breakdown counts exactly what the rows say."""
+        tracks = tracks_for(60)
+        upstream = Upstream(drop={vid(60)})     # accepted, never stored
+        snap = self.transfer(upstream, tracks)
+
+        self.assertTrue(self.waits, "the run never stood by")
+        stood = self.waits[0]["snap"]
+        rows = stood["rows"]
+        landed = [r for r in rows if r["state"] == "landed"]
+        pending = [r for r in rows if r["state"] in ("pending", "appending")]
+        self.assertEqual(rows[-1]["state"], "pending",
+                         "an accepted add was marked landed before any read proved it")
+        self.assertTrue(pending, "no row was waiting on a read-back")
+        # The live breakdown is recounted from the same rows, never accumulated.
+        self.assertEqual(stood["counts"]["added"], len(landed), stood["counts"])
+        self.assertEqual(stood["counts"]["pending"], len(pending), stood["counts"])
+        self.assertEqual(stood["counts"]["unverified"], 0, stood["counts"])
+        self.assertEqual(stood["landed"], len(landed))
+        # And the copy no read ever proved never lands.
+        self.assertNotEqual(snap["rows"][-1]["state"], "landed")
+        self.assertEqual(snap["landed"], 59)
+
     # --- 5: Retry now only has a wait to cut short --------------------------
     def test_retry_now_only_cuts_short_a_standby(self):
         backend.run_set(state="done", next_attempt_at=0.0)
