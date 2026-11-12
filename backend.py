@@ -23,7 +23,7 @@ import webbrowser
 from ctypes import wintypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.4.0"
 
 # Test seams: every wait and every clock read the retry machinery reasons with
 # goes through these two, so a test can exercise the backoff without spending it.

@@ -23,7 +23,7 @@ Pin an exact version:
 ```bat
 git clone https://github.com/nathwn12/spotify-playlist-to-youtube
 cd spotify-playlist-to-youtube
-git checkout v0.3.1
+git checkout v0.4.0
 ```
 
 ## Use it

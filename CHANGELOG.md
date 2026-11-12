@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-11-13
+
+This release is about the app telling the truth about what it did. Earlier versions were quick to say Done: a run that gave up halfway could still read as finished, a row whose copy nobody had checked looked the same as one that had landed, and the playlist read could stop at the first page of a long list and call the rest absent. So the claims now cost something. The playlist is read to its end, the counters are counted from the rows instead of accumulated, and Done means a completed read-back proves the playlist holds what the app says it holds.
+
+That shows up in the deck as seven counts that never disagree with each other — source, unique, added, skipped, duplicate, unverified, refused — with a 1:1 control for whether a song listed twice should land twice, and a Copy button for the list of tracks that did not make it. Unverified is its own word, because "sent but never proven" is neither a success nor a refusal.
+
+A run that meets a throttle or a dead read now stands by with a clock and a reason, realigns against the playlist once it can see the whole of it, and gives up bounded and out loud rather than quietly reshaping the playlist. Restarting in the middle of one resumes the playlist it was already building from the plan it wrote down, and a plan it cannot vouch for is reported as interrupted instead of guessed at.
+
+### Known limits
+
+- Mid-run resume across an app restart is best-effort: the plan is persisted when the playlist is created, never re-derived, so a record that cannot name its own plan is reported as interrupted and the transfer has to be started fresh.
+- A settings file that cannot be written surfaces as an error rather than a silent success — a setting is only in force once the bytes are on disk.
+- The playlist read is capped at 200 pages and reports `incomplete` above that instead of claiming the tail is absent.
+- The WebView render is not covered by the automated tests: the page script is parsed and its logic is checked, but no test proves the window draws.
+
 ## [0.3.1] - 2026-11-11
 
 ### Fixed
