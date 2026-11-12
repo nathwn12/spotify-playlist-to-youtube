@@ -132,7 +132,7 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
 #filelist{font-size:12px;color:var(--dim)}
 /* workspace: counter, counts, hairline, filters, virtual ledger */
 .work{display:flex;flex-direction:column;min-height:0;min-width:0;background:var(--panel)}
-.totals{display:flex;align-items:baseline;gap:18px;padding:14px 16px 10px;flex-wrap:wrap}
+.totals{display:flex;align-items:baseline;gap:12px;padding:14px 16px 10px;flex-wrap:wrap}
 #bignum{font:700 34px/1 var(--mono);font-variant-numeric:tabular-nums;letter-spacing:-.02em;flex:0 0 auto}
 #bignum::after{content:" / " attr(data-den);font-size:16px;color:var(--mut);font-weight:600}
 #breakdown{font:600 12px/1.4 var(--mono);color:var(--mut);font-variant-numeric:tabular-nums;min-width:0}
@@ -141,9 +141,9 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
    the right of the counts row so it appears without moving the counts.
    Both labels share one grid cell, so the width is the wider of the two and
    the Copied confirmation swaps in place instead of resizing the button. */
-.missbtn{display:inline-grid;place-items:center;margin-left:auto;align-self:center;
+.missbtn{display:inline-grid;place-items:center;align-self:center;
   flex:0 0 auto;background:transparent;border:1px solid var(--line2);border-radius:99px;
-  padding:6px 12px;font:600 12px/1 var(--sans);color:var(--mut);cursor:pointer;
+  padding:6px 10px;font:600 12px/1 var(--sans);color:var(--mut);cursor:pointer;
   font-variant-numeric:tabular-nums;white-space:nowrap}
 .missbtn[hidden]{display:none}
 .missbtn:hover{color:var(--tx)}
@@ -151,6 +151,15 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
 .missbtn .missdone{opacity:0;color:var(--grn)}
 .missbtn.is-copied .misslab{opacity:0}
 .missbtn.is-copied .missdone{opacity:1}
+/* 1:1 toggle: the copy button's pill, one step quieter - it sits beside Copy
+   and never competes with it. Placement lives on the toggle so the pair is
+   pushed right as one unit and Copy keeps 12px from it; when Copy is hidden
+   (nothing missing) the toggle still lands in the same place. Pressed carries
+   the same green treatment the filter chips already use, and the label says
+   on/off in words as well as in colour. */
+#oneone{margin-left:auto;font-variant-numeric:tabular-nums}
+#oneone[aria-pressed="true"]{background:var(--grn-dk);border-color:var(--grn);color:var(--grn)}
+#oneone:disabled{opacity:.6;cursor:default}
 .rule{position:relative;overflow:hidden;height:3px;background:#060706;border-top:1px solid var(--line);border-bottom:1px solid var(--line);
   background-image:linear-gradient(90deg,var(--grn) var(--fill,0%),transparent var(--fill,0%))}
 .rule.live{background-image:none}
@@ -183,7 +192,7 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
 .lrow .c1::first-line{color:var(--tx);font-size:13px}
 .lrow .c3{font:700 10px var(--mono);letter-spacing:.06em;text-align:right;
   grid-column:3;grid-row:1/span 2}
-.c3.ok{color:var(--grn)} .c3.skip{color:var(--amb)} .c3.deny{color:var(--red)} .c3.unk{color:var(--dim)} .c3.wait{color:var(--pend)}
+.c3.ok{color:var(--grn)} .c3.skip{color:var(--amb)} .c3.dup{color:var(--amb)} .c3.deny{color:var(--red)} .c3.unk{color:var(--dim)} .c3.wait{color:var(--pend)}
 #zerostate{position:absolute;inset:0 0 auto 0;display:grid;align-items:start;justify-items:center;padding:24px;
   text-align:center;color:var(--mut);font-size:13px}
 #zerostate[hidden]{display:none}
@@ -287,13 +296,15 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
     <div class="totals">
       <div id="bignum" data-den="?" aria-live="polite" title="0 added — total not read yet">0</div>
       <div id="breakdown">paste a link to begin</div>
+      <button id="oneone" class="missbtn" type="button" aria-pressed="false"
+        title="1:1 on: a song that appears twice in the source appears twice in the playlist. Off: the second copy is refused and counted as duplicate. Applies to the next transfer.">1:1 off</button>
       <button id="missbtn" class="missbtn" type="button" hidden
         aria-label="Copy the tracks that are not on the playlist"><span class="misslab">Copy</span><span class="missdone" aria-hidden="true">Copied</span></button>
       <span id="misssay" class="sr" role="status" aria-live="polite"></span>
     </div>
     <div class="rule" id="rule" aria-hidden="true"></div>
     <div class="fbar" role="group" aria-label="Outcome filter">
-      <button class="fbtn" type="button" data-f="all" aria-pressed="true">all 0</button><button class="fbtn" type="button" data-f="added" aria-pressed="false">added 0</button><button class="fbtn" type="button" data-f="skipped" aria-pressed="false">skipped 0</button><button class="fbtn" type="button" data-f="refused" aria-pressed="false">refused 0</button><button class="fbtn" type="button" data-f="notverified" aria-pressed="false">unverified 0</button><button class="fbtn" type="button" data-f="pending" aria-pressed="false">pending 0</button>
+      <button class="fbtn" type="button" data-f="all" aria-pressed="true">all 0</button><button class="fbtn" type="button" data-f="added" aria-pressed="false">added 0</button><button class="fbtn" type="button" data-f="skipped" aria-pressed="false">skipped 0</button><button class="fbtn" type="button" data-f="duplicate" aria-pressed="false" hidden>duplicate 0</button><button class="fbtn" type="button" data-f="refused" aria-pressed="false">refused 0</button><button class="fbtn" type="button" data-f="notverified" aria-pressed="false">unverified 0</button><button class="fbtn" type="button" data-f="pending" aria-pressed="false">pending 0</button>
     </div>
     <div id="ledger" tabindex="0" role="log" aria-label="Track ledger"><div id="pad"></div><div id="zerostate"><strong>Paste a Spotify playlist link, then press Ctrl+Enter.</strong><br>Tracks land here as they resolve; anything that fails says why.</div></div>
   </section>
@@ -352,23 +363,27 @@ const ROWH=50, POLLMS=700;
 const LIVE=new Set(["spotify","search","create","append","verify"]);
 const HUMAN={idle:"Idle",spotify:"Reading playlist",search:"Reading playlist",create:"Creating playlist",append:"Adding",verify:"Reconciling",done:"Done",failed:"Stopped",aborted:"Detached"};
 const human=p=>HUMAN[p]||p;
-const DISP={added:"Added",skipped:"Skipped",refused:"Refused",notverified:"Unverified",pending:"Pending"};
+const DISP={added:"Added",skipped:"Skipped",duplicate:"Duplicate",refused:"Refused",notverified:"Unverified",pending:"Pending"};
 /* The one place a row state becomes a bucket - every count, chip and filter
    reads it, so no call site can fold two states together again. They differ:
    landed = read back on the playlist; skipped = never attempted;
+   duplicate = YouTube Music refused a second copy of an id it already holds,
+   so the song is on the playlist - never a failure and never a refusal;
    refused = YouTube Music said FAILED and the read-back lacks it (proof);
    missing = absent from the read-back only, which a short read also produces,
    so it is a lack of evidence and must never be counted as a refusal. */
 const bucketsOf=r=>{const s=r.state;
   if(s==="landed")return"added"; if(s==="skipped")return"skipped";
-  if(s==="refused")return"refused"; if(s==="missing")return"notverified";
+  if(s==="duplicate")return"duplicate"; if(s==="refused")return"refused";
+  if(s==="missing")return"notverified";
   return"pending";};
-const clsOf=b=>b==="added"?"ok":b==="skipped"?"skip":b==="refused"?"deny":b==="notverified"?"unk":"wait";
+const clsOf=b=>b==="added"?"ok":b==="skipped"?"skip":b==="duplicate"?"dup":b==="refused"?"deny":b==="notverified"?"unk":"wait";
 const S={runId:"",since:0,phase:"idle",total:0,declared:0,landed:0,refused:0,skipped:0,
   missing:0,attempted:0,created:false,existing:false,url:"",title:"",summary:"",
   rows:new Map(),filter:"all",timer:null,tick:null,fails:0,lastOk:Date.now(),ceil:0,
   localT0:0,aborted:false,privacy:"PRIVATE",deadNoted:false,hist:[],interrupted:null,
-  follow:true,_prog:0,yt:{},ytState:"none",ytHelp:"",detected:null};
+  follow:true,_prog:0,yt:{},ytState:"none",ytHelp:"",detected:null,
+  counts:null,oneToOne:false,oneBusy:false};
 const mmss=ms=>{const s=Math.max(0,Math.round(ms/1000));
   return String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");};
 function elapsedMs(){if(S.phase==="idle")return 0;
@@ -400,11 +415,25 @@ function tally(){const t={};
 /* Landed once: a row is landed when its video is on the playlist, seeds included.
    Chips, big counter and footer all read this one number. */
 function landedNow(){return tally().added||0;}
-/* Vocabulary and order follow the backend's _done_summary: landed, skipped,
-   refused, missing - so the ledger line and the done line never disagree. */
-function countsLine(){const t=tally();
+/* The counts row is the server's own ledger from /api/run (counts: source,
+   unique, added, skipped, duplicate, unverified, refused), never arithmetic
+   over the rows a second time. Order leads with the source breakdown, so the
+   seven numbers read as what happened without the user doing sums. A zero is
+   noise and is dropped; duplicate, unverified and refused print only when
+   non-zero, and they stay distinguishable words - duplicate is not refused. */
+const countParts=c=>{const out=[["in source",c.source],["unique",c.unique],
+    ["added",c.added],["skipped",c.skipped]];
+  for(const k of["duplicate","unverified","refused"])if(+c[k])out.push([k,c[k]]);
+  return out;};
+function countsLine(){
   if(!S.total&&!S.declared)return $("srcurl").value.trim()?"link loaded — Ctrl+Enter to start":"paste a link to begin";
-  return`${t.added||0} added · ${t.skipped||0} skipped · ${t.refused||0} refused · ${t.notverified||0} unverified · ${t.pending||0} pending`;}
+  const c=S.counts;
+  if(c)return countParts(c).map(([k,n])=>`<b>${Math.max(0,+n||0)}</b> ${k}`).join(" · ");
+  /* no counts on the wire yet: the row states still answer, same order */
+  const t=tally();
+  const out=[["added",t.added||0],["skipped",t.skipped||0]];
+  for(const k of["duplicate","notverified","refused"])if(t[k])out.push([k==="notverified"?"unverified":k,t[k]]);
+  return out.map(([k,n])=>`<b>${n}</b> ${k}`).join(" · ");}
 /* Counter: landed/declared, monotonic, never full on a short fetch. */
 function paintCounter(){
   if(!S.total&&!S.declared){big.textContent="0";big.dataset.den="?";
@@ -455,10 +484,13 @@ function paintFacts(){
   phaseEl.textContent=`${liveLabel()} · ${factsStr()}`;return;}
 function paintChips(){const t=tally();
   const dec=S.declared||S.total||0, n=dec,
-    labels={all:n,added:t.added||0,skipped:t.skipped||0,refused:t.refused||0,
-      notverified:t.notverified||0,pending:t.pending||0};
+    labels={all:n,added:t.added||0,skipped:t.skipped||0,duplicate:t.duplicate||0,
+      refused:t.refused||0,notverified:t.notverified||0,pending:t.pending||0};
   document.querySelectorAll(".fbtn").forEach(b=>{
     const f=b.dataset.f;
+    /* duplicate is its own outcome, so its chip is only there when one exists:
+       a 0 duplicate chip is noise, a non-zero one is what the user came to see */
+    if(f==="duplicate")b.hidden=!labels.duplicate;
     b.textContent=`${(DISP[f]||f).toLowerCase()} ${S.total||S.declared?labels[f]||0:0}`;
     b.setAttribute("aria-pressed",String(S.filter===f));});}
 /* Missing list: every row the ledger does not count as landed, selected with
@@ -505,6 +537,37 @@ async function copyMissing(){
     await navigator.clipboard.writeText(txt);missFlash(true);
   }catch(e){missDownload(txt);missFlash(false);}}
 missBtn.addEventListener("click",copyMissing);
+/* 1:1 toggle. The server owns the setting: a click sends the intent and waits,
+   so the pill never shows a state the backend did not store; a failed call
+   restores what the server last said. It stays live during a run because the
+   setting is only read when a transfer sends (the title says so). */
+const oneBtn=$("oneone");
+function paintOne(){
+  const on=!!S.oneToOne;
+  oneBtn.textContent=`1:1 ${on?"on":"off"}`;
+  oneBtn.setAttribute("aria-pressed",String(on));
+  oneBtn.setAttribute("aria-label",
+    `One to one: ${on?"on":"off"} — press to ${on?"refuse the second copy of a song and count it as duplicate":"add a song twice when the source has it twice"}.`);
+  oneBtn.disabled=!!S.oneBusy;
+  oneBtn.setAttribute("aria-busy",S.oneBusy?"true":"false");}
+function oneFrom(d){
+  const v=d?[d.on,d.oneToOne,d.one_to_one,d.counts&&d.counts.oneToOne]
+    .find(x=>typeof x==="boolean"):undefined;
+  if(typeof v==="boolean")S.oneToOne=v;
+  return typeof v==="boolean";}
+async function toggleOne(){
+  if(S.oneBusy)return;
+  const want=!S.oneToOne,was=S.oneToOne;
+  S.oneBusy=true;paintOne();
+  let r=null;
+  try{r=await postJSON("/api/one-to-one",{on:want});}catch(e){r=null;}
+  S.oneBusy=false;
+  /* reflect the server: a rejected call must not leave the pill claiming a
+     setting that was never stored */
+  if(!oneFrom(r))S.oneToOne=(r&&r.ok!==false)?want:was;
+  paintOne();}
+oneBtn.addEventListener("click",toggleOne);
+paintOne();
 function filtered(){const all=[...S.rows.values()].sort((x,y)=>x.i-y.i);
   if(!all.length)return[];
   if(S.filter==="all")return all;
@@ -533,7 +596,7 @@ function render(){
     }
   }
   paintCounter();paintFacts();paintPill();
-  brk.innerHTML="";brk.textContent=countsLine();
+  brk.innerHTML=countsLine();
   paintChips();
   paintMissBtn();
   /* Rule: indeterminate sweep while the total is unknown, determinate fill
@@ -555,7 +618,7 @@ function render(){
       const d=document.createElement("div");
       d.className="lrow"+((LIVE.has(S.phase)&&r.state==="appending")?" inflight":"");
       d.style.top=(k*ROWH)+"px";d.style.height=ROWH+"px";
-      const rsn=(b==="skipped"||b==="refused"||b==="notverified")?(r.status||""):(r.guess?(r.status||"best guess"):"");
+      const rsn=(b==="skipped"||b==="duplicate"||b==="refused"||b==="notverified")?(r.status||""):(r.guess?(r.status||"best guess"):"");
       const a=document.createElement("span");a.className="c0";a.textContent=String(r.i).padStart(3,"0");
       const c=document.createElement("span");c.className="c1";
       const line1=`${r.title||"—"} — ${r.artist||"?"}`;
@@ -588,6 +651,9 @@ function mergeRun(d,full){
     "error","hint","kind"]){
     if(d[k]!==undefined)S[k]=d[k];}
   if(d.phase)S.phase=d.phase;
+  /* counts is the server's ledger for the row; oneToOne is its stored setting */
+  if(d.counts&&typeof d.counts==="object")S.counts=d.counts;
+  if(!S.oneBusy)oneFrom(d);
   if(d.cover_url!==undefined)setCover(d.cover_url,S.title);
   if(d.started_at&&!window.__t0srv)window.__t0srv=d.started_at*1000;
   if(d.interrupted!==undefined)S.interrupted=d.interrupted||null;
@@ -667,6 +733,7 @@ async function startTransfer(){
   S.aborted=false;S.ceil=0;S.hist=[];window.__t0srv=0;S.localT0=Date.now();
   S.runId=t.run_id;S.created=false;S.url="";S.title="";S.summary="";
   S.total=0;S.declared=0;S.attempted=0;S.landed=0;S.refused=0;S.skipped=0;S.missing=0;
+  S.counts=null;
   paintChip();S._prog++;ledger.scrollTop=0;S.follow=true;S._prog--;render();
   poll();pollOnce();
 }
@@ -702,6 +769,7 @@ function clearLocal(){
   S.created=false;S.existing=false;S.url="";S.title="";S.summary="";
   S.rows=new Map();S.filter="all";S.fails=0;S.lastOk=Date.now();S.deadNoted=false;
   S.ceil=0;S.hist=[];S.localT0=0;S.aborted=false;S.pin=null;S.pinTitle="";S.interrupted=null;
+  S.counts=null;
   window.__t0srv=0;
   $("srcurl").value="";wipeDetect();paintSrcX();
   setCover("","");
@@ -978,6 +1046,7 @@ async function autoTitle(){
     const c=new AbortController();const t=setTimeout(()=>c.abort(),10000);
     const r=await fetch("/api/run?since=0",{signal:c.signal});clearTimeout(t);
     const d=await r.json();if(!d.ok)return;
+    if(!S.oneBusy&&oneFrom(d))paintOne();
     if(!d.run_id&&d.interrupted){showInterrupted(d.interrupted);return;}
     if(!d.run_id)return;
     mergeRun(d,true);
