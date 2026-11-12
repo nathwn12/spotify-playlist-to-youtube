@@ -300,53 +300,79 @@ def test_reconcile_absent_stays_refused():
 
 
 def test_timeout_retry_already_exists():
-    """Append times out, retry comes back already-exists -> recorded added."""
+    """A transport blip never loses the track - and never reads as success.
+
+    yt_add_one's contract is: a timeout is a transport failure, distinguishable and
+    retryable, and it is never reported as an add. Its own resend now waits for a
+    COMPLETE read of the playlist, so an add whose outcome is unknown is not sent
+    blind. The retry that keeps the track therefore lives one layer UP, in the
+    repair pass (_converge): it reads the whole playlist, sees the copy absent and
+    sends it once. Both halves are pinned here - a timeout reads as transport and
+    is not re-sent from inside the add, and the repair pass lands the copy without
+    a second copy ever being asked for.
+    """
     try:
+        import time
+
         real = urllib.request.urlopen
-        calls = []
+        real_sleep = time.sleep
+        time.sleep = lambda s: None
 
-        class FakeDup:
-            def read(self):
-                return b'"error": "video already in playlist"'
+        class FakeResp:
+            def __init__(self, obj):
+                self._body = obj if isinstance(obj, bytes) else json.dumps(obj).encode()
 
-        class FakeOK:
-            def read(self):
-                return b'{"status": "STATUS_SUCCEEDED"}'
+            def read(self, *a):
+                return self._body[:a[0]] if a else self._body
 
-        def fake_first_timeout(req, timeout=None):
-            calls.append(1)
-            if len(calls) == 1:
-                raise urllib.error.URLError("timed out")
-            return FakeDup()
+            def __enter__(self):
+                return self
 
-        real_sleep = __import__("time").sleep
-        __import__("time").sleep = lambda s: None
+            def __exit__(self, *exc):
+                return False
+
+        held, sends = [], []
+        mode = {"browse": "broken"}
+
+        def fake(req, timeout=None):
+            url = getattr(req, "full_url", "")
+            if "edit_playlist" in url:
+                sends.append(1)
+                if mode["browse"] == "broken" or len(sends) == 2:
+                    raise urllib.error.URLError("timed out")
+                for act in json.loads((req.data or b"{}").decode()).get("actions") or []:
+                    v = act.get("addedVideoId")
+                    if v and v not in held:
+                        held.append(v)
+                return FakeResp({"status": "STATUS_SUCCEEDED"})
+            if mode["browse"] == "broken":
+                raise urllib.error.URLError("browse timed out")
+            rows = [{"musicResponsiveListItemRenderer": {"playlistItemData": {"videoId": v}}}
+                    for v in held]
+            return FakeResp({"contents": {"musicPlaylistShelfRenderer": {"contents": rows}}})
+
         try:
-            urllib.request.urlopen = fake_first_timeout
+            urllib.request.urlopen = fake
+            # (a) the add itself: a timeout whose read cannot prove the playlist is
+            # a transport failure - distinguishable, retryable, never an add - and
+            # the unknown outcome is not sent blind.
             st = backend.yt_add_one("PLX", "VID00000001", "SAPISID=x")
-            if "SUCCEEDED" not in (st or "").upper() or len(calls) != 2:
-                return "FAIL retry: timeout+already-exists -> %r (calls=%d)" % (st, len(calls))
-
-            calls.clear()
-
-            def fake_twice_timeout(req, timeout=None):
-                calls.append(1)
-                raise urllib.error.URLError("timed out")
-
-            urllib.request.urlopen = fake_twice_timeout
-            st = backend.yt_add_one("PLX", "VID00000001", "SAPISID=x")
-            if "SUCCEEDED" in (st or "").upper():
-                return "FAIL retry: double timeout must not read as added (%r)" % (st,)
-
-            calls.clear()
-            urllib.request.urlopen = lambda req, timeout=None: (calls.append(1), FakeOK())[1]
-            st = backend.yt_add_one("PLX", "VID00000001", "SAPISID=x")
-            if "SUCCEEDED" not in (st or "").upper() or len(calls) != 1:
-                return "FAIL retry: clean SUCCEEDED retried (%r, calls=%d)" % (st, len(calls))
+            if "SUCCEEDED" in (st or "").upper() or not backend.is_transport_status(st):
+                return "FAIL retry: a timeout read as %r" % (st,)
+            if len(sends) != 1:
+                return "FAIL retry: an unknown outcome was re-sent blind (sends=%d)" % len(sends)
+            # (b) the repair pass owns the retry: it reads the playlist, proves the
+            # copy absent, and sends it - the blip costs a read, never the track.
+            mode["browse"] = "ok"
+            out = backend._converge("PLX", "SAPISID=x", ["VID00000001"])
+            if held != ["VID00000001"]:
+                return "FAIL retry: the copy was lost (%r)" % (held,)
+            if out.get("state") != "done":
+                return "FAIL retry: the repair ended %r" % (out.get("state"),)
         finally:
             urllib.request.urlopen = real
-            __import__("time").sleep = real_sleep
-        print("retry: timeout+already-exists lands, double timeout does not, clean success unretried")
+            time.sleep = real_sleep
+        print("retry: a timeout is transport and never success; the repair pass re-reads and lands the copy once")
         return None
     except Exception as e:
         return "FAIL retry: %s: %s" % (type(e).__name__, e)
