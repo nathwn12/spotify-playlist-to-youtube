@@ -137,6 +137,20 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
 #bignum::after{content:" / " attr(data-den);font-size:16px;color:var(--mut);font-weight:600}
 #breakdown{font:600 12px/1.4 var(--mono);color:var(--mut);font-variant-numeric:tabular-nums;min-width:0}
 #breakdown b{color:var(--tx)}
+/* "what's missing" way out: the filter chips' pill, tertiary colour, pinned to
+   the right of the counts row so it appears without moving the counts.
+   Both labels share one grid cell, so the width is the wider of the two and
+   the Copied confirmation swaps in place instead of resizing the button. */
+.missbtn{display:inline-grid;place-items:center;margin-left:auto;align-self:center;
+  flex:0 0 auto;background:transparent;border:1px solid var(--line2);border-radius:99px;
+  padding:6px 12px;font:600 12px/1 var(--sans);color:var(--mut);cursor:pointer;
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+.missbtn[hidden]{display:none}
+.missbtn:hover{color:var(--tx)}
+.missbtn>span{grid-area:1/1;transition:opacity .2s linear}
+.missbtn .missdone{opacity:0;color:var(--grn)}
+.missbtn.is-copied .misslab{opacity:0}
+.missbtn.is-copied .missdone{opacity:1}
 .rule{position:relative;overflow:hidden;height:3px;background:#060706;border-top:1px solid var(--line);border-bottom:1px solid var(--line);
   background-image:linear-gradient(90deg,var(--grn) var(--fill,0%),transparent var(--fill,0%))}
 .rule.live{background-image:none}
@@ -151,6 +165,7 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
   .lrow.inflight{animation:none;background-color:rgba(61,220,132,.08)}
   .acct.needs{animation:none;box-shadow:0 0 0 3px rgba(227,193,92,.45)}
   .acctactions[data-busy="1"]::after{animation:none;opacity:.6}
+  .missbtn>span{transition:none}
 }
 .fbar{display:flex;gap:8px;padding:12px 16px;border-bottom:1px solid var(--line);
   flex-wrap:wrap;align-items:center}
@@ -272,6 +287,9 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
     <div class="totals">
       <div id="bignum" data-den="?" aria-live="polite" title="0 added — total not read yet">0</div>
       <div id="breakdown">paste a link to begin</div>
+      <button id="missbtn" class="missbtn" type="button" hidden
+        aria-label="Copy the tracks that are not on the playlist"><span class="misslab">Copy</span><span class="missdone" aria-hidden="true">Copied</span></button>
+      <span id="misssay" class="sr" role="status" aria-live="polite"></span>
     </div>
     <div class="rule" id="rule" aria-hidden="true"></div>
     <div class="fbar" role="group" aria-label="Outcome filter">
@@ -443,6 +461,50 @@ function paintChips(){const t=tally();
     const f=b.dataset.f;
     b.textContent=`${(DISP[f]||f).toLowerCase()} ${S.total||S.declared?labels[f]||0:0}`;
     b.setAttribute("aria-pressed",String(S.filter===f));});}
+/* Missing list: every row the ledger does not count as landed, selected with
+   bucketsOf() - the same function the chips read - so this list can never hold
+   a second opinion about which states didn't make it. Order is ledger order. */
+const missBtn=$("missbtn"),missSay=$("misssay"),missLab=missBtn.querySelector(".misslab");
+function missingRows(){return[...S.rows.values()].filter(r=>bucketsOf(r)!=="added")
+  .sort((x,y)=>x.i-y.i);}
+const missName=r=>{const t=(r.title||"").trim(),a=(r.artist||"").trim();
+  if(t&&a)return`${a} — ${t}`;if(t)return t;if(a)return a;
+  return r.videoId||`track ${r.i}`;};
+function missingText(rows){
+  const list=rows||missingRows();
+  return[`sp2yt — ${list.length} tracks not in the playlist`,
+    `playlist: ${S.url||"(no playlist link yet)"}`,
+    `generated: ${new Date().toISOString()}`,"",
+    ...list.map((r,k)=>`${k+1}. ${missName(r)}  [${(DISP[bucketsOf(r)]||bucketsOf(r)).toLowerCase()}]`)
+  ].join("\n");}
+function paintMissBtn(){
+  const n=missingRows().length;
+  missBtn.hidden=!n;
+  if(!n)return;
+  missLab.textContent=`Copy ${n}`;
+  missBtn.setAttribute("aria-label",`Copy the ${n} ${n===1?"track":"tracks"} that are not on the playlist`);
+  missBtn.title=`Paste-ready list of the ${n} ${n===1?"track":"tracks"} not on the playlist`;}
+let missT=null;
+/* Copy is the action; a refused/unavailable clipboard downloads the same text. */
+function missFlash(ok){missBtn.classList.add("is-copied");
+  missSay.textContent=ok?`Copied ${missingRows().length} tracks to the clipboard.`
+    :"Clipboard unavailable — saved sp2yt-missing.txt.";
+  clearTimeout(missT);
+  missT=setTimeout(()=>{missBtn.classList.remove("is-copied");missSay.textContent="";},1400);}
+function missDownload(txt){
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([txt],{type:"text/plain;charset=utf-8"}));
+  a.download="sp2yt-missing.txt";a.hidden=true;
+  document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href),30000);}
+async function copyMissing(){
+  const rows=missingRows();if(!rows.length)return;
+  const txt=missingText(rows);
+  try{
+    if(!(navigator.clipboard&&navigator.clipboard.writeText))throw new Error("no clipboard");
+    await navigator.clipboard.writeText(txt);missFlash(true);
+  }catch(e){missDownload(txt);missFlash(false);}}
+missBtn.addEventListener("click",copyMissing);
 function filtered(){const all=[...S.rows.values()].sort((x,y)=>x.i-y.i);
   if(!all.length)return[];
   if(S.filter==="all")return all;
@@ -473,6 +535,7 @@ function render(){
   paintCounter();paintFacts();paintPill();
   brk.innerHTML="";brk.textContent=countsLine();
   paintChips();
+  paintMissBtn();
   /* Rule: indeterminate sweep while the total is unknown, determinate fill
      once known — fill capped at the known count, never a percent on unknown. */
   const known=S.total>0||S.declared>0, a=landedNow(), dec=S.declared||S.total||1;
