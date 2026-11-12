@@ -2320,13 +2320,19 @@ def _done_summary(counts, n_pl, topped_up=None, sent=None, guessed=0, tail_unver
     """The human done line: one line, and the seven counts in the shape the page
     reads. The counted head is exactly
 
-        landed {added} of {unique} · {skipped} skipped · {duplicate} duplicate ·
-        {unverified} unverified · {refused} refused · {source} in source
+        landed {added} of {source} · {unique} unique · {skipped} skipped ·
+        {duplicate} duplicate · {unverified} unverified · {refused} refused
 
     and the sentence that follows it names the proof those counts were reconciled
     against - the read-back's holds count - so the line can never print N landed
     beside a different holds count without naming the split in the same sentence.
     A labelled guess and a topped-up run are named there too, never dropped.
+
+    The denominator is `source`, the tracks the Spotify read returned, repeats
+    included: the question the line answers is whether every source track made
+    it. A distinct-id denominator contradicts the numerator the moment the 1:1
+    toggle accepts a repeat copy ("landed 508 of 480" was truthful and
+    meaningless); `unique` is reported beside it instead.
 
     `unverified` is one word for both halves of "present in no completed read": a
     copy absent from a read that reached the end of the playlist, and a copy the
@@ -2341,8 +2347,8 @@ def _done_summary(counts, n_pl, topped_up=None, sent=None, guessed=0, tail_unver
     refused = int(c.get("refused", 0) or 0)
     source = int(c.get("source", 0) or 0)
     n = int(n_pl or 0)
-    line = (f"landed {added} of {unique} \u00b7 {skipped} skipped \u00b7 {dup} duplicate "
-            f"\u00b7 {unverified} unverified \u00b7 {refused} refused \u00b7 {source} in source")
+    line = (f"landed {added} of {source} \u00b7 {unique} unique \u00b7 {skipped} skipped "
+            f"\u00b7 {dup} duplicate \u00b7 {unverified} unverified \u00b7 {refused} refused")
     aside = []
     if int(guessed or 0) > 0:
         aside.append(f"best guess {int(guessed)}")

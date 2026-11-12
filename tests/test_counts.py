@@ -221,6 +221,11 @@ class Counts(unittest.TestCase):
         self.assertEqual(counts["duplicate"], 0, counts)
         self.assertEqual(counts["added"], SOURCE, counts)
         self.assertEqual(counts["unique"], 480, counts)
+        # The denominator is what the source read, so 1:1 on reads 508 of 508 —
+        # never 508 landed against a 480 denominator.
+        self.assertTrue(snap["summary"].startswith(
+            "landed 508 of 508 \u00b7 480 unique \u00b7 0 skipped \u00b7 0 duplicate \u00b7 "
+            "0 unverified \u00b7 0 refused"), snap["summary"])
         self.assertEqual(len(upstream.playlist), SOURCE)
         self.assertEqual(sum(counts[k] for k in
                              ("added", "skipped", "duplicate", "unverified", "refused")),
@@ -285,8 +290,8 @@ class Counts(unittest.TestCase):
         line = snap["summary"]
         self.assertEqual(line.count("\n"), 0, line)
         self.assertTrue(line.startswith(
-            "landed 480 of 480 \u00b7 0 skipped \u00b7 28 duplicate \u00b7 "
-            "0 unverified \u00b7 0 refused \u00b7 508 in source"), line)
+            "landed 480 of 508 \u00b7 480 unique \u00b7 0 skipped \u00b7 28 duplicate \u00b7 "
+            "0 unverified \u00b7 0 refused"), line)
         # The gate and the page both lean on these two literals.
         self.assertIn("landed ", line)
         self.assertIn(" of ", line)
@@ -294,7 +299,8 @@ class Counts(unittest.TestCase):
         self.assertIn("holds 480", line)
 
     def test_the_shape_holds_for_skips_guesses_and_a_topped_up_run(self):
-        shape = "landed 3 of 4 \u00b7 1 skipped \u00b7 0 duplicate \u00b7 0 unverified \u00b7 0 refused \u00b7 5 in source"
+        shape = ("landed 3 of 5 \u00b7 4 unique \u00b7 1 skipped \u00b7 0 duplicate "
+                 "\u00b7 0 unverified \u00b7 0 refused")
         line = backend._done_summary(
             {"source": 5, "unique": 4, "added": 3, "skipped": 1, "duplicate": 0,
              "unverified": 0, "refused": 0}, 3)
