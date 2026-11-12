@@ -297,7 +297,6 @@ class ScaleReport(unittest.TestCase):
     def test_an_incomplete_read_back_never_reports_tracks_as_absent(self):
         upstream = Upstream(source_tracks(), paging_broken=True)
         snap = self.transfer(upstream)
-        self.assertEqual(snap["phase"], "done", snap.get("error"))
         self.assertEqual(len(upstream.playlist), TRACKS)
         # Exactly the first page was proven; the rest is present but unproven.
         self.assertEqual(snap["landed"], PAGE)
@@ -319,6 +318,14 @@ class ScaleReport(unittest.TestCase):
         self.assertNotIn("%d missing" % (TRACKS - PAGE), summary)
         self.assertNotIn("refused %d" % (TRACKS - PAGE), summary)
         self.assertNotIn("missing %d" % (TRACKS - PAGE), summary)
+        # A read that never reached the end proves nothing about its tail, so
+        # nothing is re-sent off it: no copy is appended twice, and the run stands
+        # by for a read it can trust instead of declaring itself done.
+        self.assertEqual(sorted(upstream.appends), sorted(set(upstream.appends)),
+                         "a copy was appended twice off an incomplete read")
+        self.assertTrue(self.waits, "the run never stood by")
+        self.assertEqual(snap["state"], "gaveup")
+        self.assertEqual(len(self.waits), backend.RUN_RETRY_MAX)
 
 
 if __name__ == "__main__":

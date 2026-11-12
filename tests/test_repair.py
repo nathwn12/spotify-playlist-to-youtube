@@ -107,7 +107,7 @@ class Upstream:
 
     def __init__(self, page=PAGE, extra=(), throttle=0, paging_broken=False,
                  break_after=0, drop=(), blind_rows=False, empty_reads=0,
-                 lose_reply=(), fail_read_after_loss=False):
+                 lose_reply=(), fail_read_after_loss=False, browse_broken=False):
         self.page = page
         self.playlist = list(extra)   # ids the playlist really holds, in order
         self.appends = []             # every id an ACTION_ADD_VIDEO asked for
@@ -121,6 +121,7 @@ class Upstream:
         self.empty_reads = empty_reads  # initial browses served as a stale empty shelf
         self.lose_reply = set(lose_reply)  # appends YTM applies, whose reply is lost
         self.fail_read_after_loss = fail_read_after_loss  # the read after one cannot complete
+        self.browse_broken = browse_broken  # every read fails on the wire
         self.deletes = []             # every playlist id a delete asked for
         self.reads = 0
         self.continuations = []
@@ -173,6 +174,8 @@ class Upstream:
 
     def browse(self, body):
         self.reads += 1
+        if self.browse_broken:
+            raise urllib.error.URLError("browse failed")
         if getattr(self, "_fail_next_read", False):
             self._fail_next_read = False
             raise urllib.error.URLError("browse failed after a lost reply")
@@ -313,7 +316,7 @@ class Repair(unittest.TestCase):
         upstream = Upstream(extra=extras, paging_broken=True)   # 110 entries, tail unreadable
         snap = self.transfer(upstream, tracks)
 
-        self.assertEqual(len(self.waits), 1, "one wait, for a repair that does not exist")
+        self.assertTrue(self.waits, "the run never stood by")
         stood = self.waits[0]
         self.assertEqual(stood["snap"]["state"], "standby")
         self.assertEqual(stood["snap"]["reason"], "read incomplete")
@@ -329,6 +332,11 @@ class Repair(unittest.TestCase):
         self.assertEqual(snap["missing"], 0)
         self.assertIn("10 unverified", snap["summary"])
         self.assertEqual(len(upstream.playlist), 110)
+        # A run that never completed a read cannot call itself done: it spends the
+        # budget it has and ends in a terminal state that names the shortfall.
+        self.assertEqual(len(self.waits), backend.RUN_RETRY_MAX)
+        self.assertEqual(snap["state"], "gaveup")
+        self.assertEqual(snap["residual"], [])
 
     # --- 3b: a pending repair is never attempted off an incomplete read ------
     def test_an_incomplete_read_back_holds_back_a_pending_repair(self):
@@ -452,6 +460,23 @@ class Repair(unittest.TestCase):
         self.assertEqual(len(upstream.playlist), len(tracks))
         self.assertNotIn("husk deleted", snap.get("error", ""))
         self.assertEqual(snap["phase"], "failed", snap)
+
+    def test_a_wholly_failed_read_is_a_failed_run_with_unverified_rows(self):
+        """Every read fails after the create. Nothing is proved either way about
+        the copies the create carried, so those rows are unverified - never
+        skipped, which claims they were never attempted - and the state is failed."""
+        tracks = tracks_for(30)
+        upstream = Upstream(browse_broken=True)
+        snap = self.transfer(upstream, tracks)
+
+        self.assertEqual(snap["phase"], "failed", snap.get("error"))
+        self.assertEqual(snap["state"], "failed", "a failed phase must not claim a running state")
+        self.assertEqual(snap["skipped"], 0)
+        states = [r["state"] for r in snap["rows"]]
+        self.assertEqual(states.count("unverified"), 30, states)
+        self.assertEqual(snap["counts"]["added"], 0)
+        self.assertEqual(snap["counts"]["unverified"], 30)
+        self.assertEqual(upstream.creates, 1)
 
     # --- 6: an unknown outcome is read before it is resent ------------------
     def test_an_ambiguous_add_is_not_resent_without_a_complete_read(self):

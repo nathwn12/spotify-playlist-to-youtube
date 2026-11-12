@@ -2487,6 +2487,43 @@ def _counts_from_rows(source, rows) -> dict:
             out["unverified"] += 1
     return out
 
+def _run_counts_locked() -> dict:
+    """Recount every counter /api/run serves from the run's own rows. The caller
+    holds _RUN_LOCK. One place decides how a row state becomes a count, so the
+    counters can never drift from the ledger the page renders - and a row that may
+    be on the playlist is never counted as one that was never attempted."""
+    rows = RUN.get("rows") or []
+    landed = sum(1 for r in rows if r.get("state") == "landed")
+    skipped = sum(1 for r in rows if r.get("state") == "skipped")
+    refused = sum(1 for r in rows if r.get("state") == "refused")
+    duplicate = sum(1 for r in rows if r.get("state") == "duplicate")
+    rows = list(rows)
+    RUN["landed"] = landed
+    RUN["skipped"] = skipped
+    RUN["refused"] = refused
+    RUN["duplicate"] = duplicate
+    RUN["counts"] = _counts_from_rows(int(RUN.get("total", 0) or 0), rows)
+    RUN["unverified"] = int(RUN["counts"].get("unverified", 0) or 0)
+    RUN["missing"] = sum(1 for r in rows
+                         if r.get("state") == "missing" and not r.get("unverified"))
+    return RUN["counts"]
+
+def _stop_rows_locked(msg: str) -> None:
+    """A run stopped early. The caller holds _RUN_LOCK.
+
+    A row whose copy may already be on the playlist is `unverified`, never
+    `skipped`: a matched row rode the inline create, an appending row was sent, and
+    either add may have been applied before the failure. `skipped` says the copy
+    was never attempted, and that is a claim this run cannot make."""
+    for row in RUN.get("rows") or []:
+        if row.get("state") in ("landed", "refused", "missing", "skipped", "duplicate"):
+            continue
+        row["state"] = "unverified"
+        row["status"] = f"stopped: {msg}"[:80]
+        RUN["seq"] += 1
+        row["row_seq"] = RUN["seq"]
+    _run_counts_locked()
+
 def yt_delete_playlist(plid: str, yt_cookie: str) -> bool:
     try:
         body = json.dumps({"context": {"client": CLIENT}, "playlistId": plid}).encode()
@@ -2900,13 +2937,9 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
             entries, complete = got, got_complete
         if got is None or not got_complete:
             reason = "read failed" if got is None else "read incomplete"
-            # Nothing is appended off this read, so nothing is proven absent.
-            if not last_need and got is not None and short >= 1:
-                # A repair that does not exist is not worth waiting out a budget
-                # for: the read has had its retry, nothing was proven absent, and
-                # the rows already say unverified. Report the proof, not a promise.
-                blog("converge", f"{plid} read still short at {len(got)} — nothing to repair")
-                return finish("done", reason)
+            # Nothing is appended off this read, so nothing is proven absent. An
+            # unread playlist is not a finished run either: spend the budget on a
+            # read that could reach the end, then stop in a terminal state.
             short += 1
             if stand_by(reason, last_need):
                 return finish("gaveup", reason, last_need)
@@ -3216,16 +3249,15 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                 if RUN.get("id") != run_id:
                     return
                 RUN["phase"] = "failed"
+                # A stopped run is not running: phase and state say the same thing.
+                RUN["state"] = "failed"
+                RUN["next_attempt_at"] = 0.0
                 RUN["error"] = msg[:300]
                 RUN["hint"] = c.get("hint", "")
                 RUN["kind"] = c.get("kind", "unknown")
-                for row in RUN["rows"]:
-                    if row.get("state") not in ("landed", "refused", "missing", "skipped"):
-                        row["state"] = "skipped"
-                        row["status"] = f"stopped: {msg}"[:80]
-                RUN["skipped"] = sum(1 for row in RUN["rows"] if row.get("state") == "skipped")
-                # A failed run still reports the real arithmetic of what it observed.
-                RUN["counts"] = _counts_from_rows(RUN.get("total", 0) or 0, RUN["rows"])
+                # A row whose add may already be applied is unverified, never
+                # skipped, and the counters are recounted from those rows.
+                _stop_rows_locked(msg)
                 RUN["seq"] += 1
                 RUN["updated_at"] = time.time()
             blog("fail", f"run={run_id} {msg}")
@@ -3339,15 +3371,12 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
             try:
                 if RUN.get("id") == run_id:
                     RUN["phase"] = "failed"
+                    RUN["state"] = "failed"
+                    RUN["next_attempt_at"] = 0.0
                     RUN["error"] = msg[:300]
                     RUN["hint"] = c.get("hint", "")
                     RUN["kind"] = c.get("kind", "unknown")
-                    for row in RUN["rows"]:
-                        if row.get("state") not in ("landed", "refused", "missing", "skipped"):
-                            row["state"] = "skipped"
-                            row["status"] = f"stopped: {msg}"[:80]
-                    RUN["skipped"] = sum(1 for row in RUN["rows"] if row.get("state") == "skipped")
-                    RUN["counts"] = _counts_from_rows(RUN.get("total", 0) or 0, RUN["rows"])
+                    _stop_rows_locked(msg)
                     RUN["seq"] += 1
                     RUN["updated_at"] = time.time()
             except Exception:
