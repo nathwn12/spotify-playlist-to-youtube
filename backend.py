@@ -56,6 +56,7 @@ RUN = {
     "skipped": 0,
     "missing": 0,
     "unverified": 0,
+    "duplicate": 0,
     "guessed": 0,
     "rows": [],
     "error": "",
@@ -122,6 +123,7 @@ def run_begin(spotify_id="", title=""):
         RUN["skipped"] = 0
         RUN["missing"] = 0
         RUN["unverified"] = 0
+        RUN["duplicate"] = 0
         RUN["guessed"] = 0
         RUN["declared"] = 0
         RUN["summary"] = ""
@@ -162,6 +164,7 @@ def run_reset() -> bool:
         RUN["skipped"] = 0
         RUN["missing"] = 0
         RUN["unverified"] = 0
+        RUN["duplicate"] = 0
         RUN["guessed"] = 0
         RUN["declared"] = 0
         RUN["summary"] = ""
@@ -1920,35 +1923,82 @@ def _is_already_text(s: str) -> bool:
         return True
     return "exist" in low and "not " not in low and "no " not in low
 
+# Append outcomes. YTM itself answers "STATUS_SUCCEEDED" / "STATUS_FAILED"; the
+# other two are ours, and they exist so no caller has to parse exception text.
+STATUS_SUCCEEDED = "STATUS_SUCCEEDED"
+STATUS_DUPLICATE = "STATUS_DUPLICATE"   # a second copy of an id the playlist holds
+STATUS_TRANSPORT = "STATUS_TRANSPORT"   # transport failure: retryable, never success
+_FATAL_HTTP = ("400", "401", "403", "404")  # a verdict, not a hiccup
+_DUPLICATE_TOAST = "already in the playlist"
+
+def is_transport_status(st: str) -> bool:
+    """True when an append failed on the wire (timeout, 429, 5xx), so nothing it
+    says about the playlist can be trusted and a retry may help."""
+    return str(st or "").startswith(STATUS_TRANSPORT)
+
+def is_fatal_status(st: str) -> bool:
+    """True when YTM refused the call itself: bad request, dead cookie, or the
+    playlist is gone. Retrying cannot fix any of those."""
+    last = str(st or "").strip().rsplit(" ", 1)[-1]
+    return last in _FATAL_HTTP
+
+def _retryable_error(err: Exception) -> bool:
+    """A transport failure worth a second try: a timeout, 429 or 5xx. HTTPError is
+    a URLError subclass, so the code decides first: 400/401/403/404 are verdicts."""
+    code = getattr(err, "code", None)
+    if isinstance(code, int):
+        return code == 429 or code >= 500
+    return _is_transport(err)
+
+def _is_duplicate_reply(body: str, status: str) -> bool:
+    """YTM refuses a second copy of a videoId it already holds with HTTP 200,
+    "status": "STATUS_FAILED", and an add-toast reading "This song is already in
+    the playlist". That signature is the authority for the duplicate outcome; a
+    plain STATUS_FAILED carries no such toast and stays a refusal."""
+    return ("FAILED" in (status or "").upper()
+            and _DUPLICATE_TOAST in (body or "").lower())
+
+
 def yt_add_one(plid: str, vid: str, yt_cookie: str) -> str:
-    """Append one entry. -> YTM's status string ("STATUS_SUCCEEDED"/"STATUS_FAILED"),
-    or the exception text. Fresh SAPISIDHASH per call: it goes stale within minutes.
-    One retry on transport failure: if the retry comes back as already-exists /
-    duplicate, the video is on the playlist, so record STATUS_SUCCEEDED — the
-    final read-back reconciliation confirms it before anything prints."""
+    """Append one entry. -> YTM's own status string ("STATUS_SUCCEEDED" /
+    "STATUS_FAILED"), STATUS_DUPLICATE for a copy YTM already holds, or
+    "STATUS_TRANSPORT <why>" for a transport failure. Fresh SAPISIDHASH per call:
+    it goes stale within minutes.
+
+    A transport failure comes back as a transport failure: retryable, and never
+    success, so nothing downstream inherits a count that was never observed. The
+    one exception is YTM saying, after a retried transport failure, that the video
+    is already on the playlist — that copy really is there, and the read-back
+    confirms it before anything prints."""
     b2 = json.dumps({"context": {"client": CLIENT}, "playlistId": plid, "actions": [
         {"action": "ACTION_ADD_VIDEO", "addedVideoId": vid}]}).encode()
 
-    def once() -> str:
+    def once():
+        """-> (status, body, transport). The body is kept: a refusal is an HTTP
+        200, and only the body says whether it was the duplicate refusal."""
         try:
             er = urllib.request.urlopen(urllib.request.Request(
                 f"https://music.youtube.com/youtubei/v1/browse/edit_playlist?key={YT_KEY}&prettyPrint=false",
                 data=b2, headers=yt_headers(yt_cookie)), timeout=25).read().decode("utf-8", "ignore")
         except Exception as e:
-            return f"{type(e).__name__} {getattr(e, 'code', '')}".strip()
+            return f"{type(e).__name__} {getattr(e, 'code', '')}".strip(), "", _retryable_error(e)
         try:
-            return str(json.loads(er).get("status", ""))
+            return str(json.loads(er).get("status", "")), er, False
         except Exception:
-            return er[:120]
+            return er[:120], er, False
 
-    st = once()
-    if _is_transport_text(st):
+    st, body, transport = once()
+    if transport or _is_transport_text(st):
         time.sleep(1.5)
-        st2 = once()
+        st2, body2, transport2 = once()
         blog("add", f"retry {vid} first={st[:60]} second={st2[:60]}")
-        if _is_already_text(st2):
-            return "STATUS_SUCCEEDED"
-        return st2
+        if not transport2 and _is_already_text(st2):
+            return STATUS_SUCCEEDED
+        if transport2 or _is_transport_text(st2):
+            return f"{STATUS_TRANSPORT} {st2}".strip()
+        st, body = st2, body2
+    if _is_duplicate_reply(body, st):
+        return STATUS_DUPLICATE
     return st
 
 COVER_MAX = 8 * 1024 * 1024  # playlist thumbnail bytes accepted for upload
@@ -2148,10 +2198,20 @@ def _reconcile(video_ids, entries, attempts: dict, complete: bool = True) -> lis
 
     complete False means the read stopped before the playlist ended, so it proves
     nothing about the tail: every absent copy is then unverified — never refused
-    and never missing, because the pages that would prove it were never read."""
+    and never missing, because the pages that would prove it were never read.
+
+    An absent copy of a videoId the playlist already holds is `duplicate`, not
+    `refused`: YouTube Music refuses a second copy by design, so it can never be
+    added. The refusal itself is recognised by its own signature (STATUS_FAILED
+    plus the already-in-the-playlist toast); the copy count corroborates it, so a
+    plain STATUS_FAILED with no such toast stays a refusal."""
     left = {}
     for v in entries or []:
         left[v] = left.get(v, 0) + 1
+    held = dict(left)
+    want = {}
+    for v in video_ids or []:
+        want[v] = want.get(v, 0) + 1
     out = []
     for i, v in enumerate(video_ids):
         if left.get(v, 0) > 0:
@@ -2164,7 +2224,12 @@ def _reconcile(video_ids, entries, attempts: dict, complete: bool = True) -> lis
                         "status": (f"unverified — read-back stopped after {len(entries or [])} "
                                    f"of {len(video_ids)} entries")[:80]})
             continue
-        if "FAILED" in st.upper():
+        structural = (held.get(v, 0) > 0 and want.get(v, 0) > held.get(v, 0)
+                      and not is_transport_status(st) and not is_fatal_status(st))
+        if "DUPLICATE" in st.upper() or structural:
+            out.append({"i": i + 1, "videoId": v, "outcome": "duplicate",
+                        "status": "already on the playlist — a second copy cannot be added"})
+        elif "FAILED" in st.upper():
             out.append({"i": i + 1, "videoId": v, "outcome": "rejected", "status": st[:80]})
         elif st:
             out.append({"i": i + 1, "videoId": v, "outcome": "missing",
@@ -2174,7 +2239,7 @@ def _reconcile(video_ids, entries, attempts: dict, complete: bool = True) -> lis
     return out
 
 def _done_summary(landed, refused, skipped, missing, declared, n_pl, parts, topped_up=None, sent=None,
-                  guessed=0, unverified=0):
+                  guessed=0, unverified=0, duplicate=0):
     """The done line is derived from reconciled rows plus the read-back whose
     length is printed: refused rows were proven absent from that same read, so
     the line can never print N landed beside a different holds count without
@@ -2184,9 +2249,13 @@ def _done_summary(landed, refused, skipped, missing, declared, n_pl, parts, topp
     that reached the end of the playlist (proof), unverified is present but
     unproven because the read stopped short. The page calls both Unverified, so
     the line prints that one word for both and never claims a count it cannot
-    support."""
+    support. `duplicate` is its own word too: a copy YouTube Music refuses to add
+    because the playlist already holds that videoId is not a refusal by us and
+    not a failure to retry — it is printed apart from both, and it counts toward
+    the source total so the counts still reconcile."""
     landed, refused, skipped = int(landed or 0), int(refused or 0), int(skipped or 0)
     missing, unverified = int(missing or 0), int(unverified or 0)
+    dup = int(duplicate or 0)
     m, n = int(declared or 0), int(n_pl or 0)
     if topped_up is not None:
         head = f"topped up {int(topped_up)} of {int(sent or 0)} — "
@@ -2194,11 +2263,12 @@ def _done_summary(landed, refused, skipped, missing, declared, n_pl, parts, topp
         head = "done — "
     guesses = int(guessed or 0)
     guess_part = f"best guess {guesses} \u00b7 " if guesses > 0 else ""
+    dup_part = f"duplicate {dup} \u00b7 " if dup > 0 else ""
     line = (f"{head}landed {landed} of {m} \u00b7 not found {skipped} ({parts or 'none'}) "
-            f"\u00b7 {guess_part}refused {refused} \u00b7 unverified {missing + unverified} \u00b7 ")
-    if landed + refused + skipped + missing + unverified != m:
+            f"\u00b7 {guess_part}refused {refused} \u00b7 {dup_part}unverified {missing + unverified} \u00b7 ")
+    if landed + refused + skipped + missing + unverified + dup != m:
         return line + (f"counts do not reconcile "
-                       f"({landed}+{refused}+{skipped}+{missing}+{unverified}!={m}) "
+                       f"({landed}+{refused}+{skipped}+{missing}+{unverified}+{dup}!={m}) "
                        f"— playlist holds {n}")
     if unverified:
         return line + (f"playlist read stopped at {n} entries, so the last {unverified} are "
@@ -2239,7 +2309,8 @@ def _ledger_counts(ledger):
     added = sum(1 for e in ledger if e["outcome"] == "landed")
     rejected = sum(1 for e in ledger if e["outcome"] == "rejected")
     missing = sum(1 for e in ledger if e["outcome"] == "missing")
-    return added, rejected, missing
+    duplicate = sum(1 for e in ledger if e["outcome"] == "duplicate")
+    return added, rejected, missing, duplicate
 
 def yt_delete_playlist(plid: str, yt_cookie: str) -> bool:
     try:
@@ -2308,14 +2379,18 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
     if entries is None:
         raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (final read-back failed)")
     ledger = _reconcile(video_ids, entries, attempts, entries_complete)
-    added, rejected, missing = _ledger_counts(ledger)
+    added, rejected, missing, duplicates = _ledger_counts(ledger)
     repeats = _repeat_count(video_ids, version_sigs)
     blog("parity", f"{added}/{len(video_ids)} landed, {rejected} refused, {missing} missing, "
-                   f"{repeats} repeat(s) in source, {len(todo)} append attempt(s)")
+                   f"{duplicates} duplicate, {repeats} repeat(s) in source, "
+                   f"{len(todo)} append attempt(s)")
     if rejected or missing:
         bad = [f"{e['videoId']}={e['outcome']}" for e in ledger if e["outcome"] != "landed"][:8]
         blog("ledger", f"not-landed sample: {','.join(bad)}")
-    _persist_final(spotify_id, plid, url, title, len(video_ids), added == len(video_ids))
+    # A duplicate is exactly as complete as it can be: YTM will never accept a
+    # second copy of that id, so the source is fully represented on the playlist.
+    _persist_final(spotify_id, plid, url, title, len(video_ids),
+                   added + duplicates == len(video_ids))
     if not added:
         if isinstance(entries, list) and len(entries) == 0:
             cleaned = yt_delete_playlist(plid, yt_cookie)
@@ -2326,7 +2401,7 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
                            f"({rejected} refused by YTM, {missing} missing — see server.log add lines)")
     return {"playlistId": plid, "url": url,
             "added": added, "sent": len(video_ids), "rejected": rejected,
-            "missing": missing, "repeats": repeats, "ledger": ledger,
+            "missing": missing, "duplicates": duplicates, "repeats": repeats, "ledger": ledger,
             "playlist_count": len(entries) if isinstance(entries, list) else 0}
 
 def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
@@ -2366,10 +2441,12 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
     if entries2 is None:
         raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (final read-back failed)")
     ledger = _reconcile(video_ids, entries2, attempts, entries2_complete)
-    added, rejected, missing = _ledger_counts(ledger)
+    added, rejected, missing, duplicates = _ledger_counts(ledger)
     repeats = _repeat_count(video_ids, version_sigs)
-    blog("parity", f"resume {added}/{len(video_ids)} landed, {rejected} refused, {missing} missing")
-    _persist_final(spotify_id, plid, url, title, len(video_ids), added == len(video_ids))
+    blog("parity", f"resume {added}/{len(video_ids)} landed, {rejected} refused, "
+                   f"{missing} missing, {duplicates} duplicate")
+    _persist_final(spotify_id, plid, url, title, len(video_ids),
+                   added + duplicates == len(video_ids))
     if not added:
         if isinstance(entries2, list) and len(entries2) == 0:
             cleaned = yt_delete_playlist(plid, yt_cookie)
@@ -2380,7 +2457,8 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
                            f"({rejected} refused by YTM, {missing} missing — see server.log add lines)")
     return {"playlistId": plid, "url": url,
             "added": added, "sent": len(video_ids), "rejected": rejected,
-            "missing": missing, "repeats": repeats, "ledger": ledger, "resumed": True,
+            "missing": missing, "duplicates": duplicates, "repeats": repeats,
+            "ledger": ledger, "resumed": True,
             "playlist_count": len(entries2) if isinstance(entries2, list) else 0}
 
 def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PRIVATE",
@@ -2432,16 +2510,18 @@ def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PR
                     if entries2 is None:
                         raise RuntimeError(f"playlist topped up at {rec.get('url')} — appends sent but the rest could not be verified (final read-back failed)")
                     ledger = _reconcile(ids, entries2, attempts, entries2_complete)
-                    added, rejected, missing = _ledger_counts(ledger)
+                    added, rejected, missing, duplicates = _ledger_counts(ledger)
                     todo_set = set(todo)
                     newly = sum(1 for e in ledger
                                 if e["outcome"] == "landed" and (int(e["i"]) - 1) in todo_set)
                     repeats = _repeat_count(ids, version_sigs)
-                    blog("parity", f"topup {added}/{len(ids)} landed, {rejected} refused, {missing} missing")
-                    _persist_final(spotify_id, plid, rec.get("url", ""), title, len(ids), added == len(ids))
+                    blog("parity", f"topup {added}/{len(ids)} landed, {rejected} refused, "
+                                   f"{missing} missing, {duplicates} duplicate")
+                    _persist_final(spotify_id, plid, rec.get("url", ""), title, len(ids),
+                                   added + duplicates == len(ids))
                     return {"playlistId": plid, "url": rec.get("url", ""),
                             "added": added, "sent": len(ids), "rejected": rejected, "missing": missing,
-                            "repeats": repeats, "existing": True, "ledger": ledger,
+                            "duplicates": duplicates, "repeats": repeats, "existing": True, "ledger": ledger,
                             "playlist_count": len(entries2) if isinstance(entries2, list) else 0,
                             "topped_up": newly}
             else:
@@ -2742,6 +2822,9 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                 if out == "landed":
                     RUN["rows"][k]["state"] = "landed"
                     RUN["rows"][k]["status"] = ""
+                elif out == "duplicate":
+                    RUN["rows"][k]["state"] = "duplicate"
+                    RUN["rows"][k]["status"] = str(e.get("status", ""))[:80]
                 elif out == "rejected":
                     RUN["rows"][k]["state"] = "refused"
                     RUN["rows"][k]["status"] = str(e.get("status", ""))[:80]
@@ -2759,7 +2842,7 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
             RUN["existing"] = bool(res.get("existing", False))
             # every row must carry a terminal state; reconcile strays as missing
             for row in RUN["rows"]:
-                if row.get("state") not in ("landed", "skipped", "refused", "missing"):
+                if row.get("state") not in ("landed", "skipped", "refused", "missing", "duplicate"):
                     row["state"] = "missing"
                     row["status"] = (row.get("status") or "reconciled as missing")[:80]
                     RUN["seq"] += 1
@@ -2770,6 +2853,7 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
             RUN["landed"] = sum(1 for row in RUN["rows"] if row.get("state") == "landed")
             RUN["skipped"] = sum(1 for row in RUN["rows"] if row.get("state") == "skipped")
             RUN["refused"] = sum(1 for row in RUN["rows"] if row.get("state") == "refused")
+            RUN["duplicate"] = sum(1 for row in RUN["rows"] if row.get("state") == "duplicate")
             RUN["unverified"] = sum(1 for row in RUN["rows"]
                                     if row.get("state") == "missing" and row.get("unverified"))
             RUN["missing"] = sum(1 for row in RUN["rows"]
@@ -2807,7 +2891,7 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                 RUN.get("missing", 0), dec, n_pl, parts,
                 topped_up=(int(res.get("topped_up", 0)) if res.get("topped_up") is not None else None),
                 sent=int(res.get("sent", 0) or 0), guessed=RUN["guessed"],
-                unverified=RUN.get("unverified", 0))
+                unverified=RUN.get("unverified", 0), duplicate=RUN.get("duplicate", 0))
             RUN["phase"] = "done"
             RUN["error"] = ""
             RUN["seq"] += 1
@@ -2917,6 +3001,7 @@ class H(BaseHTTPRequestHandler):
                             "skipped": int(snap.get("skipped", 0) or 0),
                             "missing": int(snap.get("missing", 0) or 0),
                             "unverified": int(snap.get("unverified", 0) or 0),
+                            "duplicate": int(snap.get("duplicate", 0) or 0),
                             "playlist_count": int(snap.get("playlist_count", 0) or 0),
                             "rows": rows,
                             "error": snap.get("error", ""),
