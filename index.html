@@ -168,7 +168,7 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
 .lrow .c1::first-line{color:var(--tx);font-size:13px}
 .lrow .c3{font:700 10px var(--mono);letter-spacing:.06em;text-align:right;
   grid-column:3;grid-row:1/span 2}
-.c3.ok{color:var(--grn)} .c3.skip{color:var(--amb)} .c3.deny{color:var(--red)} .c3.wait{color:var(--pend)}
+.c3.ok{color:var(--grn)} .c3.skip{color:var(--amb)} .c3.deny{color:var(--red)} .c3.unk{color:var(--dim)} .c3.wait{color:var(--pend)}
 #zerostate{position:absolute;inset:0 0 auto 0;display:grid;align-items:start;justify-items:center;padding:24px;
   text-align:center;color:var(--mut);font-size:13px}
 #zerostate[hidden]{display:none}
@@ -275,14 +275,14 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
     </div>
     <div class="rule" id="rule" aria-hidden="true"></div>
     <div class="fbar" role="group" aria-label="Outcome filter">
-      <button class="fbtn" type="button" data-f="all" aria-pressed="true">all 0</button><button class="fbtn" type="button" data-f="added" aria-pressed="false">added 0</button><button class="fbtn" type="button" data-f="skipped" aria-pressed="false">skipped 0</button><button class="fbtn" type="button" data-f="refused" aria-pressed="false">refused 0</button><button class="fbtn" type="button" data-f="pending" aria-pressed="false">pending 0</button>
+      <button class="fbtn" type="button" data-f="all" aria-pressed="true">all 0</button><button class="fbtn" type="button" data-f="added" aria-pressed="false">added 0</button><button class="fbtn" type="button" data-f="skipped" aria-pressed="false">skipped 0</button><button class="fbtn" type="button" data-f="refused" aria-pressed="false">refused 0</button><button class="fbtn" type="button" data-f="notverified" aria-pressed="false">unverified 0</button><button class="fbtn" type="button" data-f="pending" aria-pressed="false">pending 0</button>
     </div>
     <div id="ledger" tabindex="0" role="log" aria-label="Track ledger"><div id="pad"></div><div id="zerostate"><strong>Paste a Spotify playlist link, then press Ctrl+Enter.</strong><br>Tracks land here as they resolve; anything that fails says why.</div></div>
   </section>
 </div>
 <footer class="actionbar">
   <span id="phaseline">paste a Spotify link, then Ctrl+Enter</span>
-  <span class="keys"><kbd>Ctrl K</kbd> palette · <kbd>Ctrl Enter</kbd> start · <kbd>Esc</kbd> detach · <kbd>Alt 1–5</kbd> filter · <kbd>/</kbd> link</span>
+  <span class="keys"><kbd>Ctrl K</kbd> palette · <kbd>Ctrl Enter</kbd> start · <kbd>Esc</kbd> detach · <kbd>Alt 1–6</kbd> filter · <kbd>/</kbd> link</span>
   <span class="pair"><button class="go ghost" id="stopbtn" type="button" disabled>Detach</button><button class="go ghost" id="clearbtn" type="button">Clear</button><button class="go" id="startbtn" type="button">Start transfer</button></span>
 </footer>
 <div id="cmdpal" role="dialog" aria-modal="true" aria-label="Command palette"><div class="palcard" id="palcard">
@@ -334,11 +334,18 @@ const ROWH=50, POLLMS=700;
 const LIVE=new Set(["spotify","search","create","append","verify"]);
 const HUMAN={idle:"Idle",spotify:"Reading playlist",search:"Reading playlist",create:"Creating playlist",append:"Adding",verify:"Reconciling",done:"Done",failed:"Stopped",aborted:"Detached"};
 const human=p=>HUMAN[p]||p;
-const DISP={added:"Added",skipped:"Skipped",refused:"Refused",pending:"Pending"};
+const DISP={added:"Added",skipped:"Skipped",refused:"Refused",notverified:"Unverified",pending:"Pending"};
+/* The one place a row state becomes a bucket - every count, chip and filter
+   reads it, so no call site can fold two states together again. They differ:
+   landed = read back on the playlist; skipped = never attempted;
+   refused = YouTube Music said FAILED and the read-back lacks it (proof);
+   missing = absent from the read-back only, which a short read also produces,
+   so it is a lack of evidence and must never be counted as a refusal. */
 const bucketsOf=r=>{const s=r.state;
   if(s==="landed")return"added"; if(s==="skipped")return"skipped";
-  if(s==="refused"||s==="missing")return"refused"; return"pending";};
-const clsOf=b=>b==="added"?"ok":b==="skipped"?"skip":b==="refused"?"deny":"wait";
+  if(s==="refused")return"refused"; if(s==="missing")return"notverified";
+  return"pending";};
+const clsOf=b=>b==="added"?"ok":b==="skipped"?"skip":b==="refused"?"deny":b==="notverified"?"unk":"wait";
 const S={runId:"",since:0,phase:"idle",total:0,declared:0,landed:0,refused:0,skipped:0,
   missing:0,attempted:0,created:false,existing:false,url:"",title:"",summary:"",
   rows:new Map(),filter:"all",timer:null,tick:null,fails:0,lastOk:Date.now(),ceil:0,
@@ -369,16 +376,17 @@ function setRunning(on){
   startB.disabled=on; stopB.disabled=!on; clearB.disabled=on;
   startB.classList.toggle("ghost",on); stopB.classList.toggle("ghost",!on);
 }
-function tally(){let a=0,s=0,r=0,p=0;
-  for(const row of S.rows.values()){const b=bucketsOf(row);
-    if(b==="added")a++;else if(b==="skipped")s++;else if(b==="refused")r++;else p++;}
-  return{a,s,r,p};}
+function tally(){const t={};
+  for(const row of S.rows.values()){const b=bucketsOf(row);t[b]=(t[b]||0)+1;}
+  return t;}
 /* Landed once: a row is landed when its video is on the playlist, seeds included.
    Chips, big counter and footer all read this one number. */
-function landedNow(){return tally().a;}
+function landedNow(){return tally().added||0;}
+/* Vocabulary and order follow the backend's _done_summary: landed, skipped,
+   refused, missing - so the ledger line and the done line never disagree. */
 function countsLine(){const t=tally();
   if(!S.total&&!S.declared)return $("srcurl").value.trim()?"link loaded — Ctrl+Enter to start":"paste a link to begin";
-  return`${t.a} added · ${t.s} skipped · ${t.r} refused · ${t.p} pending`;}
+  return`${t.added||0} added · ${t.skipped||0} skipped · ${t.refused||0} refused · ${t.notverified||0} unverified · ${t.pending||0} pending`;}
 /* Counter: landed/declared, monotonic, never full on a short fetch. */
 function paintCounter(){
   if(!S.total&&!S.declared){big.textContent="0";big.dataset.den="?";
@@ -428,10 +436,13 @@ function paintFacts(){
   if(S.phase==="idle"){phaseEl.textContent=$("srcurl").value.trim()?"link loaded — Ctrl+Enter to start":"paste a Spotify link, then Ctrl+Enter";return;}
   phaseEl.textContent=`${liveLabel()} · ${factsStr()}`;return;}
 function paintChips(){const t=tally();
-  const dec=S.declared||S.total||0, n=dec,labels={all:n,added:t.a,skipped:t.s,refused:t.r,pending:t.p};
+  const dec=S.declared||S.total||0, n=dec,
+    labels={all:n,added:t.added||0,skipped:t.skipped||0,refused:t.refused||0,
+      notverified:t.notverified||0,pending:t.pending||0};
   document.querySelectorAll(".fbtn").forEach(b=>{
-    b.textContent=`${b.dataset.f} ${S.total||S.declared?labels[b.dataset.f]:0}`;
-    b.setAttribute("aria-pressed",String(S.filter===b.dataset.f));});}
+    const f=b.dataset.f;
+    b.textContent=`${(DISP[f]||f).toLowerCase()} ${S.total||S.declared?labels[f]||0:0}`;
+    b.setAttribute("aria-pressed",String(S.filter===f));});}
 function filtered(){const all=[...S.rows.values()].sort((x,y)=>x.i-y.i);
   if(!all.length)return[];
   if(S.filter==="all")return all;
@@ -481,7 +492,7 @@ function render(){
       const d=document.createElement("div");
       d.className="lrow"+((LIVE.has(S.phase)&&r.state==="appending")?" inflight":"");
       d.style.top=(k*ROWH)+"px";d.style.height=ROWH+"px";
-      const rsn=(b==="skipped"||b==="refused")?(r.status||""):(r.guess?(r.status||"best guess"):"");
+      const rsn=(b==="skipped"||b==="refused"||b==="notverified")?(r.status||""):(r.guess?(r.status||"best guess"):"");
       const a=document.createElement("span");a.className="c0";a.textContent=String(r.i).padStart(3,"0");
       const c=document.createElement("span");c.className="c1";
       const line1=`${r.title||"—"} — ${r.artist||"?"}`;
@@ -656,12 +667,13 @@ $("srcx").addEventListener("click",wipeSrcField);
 newbtn.addEventListener("click",doNewTransfer);
 startB.addEventListener("click",startTransfer);
 stopB.addEventListener("click",abortRun);
-/* command palette: 11 commands, options rendered only while open */
+/* command palette: 12 commands, options rendered only while open */
 const CMDS=[["Start transfer","Ctrl+Enter","start"],["Detach from run","Esc","stop"],
   ["New transfer — clears the ledger and the link","Ctrl+Shift+N","new"],
   ["Filter: all","Alt+1","f-all"],["Filter: added","Alt+2","f-added"],
   ["Filter: skipped","Alt+3","f-skipped"],["Filter: refused","Alt+4","f-refused"],
-  ["Filter: pending","Alt+5","f-pending"],["Copy summary","","copy"],
+  ["Filter: unverified","Alt+5","f-notverified"],
+  ["Filter: pending","Alt+6","f-pending"],["Copy summary","","copy"],
   ["Jump to top","","top"],["Jump to bottom","","bottom"]];
 const pal=$("cmdpal"),palbox=$("palcard"),palin=$("palinput");
 let sel=0,items=CMDS.slice(),lastFocus=null;
@@ -680,7 +692,7 @@ async function runCmd(cmd){closePal();
   else if(cmd.startsWith("f-"))setFilter(cmd.slice(2));
   else if(cmd==="copy"){const t=tally(), dec=S.declared||S.total||0;
     try{await navigator.clipboard.writeText(
-      `sp2yt: ${t.a}/${dec} added, ${t.s} skipped, ${t.r} refused`);}catch(e){}}
+      `sp2yt: ${t.added||0}/${dec} added, ${t.skipped||0} skipped, ${t.refused||0} refused, ${t.notverified||0} unverified`);}catch(e){}}
   else if(cmd==="top"){S._prog++;ledger.scrollTop=0;noteScroll();S._prog--;}
   else if(cmd==="bottom"){S._prog++;ledger.scrollTop=1e9;noteScroll();S._prog--;}
 }
@@ -710,8 +722,8 @@ document.addEventListener("keydown",e=>{
     if(pal.classList.contains("show"))closePal();
     else if(pasteSheet.classList.contains("show")||moreSheet.classList.contains("show"))closeSheets();
     else abortRun();}
-  else if(e.altKey&&!e.ctrlKey&&!e.metaKey&&/^[1-5]$/.test(e.key)){e.preventDefault();
-    setFilter(["all","added","skipped","refused","pending"][+e.key-1]);}
+  else if(e.altKey&&!e.ctrlKey&&!e.metaKey&&/^[1-6]$/.test(e.key)){e.preventDefault();
+    setFilter(["all","added","skipped","refused","notverified","pending"][+e.key-1]);}
   else if(!inField&&e.key==="/"){e.preventDefault();$("srcurl").focus();}
   else if(!inField&&e.key==="j")ledger.scrollTop+=ROWH*3;
   else if(!inField&&e.key==="k"&&!e.ctrlKey&&!e.metaKey)ledger.scrollTop-=ROWH*3;
