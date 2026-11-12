@@ -1947,12 +1947,33 @@ def yt_playlist_read(plid: str, yt_cookie: str) -> dict:
             return {"entries": out, "complete": False,
                     "why": f"no playlist rows in continuation after {len(out)} entries"}
         for item in items:
-            mrl = item.get("musicResponsiveListItemRenderer", {}) if isinstance(item, dict) else {}
-            v = mrl_video_id(mrl) if mrl else ""
-            if v:
-                out.append(v)
+            if not isinstance(item, dict):
+                return {"entries": out, "complete": False,
+                        "why": f"item that is not an object after {len(out)} entries"}
+            if "continuationItemRenderer" in item:
+                continue  # the page marker, not a playlist row
+            mrl = item.get("musicResponsiveListItemRenderer")
+            if not isinstance(mrl, dict):
+                shape = next(iter(item), "empty item")
+                # A row renderer we do not know may be a track: unread, never
+                # skipped and never "end of list".
+                return {"entries": out, "complete": False,
+                        "why": f"unrecognised row renderer {shape} after {len(out)} entries"}
+            v = mrl_video_id(mrl)
+            if not v:
+                # A recognised row we cannot name is a track we cannot place: a
+                # caller that reads it as absent re-adds what the list holds.
+                return {"entries": out, "complete": False,
+                        "why": f"row without a parsable videoId after {len(out)} entries"}
+            out.append(v)
         nxt = _next_page_token(continuations, items)
         if not nxt:
+            if continuations or any(isinstance(i, dict) and "continuationItemRenderer" in i
+                                    for i in items):
+                # A continuation we cannot read says more rows follow; it cannot
+                # say this page is the whole playlist.
+                return {"entries": out, "complete": False,
+                        "why": f"unrecognised continuation shape after {len(out)} entries"}
             return {"entries": out, "complete": True, "why": ""}
         if nxt in seen:
             return {"entries": out, "complete": False,

@@ -132,12 +132,79 @@ class Shelfless:
         return Resp(json.dumps({"alerts": [{"text": "that playlist does not exist"}]}))
 
 
+def shelf(contents, continuations=None):
+    inner = {"contents": contents}
+    if continuations is not None:
+        inner["continuations"] = continuations
+    return {"contents": {"musicPlaylistShelfRenderer": inner}}
+
+
+class OneReply:
+    """Answers every browse with one recorded reply and counts the calls."""
+
+    def __init__(self, body):
+        self.body = body
+        self.calls = 0
+
+    def __call__(self, req, timeout=None):
+        self.calls += 1
+        return Resp(json.dumps(self.body))
+
+
 class Paging(unittest.TestCase):
     def read(self, shape):
         upstream = Paged(shape)
         with mock.patch("urllib.request.urlopen", upstream):
             entries = backend.yt_playlist_entries(PLID, COOKIE)
         return upstream, entries
+
+    def read_reply(self, body):
+        upstream = OneReply(body)
+        with mock.patch("urllib.request.urlopen", upstream):
+            read = backend.yt_playlist_read(PLID, COOKIE)
+        return upstream, read
+
+    # --- a shape we cannot read is unread, never end-of-list -----------------
+    def test_an_unrecognised_row_renderer_is_unread_not_the_end_of_the_list(self):
+        """A row renderer nobody knows may be a track: the read proves nothing."""
+        _, read = self.read_reply(shelf([
+            rows(["AAAAAAAAAAA"])[0],
+            {"musicResponsiveListItemRendererV2": {"videoId": "BBBBBBBBBBB"}}]))
+        self.assertFalse(read["complete"], read)
+        self.assertIn("renderer", read["why"])
+
+    def test_a_row_without_a_parsable_video_id_is_unread_not_skipped(self):
+        """A recognised row whose videoId cannot be parsed is a track we cannot
+        name: scoring it absent is how a caller re-adds what the list holds."""
+        _, read = self.read_reply(shelf([
+            rows(["AAAAAAAAAAA"])[0],
+            {"musicResponsiveListItemRenderer": {"flexColumns": []}}]))
+        self.assertFalse(read["complete"], read)
+        self.assertIn("videoId", read["why"])
+
+    def test_an_unknown_continuation_representation_is_not_the_end_of_list(self):
+        """A continuation we cannot read says more rows follow; it cannot say the
+        page we hold is the whole playlist."""
+        upstream, read = self.read_reply(shelf(
+            rows(PAGES[0]), [{"nextContinuationData": {"cursor": "opaque"}}]))
+        self.assertFalse(read["complete"], read)
+        self.assertIn("continuation", read["why"])
+        self.assertEqual(upstream.calls, 1, "the read asked for a page it cannot address")
+
+    def test_a_row_marker_that_is_not_a_page_token_is_not_end_of_list(self):
+        """A continuation item with no readable token is an unknown representation."""
+        item = {"continuationItemRenderer": {"continuationEndpoint": {
+            "continuationCommand": {"request": "CONTINUATION_REQUEST_TYPE_BROWSE"}}}}
+        _, read = self.read_reply(shelf(rows(PAGES[0]) + [item]))
+        self.assertFalse(read["complete"], read)
+
+    def test_a_repeated_token_cannot_spin_forever(self):
+        upstream = Stuck()
+        with mock.patch("urllib.request.urlopen", upstream):
+            read = backend.yt_playlist_read(PLID, COOKIE)
+        self.assertEqual(upstream.calls, 2, "the echoed token must end the read, not loop")
+        self.assertEqual(read["entries"], PAGES[0] + PAGES[1])
+        self.assertFalse(read["complete"], "a repeated token proves nothing about the tail")
 
     def test_legacy_continuations_shape_walks_every_page(self):
         upstream, entries = self.read("legacy")
@@ -158,13 +225,6 @@ class Paging(unittest.TestCase):
         self.assertEqual(entries, EXPECTED)
         self.assertEqual(upstream.tokens, TOKENS)
         self.assertEqual(upstream.pages, [0, 1, 2])
-
-    def test_a_repeated_token_cannot_spin_forever(self):
-        upstream = Stuck()
-        with mock.patch("urllib.request.urlopen", upstream):
-            entries = backend.yt_playlist_entries(PLID, COOKIE)
-        self.assertEqual(upstream.calls, 2, "the echoed token must end the read, not loop")
-        self.assertEqual(entries, PAGES[0] + PAGES[1])
 
     def test_a_reply_without_a_shelf_is_not_an_empty_playlist(self):
         """A reply that carries no playlist shelf (a refusal, a page shape change)
