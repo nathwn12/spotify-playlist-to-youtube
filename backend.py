@@ -2263,9 +2263,64 @@ def _persist_fields(spotify_id, **fields):
     except Exception:
         pass
 
-def _persist_incomplete(spotify_id, plid, url, title, expected):
-    _persist_fields(spotify_id, yt_id=plid, url=url, title=title,
-                    expected=expected, complete=False)
+_NO_PLAN_MESSAGE = ("interrupted run: {url} was left unfinished and its plan is not on record, so "
+                    "it cannot be resumed without guessing which copies the playlist already holds "
+                    "— start the transfer again from scratch")
+
+def _incomplete_record(spotify_id: str):
+    """The persisted record of an interrupted run of this Spotify playlist, or
+    None. Only a record that already holds a playlist id is one: a run that never
+    created a playlist left nothing to resume."""
+    if not spotify_id:
+        return None
+    rec = load_created().get(spotify_id)
+    if isinstance(rec, dict) and rec.get("yt_id") and rec.get("complete") is not True:
+        return rec
+    return None
+
+def _resume_plan(rec, n_rows: int):
+    """(slots, guesses) for an interrupted run, or None when its record cannot say
+    what it sent.
+
+    `slots` holds one entry per source row: the videoId that row was sent, or "".
+    A resume rebuilds its rows from it and matches nothing. A record that cannot
+    name its plan is not resumable at all: rebuilding its rows from a fresh match
+    would reconcile them against copies the playlist never held, and 1:1 would
+    append a second copy of every track."""
+    if not isinstance(rec, dict):
+        return None
+    ids = [v for v in (rec.get("video_ids") or []) if isinstance(v, str) and v]
+    if not ids or not n_rows:
+        return None
+    slots = rec.get("plan_slots")
+    if not isinstance(slots, list) and len(ids) == int(n_rows):
+        # A record written before the slots existed, holding one id per source row:
+        # every row matched, in order, so the slots are the ids themselves.
+        slots = ids
+    if not isinstance(slots, list) or len(slots) != int(n_rows):
+        return None
+    slots = [v if isinstance(v, str) else "" for v in slots]
+    if [v for v in slots if v] != ids:
+        return None
+    guesses = {}
+    for k, why in (rec.get("plan_guesses") or {}).items():
+        try:
+            guesses[int(k)] = str(why or "cross-script")[:80]
+        except Exception:
+            continue
+    return slots, guesses
+
+def _persist_incomplete(spotify_id, plid, url, title, expected, plan=None, plan_slots=None,
+                        plan_guesses=None):
+    fields = dict(yt_id=plid, url=url, title=title, expected=expected, complete=False)
+    if plan is not None:
+        # From the moment the playlist exists, the plan it was sent is on disk:
+        # a resume replays it and never matches the source again.
+        fields["video_ids"] = [v for v in plan if isinstance(v, str) and v]
+        fields["plan_slots"] = [v if isinstance(v, str) else "" for v in (plan_slots or [])]
+        fields["plan_guesses"] = {str(k): str(v)[:80]
+                                  for k, v in (plan_guesses or {}).items()}
+    _persist_fields(spotify_id, **fields)
 
 def _persist_final(spotify_id, plid, url, title, expected, complete):
     _persist_fields(spotify_id, yt_id=plid, url=url, title=title,
@@ -2598,7 +2653,7 @@ def _proven_empty(plid: str, yt_cookie: str, entries, complete: bool) -> bool:
     return not again
 
 def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, hooks=None,
-                version_sigs=None, one_to_one=None):
+                version_sigs=None, one_to_one=None, plan_slots=None, plan_guesses=None):
     on_created = (hooks or {}).get("on_created")
     on_phase = (hooks or {}).get("on_phase")
     if on_phase:
@@ -2619,7 +2674,8 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
     if not plid:
         raise RuntimeError("playlist create returned no id — YTM did not accept the create; retry once, then re-export the cookie if it repeats")
     url = f"https://music.youtube.com/playlist?list={plid}"
-    _persist_incomplete(spotify_id, plid, url, title, len(video_ids))
+    _persist_incomplete(spotify_id, plid, url, title, len(video_ids),
+                        plan=video_ids, plan_slots=plan_slots, plan_guesses=plan_guesses)
     if on_created:
         try:
             on_created(plid, url, False)
@@ -2760,7 +2816,8 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
             "playlist_count": len(entries2) if isinstance(entries2, list) else 0}
 
 def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PRIVATE",
-                           spotify_id="", hooks=None, version_sigs=None, one_to_one=None):
+                           spotify_id="", hooks=None, version_sigs=None, one_to_one=None,
+                           plan_slots=None, plan_guesses=None):
     """One implementation, two entry points: sync /api/create-playlist and the
     async /api/transfer worker. Never dedupes video_ids. The ledger works on
     the videoId multiset: a present Slowed never satisfies a missing Super
@@ -2768,7 +2825,10 @@ def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PR
 
     `one_to_one` is the 1:1 toggle for every add this transfer sends, the repair
     pass included; None reads the persisted setting once, here, so a run cannot
-    change flag halfway through."""
+    change flag halfway through.
+
+    `plan_slots` (one entry per source row) and `plan_guesses` are persisted with
+    the create, so an interrupted run can be resumed from its own plan."""
     if one_to_one is None:
         one_to_one = one_to_one_setting()
     yt_cookie = normalize_cookie(yt_cookie)
@@ -2838,16 +2898,19 @@ def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PR
             else:
                 # The interrupted run's plan and toggle are part of its state: replay
                 # them, so a resume cannot rematch into a different plan (its
-                # playlist was built from this one) or flip 1:1 under it.
+                # playlist was built from this one) or flip 1:1 under it. A record
+                # that cannot name its plan is not resumable: adopting the fresh
+                # match instead is how copies already on the playlist get appended.
                 saved = [v for v in (rec.get("video_ids") or []) if isinstance(v, str) and v]
-                if saved:
-                    ids = saved
+                if not saved:
+                    raise RuntimeError(_NO_PLAN_MESSAGE.format(url=rec.get("url") or rec.get("yt_id", "")))
+                ids = saved
                 if isinstance(rec.get("one_to_one"), bool):
                     one_to_one = rec["one_to_one"]
                 return _resume_incomplete(rec, yt_cookie, title, ids, spotify_id, hooks, version_sigs,
                                           one_to_one)
     r = _create_new(yt_cookie, title, description, ids, privacy, spotify_id, hooks, version_sigs,
-                    one_to_one)
+                    one_to_one, plan_slots, plan_guesses)
     return r
 
 def yt_create_playlist(yt_cookie: str, title: str, description: str, video_ids: list, privacy: str = "PRIVATE"):
@@ -3121,9 +3184,60 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
             return
         blog("spotify", f"run={run_id} ok name={pname} n={len(tracks)}")
         matched_ids = ["" for _ in tracks]
+        guesses = {}
         timeout_batches = 0
         num_batches = 0
-        for base in range(0, len(tracks), 10):
+        # A resume replays the plan the interrupted run persisted, and matches
+        # nothing: its playlist was built from those ids, so a fresh match would
+        # reconcile the rows against copies it never held — and, with 1:1 on,
+        # append a second copy of every track. A record that cannot name its plan
+        # is reported as interrupted instead; guessing is what this removes.
+        rec = _incomplete_record(sid)
+        plan = _resume_plan(rec, len(tracks)) if rec is not None else None
+        if rec is not None and plan is None:
+            with _RUN_LOCK:
+                if RUN.get("id") != run_id:
+                    return
+                RUN["phase"] = "failed"
+                RUN["state"] = "failed"
+                RUN["error"] = _NO_PLAN_MESSAGE.format(
+                    url=rec.get("url") or rec.get("yt_id", ""))[:300]
+                RUN["kind"] = "user"
+                RUN["hint"] = ("Reset the run, then transfer the playlist again to build a fresh "
+                               "playlist; nothing on YouTube Music was changed.")
+                RUN["seq"] += 1
+                RUN["updated_at"] = time.time()
+            blog("fail", f"run={run_id} interrupted run without a persisted plan")
+            return
+        if plan is not None:
+            slots, guesses = plan
+            with _RUN_LOCK:
+                if RUN.get("id") != run_id:
+                    return
+                for k, v in enumerate(slots):
+                    row = RUN["rows"][k]
+                    if v:
+                        row["videoId"] = v
+                        row["state"] = "matched"
+                        row["status"] = ""
+                        if k in guesses:
+                            row["guess"] = True
+                            row["status"] = ("best guess: " + guesses[k])[:80]
+                    elif row.get("state") == "queued":
+                        row["state"] = "skipped"
+                        row["status"] = "no match in the interrupted run"
+                    RUN["seq"] += 1
+                    row["row_seq"] = RUN["seq"]
+                matched_ids = list(slots)
+                RUN["matched"] = sum(1 for v in matched_ids if v)
+                RUN["skipped"] = sum(1 for v in matched_ids if not v)
+                RUN["sent"] = RUN["matched"]
+                RUN["updated_at"] = time.time()
+            blog("resume", f"run={run_id} replays the persisted plan "
+                           f"({len([v for v in slots if v])}/{len(slots)} rows matched)")
+        # No plan replayed means a fresh run: match the source once, and keep the
+        # per-row plan so a resume can replay it instead.
+        for base in (() if plan is not None else range(0, len(tracks), 10)):
             with _RUN_LOCK:
                 if RUN.get("id") != run_id or RUN.get("phase") == "failed":
                     return
@@ -3162,8 +3276,11 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                         row["status"] = ""
                         if (res or {}).get("best_guess"):
                             row["guess"] = True
-                            row["status"] = ("best guess: "
-                                             + str((res or {}).get("why") or "cross-script"))[:80]
+                            why = str((res or {}).get("why") or "cross-script")[:80]
+                            # On disk with the plan: a restart must not lose the
+                            # label that says this copy was a rank-1 guess.
+                            guesses[idx] = why
+                            row["status"] = ("best guess: " + why)[:80]
                     else:
                         row["state"] = "skipped"
                         row["status"] = str((res or {}).get("skipped") or (res or {}).get("error") or "no match")[:80]
@@ -3311,7 +3428,9 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                  "on_append_one": _on_one, "on_phase": _on_phase, "on_seed": _on_seed}
         try:
             res = transfer_create_append(yt_cookie, pname, "", vids, privacy, sid, hooks, sigs_for_pos,
-                                         one_to_one=one_to_one)
+                                         one_to_one=one_to_one,
+                                         plan_slots=list(matched_ids) if plan is None else None,
+                                         plan_guesses=dict(guesses) if plan is None else None)
         except Exception as e:
             msg = f"{type(e).__name__}: {e}"
             c = classify(msg)

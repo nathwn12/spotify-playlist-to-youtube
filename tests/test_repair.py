@@ -235,12 +235,12 @@ class Repair(unittest.TestCase):
             setattr(backend, k, v)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def transfer(self, upstream, tracks, one_to_one=None):
+    def transfer(self, upstream, tracks, one_to_one=None, batch=None):
         self.upstream = upstream
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch("urllib.request.urlopen", upstream))
             stack.enter_context(mock.patch.object(backend, "fetch_spotify_tracks", fake_fetch(tracks)))
-            stack.enter_context(mock.patch.object(backend, "yt_search_batch", fake_batch))
+            stack.enter_context(mock.patch.object(backend, "yt_search_batch", batch or fake_batch))
             if one_to_one is not None:
                 stack.enter_context(mock.patch.object(backend, "one_to_one_setting",
                                                       lambda: one_to_one))
@@ -462,6 +462,71 @@ class Repair(unittest.TestCase):
         self.assertTrue(upstream.actions, "no append was sent")
         for act in upstream.actions:
             self.assertNotIn("dedupeOption", act, "the persisted 1:1 off was flipped on resume")
+
+    # --- 4c: a resume replays the persisted plan, never a fresh match -------
+    def test_a_resume_uses_the_plan_the_interrupted_run_persisted(self):
+        """An interrupted run's record is the only plan its resume may use.
+
+        The interrupted create landed eight copies, then every read failed. When
+        the run is restarted the source searches to DIFFERENT videoIds, so a resume
+        that matched again would reconcile the rows against ids the playlist never
+        held and append a second copy of every track."""
+        tracks = tracks_for(8)
+        self.transfer(Upstream(browse_broken=True), tracks)   # the create, then no reads
+        rec = self.created()["SPOTREPAIR"]
+        self.assertEqual(rec.get("yt_id"), PLID)
+        self.assertIs(rec.get("complete"), False, rec)
+        plan = [vid(i) for i in range(1, 9)]
+        self.assertEqual(rec.get("video_ids"), plan,
+                         "the interrupted record did not carry the plan it was sent")
+
+        # The restart: the playlist still holds what the create carried, and the
+        # upstream search now answers with ids the playlist has never seen.
+        second = Upstream()
+        second.playlist = list(plan)
+        searches = []
+
+        def shifted(chunk, workers=8):
+            searches.append([(t or {}).get("title") for t in chunk])
+            return [{"ok": True, "query": (t or {}).get("title", ""),
+                     "videoId": "X%010d" % (k + 1)} for k, t in enumerate(chunk)]
+
+        snap = self.transfer(second, tracks, batch=shifted)
+
+        self.assertEqual(searches, [], "a resume matched the source again")
+        self.assertEqual(second.appends, [], "a resume appended off a fresh match")
+        self.assertEqual(second.playlist, plan, "the resume changed the playlist")
+        self.assertEqual([r.get("videoId") for r in snap["rows"]], plan,
+                         "the rows were reconciled against the new match")
+        self.assertEqual(snap["landed"], 8)
+        self.assertEqual(snap["phase"], "done", snap.get("error"))
+
+    def test_a_record_without_a_plan_reports_the_interrupted_run(self):
+        """A record that predates the persisted plan cannot say which copies the
+        playlist holds: resuming it would guess, and guessing appends copies that
+        are already there. So the run is reported as interrupted, not resumed."""
+        tracks = tracks_for(5)
+        upstream = Upstream()
+        upstream.playlist = [vid(i) for i in range(1, 6)]
+        with open(backend.CREATEDF, "w", encoding="utf-8") as f:
+            json.dump({"SPOTREPAIR": {"yt_id": PLID, "url": "https://example.invalid/p",
+                                      "title": "Repair Test", "expected": 5,
+                                      "complete": False, "state": "standby",
+                                      "attempt": 1, "next_run_at": 0, "pending": []}}, f)
+        searches = []
+
+        def shifted(chunk, workers=8):
+            searches.append([(t or {}).get("title") for t in chunk])
+            return [{"ok": True, "query": (t or {}).get("title", ""),
+                     "videoId": "X%010d" % (k + 1)} for k, t in enumerate(chunk)]
+
+        snap = self.transfer(upstream, tracks, batch=shifted)
+
+        self.assertEqual(snap["phase"], "failed", snap)
+        self.assertIn("interrupted", str(snap.get("error", "")).lower(), snap.get("error"))
+        self.assertEqual(searches, [], "a record without a plan was rematched")
+        self.assertEqual(upstream.appends, [], "a run without a plan appended off a guess")
+        self.assertEqual(upstream.playlist, [vid(i) for i in range(1, 6)])
 
     # --- 5: an empty parse is not an empty playlist -------------------------
     def test_a_read_that_parsed_no_ids_never_deletes_the_playlist(self):
