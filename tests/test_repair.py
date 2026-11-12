@@ -106,7 +106,7 @@ class Upstream:
     optional throttle that answers the next append with 429."""
 
     def __init__(self, page=PAGE, extra=(), throttle=0, paging_broken=False,
-                 break_after=0, drop=()):
+                 break_after=0, drop=(), blind_rows=False, empty_reads=0):
         self.page = page
         self.playlist = list(extra)   # ids the playlist really holds, in order
         self.appends = []             # every id an ACTION_ADD_VIDEO asked for
@@ -116,6 +116,9 @@ class Upstream:
         self.paging_broken = paging_broken
         self.break_after = break_after  # let this many page reads through, then stall
         self.drop = set(drop)         # ids an append accepts but never stores
+        self.blind_rows = blind_rows  # rows the parser cannot name (no videoId)
+        self.empty_reads = empty_reads  # initial browses served as a stale empty shelf
+        self.deletes = []             # every playlist id a delete asked for
         self.reads = 0
         self.continuations = []
 
@@ -125,6 +128,9 @@ class Upstream:
             body = json.loads((getattr(req, "data", b"") or b"{}").decode("utf-8"))
         except Exception:
             body = {}
+        if "playlist/delete" in url:
+            self.deletes.append(body.get("playlistId", ""))
+            return Resp({})
         if "edit_playlist" in url:
             return self.edit(body, url)
         if "youtubei/v1/playlist/create" in url:
@@ -159,6 +165,11 @@ class Upstream:
         self.reads += 1
         held = list(self.playlist)
         token = body.get("continuation")
+        if not token and self.empty_reads:
+            # A stale, token-complete reply that claims an empty playlist: InnerTube
+            # serves this straight after a create for a playlist that does hold rows.
+            self.empty_reads -= 1
+            return Resp({"contents": {"musicPlaylistShelfRenderer": {"contents": []}}})
         if token:
             self.continuations.append(token)
             if self.paging_broken or (self.break_after and self.reads > self.break_after):
@@ -168,7 +179,8 @@ class Upstream:
             start = 0
         page = held[start:start + self.page]
         shelf = {"contents": [{"musicResponsiveListItemRenderer":
-                               {"playlistItemData": {"videoId": v}}} for v in page]}
+                               ({} if self.blind_rows else {"playlistItemData": {"videoId": v}})}
+                              for v in page]}
         if start + len(page) < len(held):
             shelf["continuations"] = [{"nextContinuationData":
                                        {"continuation": "page:%d" % (start + len(page))}}]
@@ -402,6 +414,30 @@ class Repair(unittest.TestCase):
         self.assertEqual(snap["state"], "done")
         self.assertEqual(snap["attempt"], 3, "the resumed run kept its own attempt count")
         self.assertEqual(snap["landed"], 60)
+
+    # --- 5: an empty parse is not an empty playlist -------------------------
+    def test_a_read_that_parsed_no_ids_never_deletes_the_playlist(self):
+        """Rows the parser cannot name, then a continuation that stalls: the read
+        parses zero ids and proves nothing, so it must not delete the playlist."""
+        tracks = tracks_for(40)
+        extras = ["X%010d" % i for i in range(70)]
+        upstream = Upstream(extra=extras, blind_rows=True, paging_broken=True)
+        snap = self.transfer(upstream, tracks)
+
+        self.assertEqual(upstream.deletes, [], "an unread playlist was deleted")
+        self.assertNotIn("husk deleted", snap.get("error", ""))
+        self.assertIn(snap["phase"], ("failed", "done"), snap)
+
+    def test_a_single_empty_complete_read_is_not_proof_the_playlist_is_empty(self):
+        """The browse served after a create can be token-complete and hold nothing
+        for a playlist that does hold rows: one such read must never delete it."""
+        tracks = tracks_for(40)
+        upstream = Upstream(empty_reads=10)     # ten stale empty replies, then the truth
+        snap = self.transfer(upstream, tracks)
+
+        self.assertEqual(upstream.deletes, [], "a stale empty read deleted the playlist")
+        self.assertEqual(len(upstream.playlist), len(tracks))
+        self.assertNotIn("husk deleted", snap.get("error", ""))
 
     # --- 5: Retry now only has a wait to cut short --------------------------
     def test_retry_now_only_cuts_short_a_standby(self):

@@ -2464,6 +2464,22 @@ def yt_delete_playlist(plid: str, yt_cookie: str) -> bool:
         blog("delete", f"{plid} {type(e).__name__} {getattr(e, 'code', '')}")
         return False
 
+def _proven_empty(plid: str, yt_cookie: str, entries, complete: bool) -> bool:
+    """True only when the playlist is proven empty: one COMPLETE read that held no
+    entries, confirmed by a second complete read.
+
+    Neither half alone is proof. A read whose continuation failed proves nothing
+    about its tail, and a browse served straight after a create comes back
+    token-complete and holding nothing for a playlist that does hold rows
+    (observed live) - so a single empty complete reply may not authorise a
+    delete either."""
+    if not complete or not isinstance(entries, list) or entries:
+        return False
+    again, again_complete = _read_back_retry(plid, yt_cookie, tries=2)
+    if again is None or not again_complete:
+        return False
+    return not again
+
 def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, hooks=None,
                 version_sigs=None, one_to_one=None):
     on_created = (hooks or {}).get("on_created")
@@ -2538,7 +2554,7 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
     _persist_final(spotify_id, plid, url, title, len(video_ids),
                    added + duplicates == len(video_ids))
     if not added:
-        if isinstance(entries, list) and len(entries) == 0:
+        if _proven_empty(plid, yt_cookie, entries, entries_complete):
             cleaned = yt_delete_playlist(plid, yt_cookie)
             raise RuntimeError("nothing landed (playlist reads back empty"
                                + (", husk deleted" if cleaned else ", husk cleanup failed — delete it manually")
@@ -2597,7 +2613,7 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
     _persist_final(spotify_id, plid, url, title, len(video_ids),
                    added + duplicates == len(video_ids))
     if not added:
-        if isinstance(entries2, list) and len(entries2) == 0:
+        if _proven_empty(plid, yt_cookie, entries2, entries2_complete):
             cleaned = yt_delete_playlist(plid, yt_cookie)
             raise RuntimeError("nothing landed (playlist reads back empty"
                                + (", husk deleted" if cleaned else ", husk cleanup failed — delete it manually")
