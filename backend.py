@@ -25,6 +25,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_VERSION = "0.3.1"
 
+# Test seams: every wait and every clock read the retry machinery reasons with
+# goes through these two, so a test can exercise the backoff without spending it.
+def _now() -> float:
+    """Now, on the clock the retry machinery reasons with."""
+    return time.time()
+
+def _pause(seconds: float) -> None:
+    """A short retry pause: one page retry, one add retry."""
+    if seconds > 0:
+        time.sleep(seconds)
+
 HERE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 STATE = os.path.join(os.environ.get("APPDATA", HERE), "sp2yt")
 try:
@@ -1920,7 +1931,7 @@ def yt_playlist_read(plid: str, yt_cookie: str) -> dict:
                 if not token:
                     break  # nothing proven yet: the caller's retry loop owns the whole read
                 if attempt < PLAYLIST_PAGE_TRIES - 1:
-                    time.sleep(1.0)
+                    _pause(1.0)
         if j is None:
             why = f"{type(last).__name__} {getattr(last, 'code', '')}".strip()
             if not token:
@@ -2057,7 +2068,7 @@ def yt_add_one(plid: str, vid: str, yt_cookie: str, one_to_one=None) -> str:
 
     st, body, transport = once()
     if transport or _is_transport_text(st):
-        time.sleep(1.5)
+        _pause(1.5)
         st2, body2, transport2 = once()
         blog("add", f"retry {vid} first={st[:60]} second={st2[:60]}")
         if not transport2 and _is_already_text(st2):
@@ -2259,7 +2270,7 @@ def _read_back_retry(plid, yt_cookie, tries: int = 5, minimum: int = 0):
             if not complete:
                 break
         if a < tries - 1:
-            time.sleep(1.5)
+            _pause(1.5)
     if best is not None and len(seen) > 1:
         blog("readback", f"{plid} short reads {sorted(seen)} settled longest={len(best)}")
     if best is not None and not best_complete:
@@ -2785,7 +2796,7 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
             return True
         attempt += 1
         delay = _retry_delay(attempt)
-        nxt = time.time() + delay
+        nxt = _now() + delay
         run_set(state="standby", attempt=attempt, next_attempt_at=nxt,
                 reason=reason, residual=residual)
         _persist_progress(spotify_id, plid, url, title, len(intended), state="standby",

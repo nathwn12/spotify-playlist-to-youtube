@@ -234,8 +234,19 @@ class ScaleReport(unittest.TestCase):
         backend._SEARCH_CACHE = {}
         backend._SP_TOK = {"token": "", "exp_ms": 0}
         backend._SP_BUNDLE = {"js": "", "qhash": "", "at": 0.0}
+        # The clock seam: the run's backoff is exercised, never spent.
+        self.waits = []
+        self._seams = [mock.patch.object(backend, "_pause", lambda s: None),
+                       mock.patch.object(backend, "_standby_wait", self._wait, create=True)]
+        for p in self._seams:
+            p.start()
+
+    def _wait(self, seconds):
+        self.waits.append({"delay": seconds, "snap": backend.run_snapshot()})
 
     def tearDown(self):
+        for p in self._seams:
+            p.stop()
         for k, v in self._saved.items():
             setattr(backend, k, v)
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -301,7 +312,11 @@ class ScaleReport(unittest.TestCase):
         summary = snap["summary"]
         self.assertTrue(any(w in summary.lower() for w in UNVERIFIED_WORDS), summary)
         self.assertIn(str(TRACKS - PAGE), summary)
-        # A count it cannot support must not be printed at all.
+        # A count it cannot support must not be printed at all. The real summary
+        # format is "<n> refused" / "<n> missing", so the assertion names that
+        # format - the old "refused <n>" spelling passed on the wrong text.
+        self.assertNotIn("%d refused" % (TRACKS - PAGE), summary)
+        self.assertNotIn("%d missing" % (TRACKS - PAGE), summary)
         self.assertNotIn("refused %d" % (TRACKS - PAGE), summary)
         self.assertNotIn("missing %d" % (TRACKS - PAGE), summary)
 
