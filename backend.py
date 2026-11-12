@@ -55,6 +55,7 @@ RUN = {
     "refused": 0,
     "skipped": 0,
     "missing": 0,
+    "unverified": 0,
     "guessed": 0,
     "rows": [],
     "error": "",
@@ -120,6 +121,7 @@ def run_begin(spotify_id="", title=""):
         RUN["refused"] = 0
         RUN["skipped"] = 0
         RUN["missing"] = 0
+        RUN["unverified"] = 0
         RUN["guessed"] = 0
         RUN["declared"] = 0
         RUN["summary"] = ""
@@ -159,6 +161,7 @@ def run_reset() -> bool:
         RUN["refused"] = 0
         RUN["skipped"] = 0
         RUN["missing"] = 0
+        RUN["unverified"] = 0
         RUN["guessed"] = 0
         RUN["declared"] = 0
         RUN["summary"] = ""
@@ -1727,12 +1730,17 @@ def yt_headers(yt_cookie: str) -> dict:
             "Authorization": sapisid_hash(yt_cookie), "X-Origin": YT_ORIGIN}
 
 CREATE_INLINE_MAX = 50  # playlist/create carries at most this many videoIds inline
+PLAYLIST_PAGE_MAX = 200  # browse pages per read: ~100-entry pages cover 20k tracks, well past the README's 5k
+PLAYLIST_PAGE_TRIES = 2  # one retry per continuation page before the read is called short
 
 def _shelf(node):
-    """musicPlaylistShelfRenderer anywhere in a browse reply (shape drifts)."""
+    """musicPlaylistShelfRenderer/_Continuation anywhere in a browse reply (shape
+    drifts: a first browse wraps the shelf in contents, a continuation serves the
+    same rows under continuationContents)."""
     if isinstance(node, dict):
-        if "musicPlaylistShelfRenderer" in node:
-            return node["musicPlaylistShelfRenderer"]
+        for k in ("musicPlaylistShelfRenderer", "musicPlaylistShelfContinuation"):
+            if k in node:
+                return node[k]
         for v in node.values():
             r = _shelf(v)
             if r:
@@ -1744,25 +1752,151 @@ def _shelf(node):
                 return r
     return None
 
-def yt_playlist_entries(plid: str, yt_cookie: str):
-    """Every entry on the playlist, in order, repeats included. None on any failure.
-    Reads playlist rows only — not recommendations or headers — so this is the real
-    playlist length, unlike a bare videoId regex over the whole reply."""
-    try:
-        body = json.dumps({"context": {"client": CLIENT}, "browseId": vl_id(plid)}).encode()
-        req = urllib.request.Request(
-            f"https://music.youtube.com/youtubei/v1/browse?key={YT_KEY}&prettyPrint=false",
-            data=body, headers=yt_headers(yt_cookie))
-        j = json.loads(urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "ignore"))
-        out = []
-        for item in (_shelf(j) or {}).get("contents", []) or []:
+def _continuation_command_token(node) -> str:
+    """continuationCommand.token anywhere inside one shelf item (live WEB_REMIX shape)."""
+    if isinstance(node, dict):
+        cmd = node.get("continuationCommand")
+        if isinstance(cmd, dict) and cmd.get("token"):
+            return str(cmd["token"])
+        for v in node.values():
+            t = _continuation_command_token(v)
+            if t:
+                return t
+    elif isinstance(node, list):
+        for v in node:
+            t = _continuation_command_token(v)
+            if t:
+                return t
+    return ""
+
+def _continuation_items(node):
+    """continuationItems from an appendContinuationItemsAction anywhere in the reply.
+    This is what a live WEB_REMIX playlist continuation actually returns: there is no
+    shelf node in that reply at all, only the rows and the next token."""
+    if isinstance(node, dict):
+        act = node.get("appendContinuationItemsAction")
+        if isinstance(act, dict) and isinstance(act.get("continuationItems"), list):
+            return act["continuationItems"]
+        for v in node.values():
+            r = _continuation_items(v)
+            if r is not None:
+                return r
+    elif isinstance(node, list):
+        for v in node:
+            r = _continuation_items(v)
+            if r is not None:
+                return r
+    return None
+
+def _playlist_page(j) -> tuple:
+    """(items, continuations, found) for one reply: a shelf node when the reply has
+    one, else the continuation items an appendContinuationItemsAction carries.
+    found False means the reply held no playlist rows in any known shape."""
+    shelf = _shelf(j)
+    if shelf is not None:
+        return list(shelf.get("contents") or []), list(shelf.get("continuations") or []), True
+    items = _continuation_items(j)
+    if items is not None:
+        return items, [], True
+    return [], [], False
+
+def _next_page_token(continuations, items) -> str:
+    """The next page token in either shape YTM serves: the legacy
+    continuations[].nextContinuationData.continuation field, or the live
+    continuationItemRenderer -> continuationEndpoint -> continuationCommand -> token
+    item that ends the page. "" means this was the last page."""
+    for c in continuations or []:
+        d = c.get("nextContinuationData") if isinstance(c, dict) else None
+        if isinstance(d, dict) and d.get("continuation"):
+            return str(d["continuation"])
+    # A dedicated continuation item first, any other item only as a fallback: a
+    # track row can carry endpoints of its own, and a stray token that is not the
+    # page's would end the read early.
+    for item in items or []:
+        if isinstance(item, dict) and "continuationItemRenderer" in item:
+            t = _continuation_command_token(item)
+            if t:
+                return t
+    for item in items or []:
+        t = _continuation_command_token(item)
+        if t:
+            return t
+    return ""
+
+def _browse_playlist(body: dict, yt_cookie: str):
+    """One browse reply, parsed."""
+    req = urllib.request.Request(
+        f"https://music.youtube.com/youtubei/v1/browse?key={YT_KEY}&prettyPrint=false",
+        data=json.dumps(body).encode(), headers=yt_headers(yt_cookie))
+    return json.loads(urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "ignore"))
+
+def yt_playlist_read(plid: str, yt_cookie: str) -> dict:
+    """Every entry on the playlist, in order, repeats included, following the
+    continuation token to the last page.
+    -> {"entries": list|None, "complete": bool, "why": str}
+
+    entries is None when even the first page could not be read. A continuation that
+    stalls or repeats leaves complete False and entries holding only the pages that
+    were proven, so no caller can mistake an unread tail for an empty one.
+
+    Entries accumulate positionally and are never deduped: a playlist may hold the
+    same videoId twice (the owner's does, 28 pairs), so a re-served page is rejected
+    by its token, never by videoId identity."""
+    out, seen, token, last = [], set(), "", None
+    for _page in range(PLAYLIST_PAGE_MAX):
+        body = {"context": {"client": CLIENT}}
+        if token:
+            body["continuation"] = token
+        else:
+            body["browseId"] = vl_id(plid)
+        j = None
+        for attempt in range(PLAYLIST_PAGE_TRIES):
+            try:
+                j = _browse_playlist(body, yt_cookie)
+                break
+            except Exception as e:
+                last = e
+                if not token:
+                    break  # nothing proven yet: the caller's retry loop owns the whole read
+                if attempt < PLAYLIST_PAGE_TRIES - 1:
+                    time.sleep(1.0)
+        if j is None:
+            why = f"{type(last).__name__} {getattr(last, 'code', '')}".strip()
+            if not token:
+                return {"entries": None, "complete": False, "why": why}
+            return {"entries": out, "complete": False,
+                    "why": f"continuation failed after {len(out)} entries ({why})"}
+        items, continuations, found = _playlist_page(j)
+        if not found:
+            # A reply with no playlist rows (a refusal, a page shape change) proves
+            # nothing: report it unread, never as a playlist holding zero entries.
+            if not token:
+                return {"entries": None, "complete": False, "why": "no playlist rows in reply"}
+            return {"entries": out, "complete": False,
+                    "why": f"no playlist rows in continuation after {len(out)} entries"}
+        for item in items:
             mrl = item.get("musicResponsiveListItemRenderer", {}) if isinstance(item, dict) else {}
             v = mrl_video_id(mrl) if mrl else ""
             if v:
                 out.append(v)
-        return out
-    except Exception:
-        return None
+        nxt = _next_page_token(continuations, items)
+        if not nxt:
+            return {"entries": out, "complete": True, "why": ""}
+        if nxt in seen:
+            return {"entries": out, "complete": False,
+                    "why": f"continuation token repeated after {len(out)} entries"}
+        seen.add(nxt)
+        token = nxt
+    return {"entries": out, "complete": False,
+            "why": f"page cap {PLAYLIST_PAGE_MAX} reached after {len(out)} entries"}
+
+def yt_playlist_entries(plid: str, yt_cookie: str):
+    """Every entry on the playlist, in order, repeats included. None on any failure.
+    A read cut short returns only the entries it proved — yt_playlist_read carries
+    the completeness flag, and callers that report absence must use it.
+    Reads playlist rows only — not recommendations or headers — so this is the real
+    playlist length, unlike a bare videoId regex over the whole reply."""
+    return yt_playlist_read(plid, yt_cookie)["entries"]
 
 def yt_playlist_count(plid: str, yt_cookie: str) -> int:
     """Entries on the playlist. 0 on any failure."""
@@ -1971,37 +2105,50 @@ def _persist_final(spotify_id, plid, url, title, expected, complete):
         pass
 
 def _read_back_retry(plid, yt_cookie, tries: int = 5, minimum: int = 0):
-    """Longest stable read wins. InnerTube browse reads go short — an empty list
-    straight after a 50-inline create was observed live — so keep the longest
-    non-None read, stop early on two agreeing reads at/above minimum, and log
-    every disagreeing set for the audit trail. All None -> None (callers keep
-    their read-back-failed errors)."""
-    best, prev, seen = None, -1, set()
+    """The first full read wins: a read that followed its continuations to the end
+    and holds at least `minimum` entries is returned at once, so the common case
+    costs one pass instead of N re-reads of page one. A read that came back short
+    but complete is retried — InnerTube browse reads go short straight after an
+    inline create (an empty list was observed live) — and the longest of those wins.
+    A read whose continuation failed is not retried here: it already retried its own
+    page, and the pages it proved are the honest answer, returned with complete
+    False so no caller scores the unread tail as absent. All None -> (None, False),
+    and callers keep their read-back-failed errors.
+    -> (entries|None, complete: bool)"""
+    best, best_complete, seen = None, False, set()
     for a in range(max(1, tries)):
         try:
-            entries = yt_playlist_entries(plid, yt_cookie)
+            read = yt_playlist_read(plid, yt_cookie)
+            entries, complete = read["entries"], bool(read["complete"])
         except Exception:
-            entries = None
+            entries, complete = None, False
         if entries is not None:
+            if complete and (not minimum or len(entries) >= minimum):
+                return entries, True
             if best is None or len(entries) > len(best):
-                best = entries
+                best, best_complete = entries, complete
             seen.add(len(entries))
-            if len(entries) == prev and (not minimum or len(entries) >= minimum):
+            if not complete:
                 break
-            prev = len(entries)
         if a < tries - 1:
             time.sleep(1.5)
     if best is not None and len(seen) > 1:
         blog("readback", f"{plid} short reads {sorted(seen)} settled longest={len(best)}")
-    return best
+    if best is not None and not best_complete:
+        blog("readback", f"{plid} incomplete read {len(best)} entries")
+    return best, best_complete
 
-def _reconcile(video_ids, entries, attempts: dict) -> list:
+def _reconcile(video_ids, entries, attempts: dict, complete: bool = True) -> list:
     """Final ledger: the read-back multiset is the only source of truth.
     Present (unclaimed copy) -> landed, whatever the append said: a FAILED
     duplicate-reject of an inline-seeded id, or a timed-out-then-applied
     append, is still on the playlist. Absent -> refused when YTM said FAILED,
     else missing ("sent but not on the playlist at read-back"). SUCCEEDED but
-    absent is missing, never landed: landed means read back, nothing else."""
+    absent is missing, never landed: landed means read back, nothing else.
+
+    complete False means the read stopped before the playlist ended, so it proves
+    nothing about the tail: every absent copy is then unverified — never refused
+    and never missing, because the pages that would prove it were never read."""
     left = {}
     for v in entries or []:
         left[v] = left.get(v, 0) + 1
@@ -2012,6 +2159,11 @@ def _reconcile(video_ids, entries, attempts: dict) -> list:
             out.append({"i": i + 1, "videoId": v, "outcome": "landed", "status": ""})
             continue
         st = (attempts.get(i, "") or "")
+        if not complete:
+            out.append({"i": i + 1, "videoId": v, "outcome": "missing", "unverified": True,
+                        "status": (f"unverified — read-back stopped after {len(entries or [])} "
+                                   f"of {len(video_ids)} entries")[:80]})
+            continue
         if "FAILED" in st.upper():
             out.append({"i": i + 1, "videoId": v, "outcome": "rejected", "status": st[:80]})
         elif st:
@@ -2021,12 +2173,20 @@ def _reconcile(video_ids, entries, attempts: dict) -> list:
             out.append({"i": i + 1, "videoId": v, "outcome": "missing", "status": ""})
     return out
 
-def _done_summary(landed, refused, skipped, missing, declared, n_pl, parts, topped_up=None, sent=None, guessed=0):
+def _done_summary(landed, refused, skipped, missing, declared, n_pl, parts, topped_up=None, sent=None,
+                  guessed=0, unverified=0):
     """The done line is derived from reconciled rows plus the read-back whose
     length is printed: refused rows were proven absent from that same read, so
     the line can never print N landed beside a different holds count without
-    naming the split in the same sentence."""
-    landed, refused, skipped, missing = int(landed or 0), int(refused or 0), int(skipped or 0), int(missing or 0)
+    naming the split in the same sentence.
+
+    `missing` and `unverified` are counted apart: missing is absent from a read
+    that reached the end of the playlist (proof), unverified is present but
+    unproven because the read stopped short. The page calls both Unverified, so
+    the line prints that one word for both and never claims a count it cannot
+    support."""
+    landed, refused, skipped = int(landed or 0), int(refused or 0), int(skipped or 0)
+    missing, unverified = int(missing or 0), int(unverified or 0)
     m, n = int(declared or 0), int(n_pl or 0)
     if topped_up is not None:
         head = f"topped up {int(topped_up)} of {int(sent or 0)} — "
@@ -2035,10 +2195,14 @@ def _done_summary(landed, refused, skipped, missing, declared, n_pl, parts, topp
     guesses = int(guessed or 0)
     guess_part = f"best guess {guesses} \u00b7 " if guesses > 0 else ""
     line = (f"{head}landed {landed} of {m} \u00b7 not found {skipped} ({parts or 'none'}) "
-            f"\u00b7 {guess_part}refused {refused} \u00b7 missing {missing} \u00b7 ")
-    if landed + refused + skipped + missing != m:
-        return line + (f"counts do not reconcile ({landed}+{refused}+{skipped}+{missing}!={m}) "
+            f"\u00b7 {guess_part}refused {refused} \u00b7 unverified {missing + unverified} \u00b7 ")
+    if landed + refused + skipped + missing + unverified != m:
+        return line + (f"counts do not reconcile "
+                       f"({landed}+{refused}+{skipped}+{missing}+{unverified}!={m}) "
                        f"— playlist holds {n}")
+    if unverified:
+        return line + (f"playlist read stopped at {n} entries, so the last {unverified} are "
+                       f"unverified (resume re-verifies, no re-transfer)")
     if landed == n:
         return line + f"verified against the playlist (holds {n})"
     if landed < n:
@@ -2116,8 +2280,9 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
             on_created(plid, url, False)
         except Exception:
             pass
-    first = _read_back_retry(plid, yt_cookie, minimum=len(video_ids))
-    blog("create", f"id={plid} inline={len(inline)} back={-1 if first is None else len(first)}")
+    first, first_complete = _read_back_retry(plid, yt_cookie, minimum=len(video_ids))
+    blog("create", f"id={plid} inline={len(inline)} back={-1 if first is None else len(first)} "
+                   f"complete={first_complete}")
     if first is None:
         blog("verify", "read-back after create returned nothing — no appends attempted")
         raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (read-back failed)")
@@ -2139,10 +2304,10 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
             on_phase("verify")
         except Exception:
             pass
-    entries = _read_back_retry(plid, yt_cookie, minimum=len(video_ids))
+    entries, entries_complete = _read_back_retry(plid, yt_cookie, minimum=len(video_ids))
     if entries is None:
         raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (final read-back failed)")
-    ledger = _reconcile(video_ids, entries, attempts)
+    ledger = _reconcile(video_ids, entries, attempts, entries_complete)
     added, rejected, missing = _ledger_counts(ledger)
     repeats = _repeat_count(video_ids, version_sigs)
     blog("parity", f"{added}/{len(video_ids)} landed, {rejected} refused, {missing} missing, "
@@ -2180,7 +2345,7 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
             on_phase("append")
         except Exception:
             pass
-    entries = _read_back_retry(plid, yt_cookie, minimum=len(video_ids))
+    entries, _ = _read_back_retry(plid, yt_cookie, minimum=len(video_ids))
     if entries is None:
         raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (read-back failed)")
     seed_ledger = _seed_ledger(video_ids, entries)
@@ -2197,10 +2362,10 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
             on_phase("verify")
         except Exception:
             pass
-    entries2 = _read_back_retry(plid, yt_cookie, minimum=len(video_ids))
+    entries2, entries2_complete = _read_back_retry(plid, yt_cookie, minimum=len(video_ids))
     if entries2 is None:
         raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (final read-back failed)")
-    ledger = _reconcile(video_ids, entries2, attempts)
+    ledger = _reconcile(video_ids, entries2, attempts, entries2_complete)
     added, rejected, missing = _ledger_counts(ledger)
     repeats = _repeat_count(video_ids, version_sigs)
     blog("parity", f"resume {added}/{len(video_ids)} landed, {rejected} refused, {missing} missing")
@@ -2232,11 +2397,11 @@ def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PR
         rec = load_created().get(spotify_id)
         if rec and rec.get("yt_id"):
             if rec.get("complete") is True:
-                entries = _read_back_retry(rec["yt_id"], yt_cookie, minimum=len(ids))
+                entries, entries_complete = _read_back_retry(rec["yt_id"], yt_cookie, minimum=len(ids))
                 if entries is None:
                     entries = []
                 if entries is not None:
-                    seed = _reconcile(ids, entries, {})
+                    seed = _reconcile(ids, entries, {}, entries_complete)
                     todo = [int(e["i"]) - 1 for e in seed if e["outcome"] != "landed"]
                     if not todo:
                         added = sum(1 for e in seed if e["outcome"] == "landed")
@@ -2263,10 +2428,10 @@ def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PR
                             on_phase("verify")
                         except Exception:
                             pass
-                    entries2 = _read_back_retry(plid, yt_cookie, minimum=len(ids))
+                    entries2, entries2_complete = _read_back_retry(plid, yt_cookie, minimum=len(ids))
                     if entries2 is None:
                         raise RuntimeError(f"playlist topped up at {rec.get('url')} — appends sent but the rest could not be verified (final read-back failed)")
-                    ledger = _reconcile(ids, entries2, attempts)
+                    ledger = _reconcile(ids, entries2, attempts, entries2_complete)
                     added, rejected, missing = _ledger_counts(ledger)
                     todo_set = set(todo)
                     newly = sum(1 for e in ledger
@@ -2583,6 +2748,9 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                 else:
                     RUN["rows"][k]["state"] = "missing"
                     RUN["rows"][k]["status"] = str(e.get("status", ""))[:80]
+                    if e.get("unverified"):
+                        # present but unproven: the read stopped before its page
+                        RUN["rows"][k]["unverified"] = True
                 RUN["seq"] += 1
                 RUN["rows"][k]["row_seq"] = RUN["seq"]
             RUN["playlist_id"] = res.get("playlistId", RUN.get("playlist_id", ""))
@@ -2596,11 +2764,16 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                     row["status"] = (row.get("status") or "reconciled as missing")[:80]
                     RUN["seq"] += 1
                     row["row_seq"] = RUN["seq"]
-            # recount from rows so /api/run always agrees with the ledger chips
+            # recount from rows so /api/run always agrees with the ledger chips.
+            # A row the read-back never reached is unverified, counted apart from
+            # missing (which a read that reached the end of the playlist proved).
             RUN["landed"] = sum(1 for row in RUN["rows"] if row.get("state") == "landed")
             RUN["skipped"] = sum(1 for row in RUN["rows"] if row.get("state") == "skipped")
             RUN["refused"] = sum(1 for row in RUN["rows"] if row.get("state") == "refused")
-            RUN["missing"] = sum(1 for row in RUN["rows"] if row.get("state") == "missing")
+            RUN["unverified"] = sum(1 for row in RUN["rows"]
+                                    if row.get("state") == "missing" and row.get("unverified"))
+            RUN["missing"] = sum(1 for row in RUN["rows"]
+                                 if row.get("state") == "missing" and not row.get("unverified"))
             buckets = {}
             for row in RUN["rows"]:
                 if row.get("state") == "skipped":
@@ -2624,8 +2797,8 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
             n_pl = int(res.get("playlist_count", 0) or 0)
             RUN["playlist_count"] = n_pl
             # Derived, never accumulated: rows were recounted from the reconciled
-            # ledger above, so landed+refused+skipped+missing == declared and the
-            # holds count is the read-back the ledger consumed. Guesses are
+            # ledger above, so landed+refused+skipped+missing+unverified == declared
+            # and the holds count is the read-back the ledger consumed. Guesses are
             # landed rows that were labelled, counted so the line can name them.
             RUN["guessed"] = sum(1 for row in RUN["rows"]
                                  if row.get("guess") and row.get("state") == "landed")
@@ -2633,7 +2806,8 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                 RUN.get("landed", 0), RUN.get("refused", 0), skipped_n,
                 RUN.get("missing", 0), dec, n_pl, parts,
                 topped_up=(int(res.get("topped_up", 0)) if res.get("topped_up") is not None else None),
-                sent=int(res.get("sent", 0) or 0), guessed=RUN["guessed"])
+                sent=int(res.get("sent", 0) or 0), guessed=RUN["guessed"],
+                unverified=RUN.get("unverified", 0))
             RUN["phase"] = "done"
             RUN["error"] = ""
             RUN["seq"] += 1
@@ -2738,10 +2912,11 @@ class H(BaseHTTPRequestHandler):
                             "matched": int(snap.get("matched", 0) or 0),
                             "sent": int(snap.get("sent", 0) or 0),
                             "landed": int(snap.get("landed", 0) or 0),
-                            "attempted": int(snap.get("landed", 0) or 0) + int(snap.get("refused", 0) or 0) + int(snap.get("missing", 0) or 0) + int(snap.get("skipped", 0) or 0),
+                            "attempted": int(snap.get("landed", 0) or 0) + int(snap.get("refused", 0) or 0) + int(snap.get("missing", 0) or 0) + int(snap.get("unverified", 0) or 0) + int(snap.get("skipped", 0) or 0),
                             "refused": int(snap.get("refused", 0) or 0),
                             "skipped": int(snap.get("skipped", 0) or 0),
                             "missing": int(snap.get("missing", 0) or 0),
+                            "unverified": int(snap.get("unverified", 0) or 0),
                             "playlist_count": int(snap.get("playlist_count", 0) or 0),
                             "rows": rows,
                             "error": snap.get("error", ""),
