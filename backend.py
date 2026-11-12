@@ -2328,18 +2328,15 @@ def _reconcile(video_ids, entries, attempts: dict, complete: bool = True) -> lis
     nothing about the tail: every absent copy is then unverified — never refused
     and never missing, because the pages that would prove it were never read.
 
-    An absent copy of a videoId the playlist already holds is `duplicate`, not
-    `refused`: YouTube Music refuses a second copy by design, so it can never be
-    added. The refusal itself is recognised by its own signature (STATUS_FAILED
-    plus the already-in-the-playlist toast); the copy count corroborates it, so a
-    plain STATUS_FAILED with no such toast stays a refusal."""
+    An absent copy of a videoId the playlist already holds is `duplicate` when --
+    and only when -- YouTube Music said so: STATUS_FAILED plus the already-on-the-
+    playlist toast is the whole proof, and `yt_add_one` reduces that signature to
+    STATUS_DUPLICATE. The copy count only corroborates it. A plain STATUS_FAILED
+    on a repeated id stays `refused`, and an absent copy nobody sent a verdict for
+    stays `missing`: multiplicity is never a substitute for the server's answer."""
     left = {}
     for v in entries or []:
         left[v] = left.get(v, 0) + 1
-    held = dict(left)
-    want = {}
-    for v in video_ids or []:
-        want[v] = want.get(v, 0) + 1
     out = []
     for i, v in enumerate(video_ids):
         if left.get(v, 0) > 0:
@@ -2352,9 +2349,7 @@ def _reconcile(video_ids, entries, attempts: dict, complete: bool = True) -> lis
                         "status": (f"unverified — read-back stopped after {len(entries or [])} "
                                    f"of {len(video_ids)} entries")[:80]})
             continue
-        structural = (held.get(v, 0) > 0 and want.get(v, 0) > held.get(v, 0)
-                      and not is_transport_status(st) and not is_fatal_status(st))
-        if "DUPLICATE" in st.upper() or structural:
+        if "DUPLICATE" in st.upper():
             out.append({"i": i + 1, "videoId": v, "outcome": "duplicate",
                         "status": "already on the playlist — a second copy cannot be added"})
         elif "FAILED" in st.upper():
@@ -2608,6 +2603,7 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
     return {"playlistId": plid, "url": url,
             "added": added, "sent": len(video_ids), "rejected": rejected,
             "missing": missing, "duplicates": duplicates, "repeats": repeats, "ledger": ledger,
+            "attempts": dict(attempts),
             "playlist_count": len(entries) if isinstance(entries, list) else 0}
 
 def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
@@ -2670,6 +2666,7 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
             "added": added, "sent": len(video_ids), "rejected": rejected,
             "missing": missing, "duplicates": duplicates, "repeats": repeats,
             "ledger": ledger, "resumed": True,
+            "attempts": dict(attempts),
             "playlist_count": len(entries2) if isinstance(entries2, list) else 0}
 
 def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PRIVATE",
@@ -2745,6 +2742,7 @@ def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PR
                     return {"playlistId": plid, "url": rec.get("url", ""),
                             "added": added, "sent": len(ids), "rejected": rejected, "missing": missing,
                             "duplicates": duplicates, "repeats": repeats, "existing": True, "ledger": ledger,
+                            "attempts": dict(attempts),
                             "playlist_count": len(entries2) if isinstance(entries2, list) else 0,
                             "topped_up": newly}
             else:
@@ -3240,7 +3238,15 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
         conv = _converge(res.get("playlistId", ""), yt_cookie, vids, sid, pname,
                          res.get("url", ""), stalled=stalled, one_to_one=one_to_one)
         entries_final = conv.get("entries")
-        attempts = {i: (conv.get("statuses") or {}).get(v, "") for i, v in enumerate(vids)}
+        # The first pass's verdicts are evidence too: a copy YTM refused stays
+        # refused, so its status is carried into the final ledger instead of being
+        # re-derived from the plan's id multiplicity. The convergence pass only
+        # overwrites a position it sent again itself.
+        attempts = {int(k): v for k, v in (res.get("attempts") or {}).items()}
+        for i, v in enumerate(vids):
+            st = (conv.get("statuses") or {}).get(v, "")
+            if st:
+                attempts[i] = st
         ledger = _reconcile(vids, entries_final or [], attempts, bool(conv.get("complete")))
         with _RUN_LOCK:
             if RUN.get("id") != run_id:

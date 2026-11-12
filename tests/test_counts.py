@@ -116,6 +116,7 @@ class Upstream:
         self.playlist = []
         self.actions = []     # every ACTION_ADD_VIDEO entry an edit call carried
         self.creates = 0
+        self.plain_refusals = False  # answer STATUS_FAILED with no duplicate toast
 
     def __call__(self, req, timeout=None):
         url = getattr(req, "full_url", "") or str(req)
@@ -143,7 +144,7 @@ class Upstream:
         self.actions.append(act)
         v = act.get("addedVideoId") or ""
         if v in self.playlist and act.get("dedupeOption") != SKIP:
-            return Resp(DUP_REPLY)
+            return Resp({"status": "STATUS_FAILED"} if self.plain_refusals else DUP_REPLY)
         self.playlist.append(v)
         return Resp({"status": "STATUS_SUCCEEDED"})
 
@@ -281,6 +282,35 @@ class Counts(unittest.TestCase):
         self.assertEqual([r["state"] for r in snap["rows"]].count("refused"), 0)
         self.assertIn("1 duplicate", snap["summary"])
         self.assertNotIn("1 refused", snap["summary"])
+
+    # --- (c2) a duplicate needs its proof: multiplicity only corroborates -----
+    def test_multiplicity_alone_never_makes_a_duplicate(self):
+        """Two copies intended, one held. Nothing said about the second: absent.
+        A plain STATUS_FAILED: refused. Only the documented refusal is duplicate."""
+        ids = ["AAAAAAAAAAA", "AAAAAAAAAAA"]
+        ledger = backend._reconcile(ids, ["AAAAAAAAAAA"], {1: ""}, True)
+        self.assertEqual(ledger[1]["outcome"], "missing", ledger[1])
+        ledger = backend._reconcile(ids, ["AAAAAAAAAAA"], {1: "STATUS_FAILED"}, True)
+        self.assertEqual(ledger[1]["outcome"], "rejected", ledger[1])
+        ledger = backend._reconcile(ids, ["AAAAAAAAAAA"], {1: backend.STATUS_DUPLICATE}, True)
+        self.assertEqual(ledger[1]["outcome"], "duplicate", ledger[1])
+
+    def test_a_plain_refusal_on_a_repeated_id_stays_refused(self):
+        """The server said FAILED with no duplicate toast: the second copy was
+        refused, not rejected as a duplicate, and the first pass's status is not
+        thrown away when the run realigns the playlist."""
+        upstream = Upstream()
+        upstream.plain_refusals = True
+        snap = self.transfer(upstream, tracks(3, 1), one_to_one=False)
+
+        self.assertEqual(snap["phase"], "done", snap.get("error"))
+        counts = snap["counts"]
+        self.assertEqual(counts["refused"], 1, counts)
+        self.assertEqual(counts["duplicate"], 0, counts)
+        self.assertEqual(counts["added"], 3, counts)
+        self.assertEqual([r["state"] for r in snap["rows"]].count("refused"), 1)
+        self.assertIn("1 refused", snap["summary"])
+        self.assertNotIn("1 duplicate", snap["summary"])
 
     # --- (d) the done line: one line, the shared shape ----------------------
     def test_the_done_line_is_one_line_in_the_shared_shape(self):
