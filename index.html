@@ -399,8 +399,8 @@ const bucketsOf=r=>{const s=r.state;
   if(s==="missing")return"notverified";
   return"pending";};
 const clsOf=b=>b==="added"?"ok":b==="skipped"?"skip":b==="duplicate"?"dup":b==="refused"?"deny":b==="notverified"?"unk":"wait";
-const S={runId:"",since:0,phase:"idle",total:0,declared:0,landed:0,refused:0,skipped:0,
-  missing:0,attempted:0,created:false,existing:false,url:"",title:"",summary:"",
+const S={runId:"",since:0,phase:"idle",total:0,declared:0,matched:0,landed:0,refused:0,skipped:0,
+  missing:0,attempted:0,created:false,existing:false,url:"",title:"",summary:"",playlist_count:0,
   rows:new Map(),filter:"all",timer:null,tick:null,fails:0,lastOk:Date.now(),ceil:0,
   localT0:0,aborted:false,privacy:"PRIVATE",deadNoted:false,hist:[],interrupted:null,
   follow:true,_prog:0,yt:{},ytState:"none",ytHelp:"",detected:null,
@@ -573,6 +573,47 @@ function vCount(){const c=S.counts;
 function unprovenNow(){const c=S.counts;
   if(c&&c.unverified!=null)return nz(c,"unverified")+countsPending(c);
   const t=tally();return(t.notverified||0)+(t.pending||0);}
+/* Three numbers answer three different questions, and none may stand for another:
+   what the run set out to write (the matched plan, `matched`), what a read proved is
+   there (`counts.added`), and what a read saw on the playlist (`playlist_count` - the
+   entry count of whatever read finished, served on /api/run).
+
+   The third is an OBSERVATION, never a total. The backend fills `playlist_count` from
+   any finished read, a capped or short one included, and /api/run serves no
+   completeness flag, so "the playlist holds N" would claim something no payload says
+   and a short read would be read as the playlist's real size. Every sentence here
+   reports what the read saw and stops there; when the backend publishes a completeness
+   flag, this is the one place to strengthen it. A 0 means no read reported a count, so
+   nothing is printed - never "0 entries". */
+const seenNow=()=>{const n=+S.playlist_count||0;return n>0?n:0;};
+/* The verified adds judged against the plan they were measured on, in one phrase;
+   the read's entry count is a separate fact and never the denominator of it. */
+function planPhrase(){const a=landedNow();
+  if(+S.matched>0)return`${a} added of ${S.matched} matched`;
+  const dec=S.declared||S.total||0;
+  return dec>0?`${a} of ${dec} added`:"";}
+/* What the read saw, and how much of it this run's own proof covers. The difference is
+   arithmetic on two served numbers, never an attribution: it says the read saw that
+   many entries it cannot credit to this run, nothing about how many exist. */
+function seenPhrase(){const n=seenNow();
+  if(!n)return"";
+  const uncredited=n-landedNow();
+  return uncredited>0?`${n} entries seen in the playlist — ${uncredited} not credited to this run`
+    :`${n} entries seen in the playlist`;}
+/* A refusal is the cookie's fault only when the payload says so. `reason` is a fixed
+   sentence ("append refused by YouTube Music") with no status in it, so the page may
+   not add a 401 to it: `kind`, `error` and `hint` are the fields that carry a status,
+   and their absence means the cause is unknown, not auth. Nor does the page promise
+   that starting again resumes the same playlist - only the backend can know that. */
+function authSay(){
+  const w=[S.kind,S.error,S.hint,S.reason].filter(Boolean).join(" ");
+  if(!/401|unauthori[sz]ed|sapisid|login rejected|cookie expired|session expired/i.test(w))
+    return"";
+  return` · the cookie was rejected${/\b401\b/.test(w)?" (HTTP 401)":""}`
+    +" — reconnect YouTube Music above, then start the transfer again";}
+function noStatusSay(){
+  if(S.kind||S.error||S.hint)return"";
+  return" · no status was reported, so a refused cookie cannot be told from a refused track here";}
 /* nextAttemptAt is epoch seconds; a bare small number is a relative wait, so both
    shapes count down from the moment the page saw them. */
 function setNextAt(v){const n=+v||0;
@@ -617,18 +658,25 @@ function standbyLine(){
   const res=residualPhrase();
   if(res)s+=` · ${res}`;
   return s;}
-/* Gave up is terminal and it is not success: the reason, the attempts it spent and
-   what is still absent are the whole point of the line. */
+/* Gave up is terminal and it is not success: the reason, the attempts it spent, the
+   plan it fell short of, the entries the read saw, and what is still absent are the
+   whole point of the line. The auth/gap clause sits after the counts, before the
+   names: a cause the payload did not report is named as unreported, never guessed. */
 function gaveupLine(){
   let s=`Gave up${attemptsPhrase()}`;
   if(S.reason)s+=` — ${S.reason}`;
+  const plan=planPhrase(), seen=seenPhrase();
+  if(plan)s+=` · ${plan}`;
+  if(seen)s+=` · ${seen}`;
+  s+=authSay()||noStatusSay();
   const res=residualPhrase();
   return s+(res?` · ${res}`:" · no residual was recorded");}
 /* A run the read never confirmed is done with the work, never done with proof. */
 function unprovenLine(){
-  const n=unprovenNow(), res=residualPhrase();
+  const n=unprovenNow(), res=residualPhrase(), seen=seenPhrase();
   let s=`Done${attemptsPhrase()} — ${n} ${n===1?"track is":"tracks are"} unverified`;
   if(S.reason)s+=` · ${S.reason}`;
+  if(seen)s+=` · ${seen}`;
   return s+(res?` · ${res}`:" · the playlist read never confirmed them");}
 /* Green only for a run whose read confirmed every row, including a payload with no
    state of its own. */
@@ -647,6 +695,11 @@ function termTone(){
    non-zero, and they stay distinguishable words - duplicate is not refused. */
 const countParts=c=>{const out=[["in source",c.source],["unique",c.unique],
     ["added",c.added],["skipped",c.skipped]];
+  /* What the read saw sits next to the adds it is measured against, so "added" and
+     "entries seen" can never be read as one number - and it is worded as what a read
+     observed, since a short read would make any "total" a lie. */
+  const h=seenNow();
+  if(h)out.push(["entries seen",h]);
   for(const k of["pending","duplicate","unverified","refused"]){
     const n=k==="pending"?countsPending(c):+c[k]||0;
     if(n)out.push([k,n]);}
@@ -662,6 +715,8 @@ function countsLine(){
   const pr=pendingRows();
   if(pr)out.push(["pending",pr]);
   for(const k of["duplicate","notverified","refused"])if(t[k])out.push([k==="notverified"?"unverified":k,t[k]]);
+  const h=seenNow();
+  if(h)out.push(["entries seen",h]);
   return out.map(([k,n])=>`<b>${n}</b> ${k}`).join(" · ");}
 /* Counter: landed/declared, monotonic, never full on a short fetch. The number is
    only what a completed read proved; rows no read has settled are named in the
@@ -677,7 +732,11 @@ function paintCounter(){
   const aS=String(a), dS=String(dec);
   if(big.textContent!==aS)big.textContent=aS;
   if(big.dataset.den!==dS)big.dataset.den=dS;
-  const ti=`${a} of ${dec} added`+(pend?` · ${pend} awaiting verification`:"");
+  /* What the read saw is in the title, not the face: the face is the verified share
+     of the plan, and a second denominator there would be read as the first. */
+  const h=seenNow();
+  const ti=`${a} of ${dec} added`+(pend?` · ${pend} awaiting verification`:"")
+    +(h?` · ${h} entries seen in the playlist`:"");
   if(big.title!==ti)big.title=ti;
 }
 function factsStr(){
@@ -949,6 +1008,26 @@ function mergeRun(d,full){
   if(d.interrupted!==undefined)S.interrupted=d.interrupted||null;
   if(S.created)paintChip();
 }
+/* One pin for an interrupted run, chosen by what the record can actually do.
+   `resumable:false`, or any `blocked` reason, is the backend's own verdict that this
+   record may not be reused: one written before RECORD_VERSION cannot say which copies
+   it already wrote, so resuming it would re-add copies that may already be on the
+   playlist. The page must not offer that resume - the server would refuse it. It also
+   must not tell the user to delete the playlist or reset the run: that is their call
+   on their own data, and it destroys the evidence the manual check needs. So it names
+   the refusal, repeats the reason the payload carries, and points at the one route
+   that needs no guess - checking the linked playlist by hand. A payload carrying
+   neither field predates the block and keeps the older offer, minus "no second
+   create": only the record's own `resumable` flag speaks for that. */
+function interruptedLine(inc){
+  const why=String(inc.blocked||"");
+  if(inc.resumable!==false&&!why)
+    return{pin:"previous run was interrupted — playlist exists and is linked; press Ctrl+Enter to resume the same playlist.",
+           title:""};
+  return{pin:"previous run was interrupted — the playlist is linked above, but this record cannot be resumed; check that playlist in YouTube Music and add what is missing by hand.",
+         title:"previous run was interrupted — "
+           +(why||"the server marked this record not resumable, without naming why")};
+}
 function showInterrupted(inc){
   if(!inc)return;
   S.interrupted=inc;
@@ -959,7 +1038,8 @@ function showInterrupted(inc){
   if(inc.title)pname.textContent=`${inc.title} — interrupted, playlist linked`;
   autoTitle();
   if(inc.title)pname.textContent=`${inc.title} — interrupted, playlist linked`;
-  S.pin=`previous run was interrupted — playlist exists and is linked; press Ctrl+Enter to resume the same playlist (no second create).`;
+  const say=interruptedLine(inc);
+  S.pin=say.pin;S.pinTitle=say.title;
   render();
 }
 async function pollOnce(){
@@ -1023,6 +1103,9 @@ async function startTransfer(){
   S.aborted=false;S.ceil=0;S.hist=[];window.__t0srv=0;S.localT0=Date.now();
   S.runId=t.run_id;S.created=false;S.url="";S.title="";S.summary="";
   S.total=0;S.declared=0;S.attempted=0;S.landed=0;S.refused=0;S.skipped=0;S.missing=0;
+  /* the new run has proved nothing and no read has counted its playlist yet: the
+     previous run's entry count would otherwise stand beside a fresh 0 added */
+  S.matched=0;S.playlist_count=0;
   S.counts=null;S.state="running";S.reason="";S.residual=[];S.attempt=0;S.nextAt=0;S.nextIn=0;
   paintChip();S._prog++;ledger.scrollTop=0;S.follow=true;S._prog--;render();
   poll();pollOnce();

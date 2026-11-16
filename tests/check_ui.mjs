@@ -11,6 +11,18 @@
      such row reads as an explicit 0; nothing calls those rows "sent", because
      the server's `pending` also holds queued, in-flight and failed adds;
    - a terminal line never claims success over rows the read did not confirm;
+   - the entry count a playlist read reported (`playlist_count`) is shown as its own
+     fact - on both terminal lines, in the counts row and in the counter title - beside
+     the matched plan and the verified adds, and never folded into either; it is
+     worded as what the read observed, never as the playlist's total, because the
+     backend fills it from any finished read and the payload carries no completeness
+     flag; a count the payload did not serve is left unsaid rather than printed as
+     zero; a 401 and a reconnect appear only when the payload carries a status, and
+     their absence is named as unreported instead of guessed;
+   - an interrupted record the server marks not resumable (`resumable:false` or a
+     `blocked` reason) never reads as an offer to resume: the pin names the refusal,
+     repeats the reason served, points at checking the linked playlist by hand, and
+     recommends neither deleting the playlist nor resetting the run;
    - the ledger's sort, tally, missing list and follow index are memoised per
      row revision: repeated paints and filter changes do not rescans a large
      playlist, and one arriving row does;
@@ -264,6 +276,8 @@ const requests = [];
    itself: it is the page's only full-track read, and its timing is the point. */
 let spotifyReply = null;
 let spotifyHits = 0;
+/* The transfer start, decided per case: a fresh run must not inherit counts. */
+let transferReply = null;
 function jsonResponse(payload) {
   return {ok: true, json: async () => payload, text: async () => JSON.stringify(payload)};
 }
@@ -277,6 +291,9 @@ async function stubFetch(url) {
   }
   if (at.startsWith("/api/settings")) return jsonResponse({ok: true});
   if (at.startsWith("/api/cookies")) return jsonResponse({ok: true, yt: {state: "none", has: false}});
+  if (at.startsWith("/api/transfer")) {
+    return transferReply ? transferReply() : jsonResponse({ok: false, error: "no stub for this case"});
+  }
   if (at.startsWith("/api/run")) return jsonResponse({ok: true, seq: 0});
   if (at.startsWith("/api/watch")) return jsonResponse({ok: false});
   return jsonResponse({ok: false});
@@ -488,6 +505,130 @@ feed({
 ok("a fully verified run is green", press() === "Done" && el("statepill").dataset.t === "ok",
   "pill " + press() + " · tone " + el("statepill").dataset.t);
 
+/* ---------- 4b. the playlist read's own entry count, kept observational ----------
+   The observed run: the source read named 1,037 tracks, the read-back proved 312
+   copies, 725 stayed unverified, the append was refused, and the read that finished
+   reported 510 entries. Three numbers, three different questions: what the run set
+   out to write (the matched plan), what a read proved (added), and what a read saw on
+   the playlist (`playlist_count`).
+
+   The count is NOT a total. The backend sets `playlist_count` from whatever read
+   finished - a capped or short read included, which is exactly the shape that leaves
+   copies unverified - and /api/run serves no completeness flag of any kind (checked
+   against the payload keys: phase, state, attempt, next_attempt_at, reason, residual,
+   started_at, updated_at, age, spotify_id, title, cover_url, playlist_id, url, created,
+   existing, total, declared, summary, matched, sent, landed, attempted, refused,
+   skipped, missing, unverified, duplicate, pending, counts, order_ok, playlist_count,
+   rows, error, hint, kind - and `order_ok` is a claim about order, not completeness).
+   So the page may only report what the read observed, never "the playlist holds N":
+   that sentence would claim a total the payload cannot support. This block pins the
+   observational wording on both terminal lines, the counts row and the counter title,
+   pins that an incomplete read's count is worded the same way, and pins the
+   401/reconnect words to evidence the payload actually carries. */
+run("clearLocal();");
+const EMERGENCY = {
+  run_id: "r401", seq: 30, phase: "done", state: "gaveup", attempt: 2,
+  total: 1037, declared: 1037, matched: 1037, playlist_count: 510,
+  reason: "append refused by YouTube Music", error: "", hint: "", kind: "",
+  residual: ["V0000000001", "V0000000002"],
+  counts: {source: 1037, unique: 1000, added: 312, skipped: 0, duplicate: 0,
+    unverified: 725, refused: 0, pending: 0},
+  rows: mixed(["landed", "landed", "missing", "missing"]),
+};
+feed(EMERGENCY, true);
+const gaveLine = () => el("phaseline").textContent;
+const CLAIMS_TOTAL = /playlist holds|holds 510|the playlist has|playlist total|entries total/i;
+ok("a gave-up line reports the entries the read saw",
+  /510 entries seen in the playlist/.test(gaveLine()), "line: " + gaveLine());
+ok("the matched plan, the verified adds and the read's entries are three phrases",
+  /312 added of 1037 matched/.test(gaveLine()) &&
+  /510 entries seen in the playlist/.test(gaveLine()) &&
+  !/510 added|1037 held/.test(gaveLine()),
+  "line: " + gaveLine());
+ok("the entry count is never written as a total the payload cannot support",
+  !CLAIMS_TOTAL.test(gaveLine() + el("breakdown").textContent + el("bignum").title),
+  "claimed a total: " + [gaveLine(), el("breakdown").textContent, el("bignum").title].join(" | "));
+ok("the read's entries are compared with this run's own proof, never called extra copies",
+  /198 not credited to this run/.test(gaveLine()), "line: " + gaveLine());
+ok("the counts row carries the read's entry count beside the verified adds",
+  el("breakdown").innerHTML.includes("<b>312</b> added") &&
+  el("breakdown").innerHTML.includes("<b>510</b> entries seen") &&
+  el("breakdown").innerHTML.includes("<b>725</b> unverified"),
+  "counts row: " + el("breakdown").innerHTML);
+ok("the counter title carries the read's entry count too",
+  el("bignum").title.includes("510 entries seen in the playlist"), "title: " + el("bignum").title);
+ok("a payload with no status never claims a 401 or asks for a reconnect",
+  !/401|unauthori[sz]ed|reconnect/i.test([gaveLine(), el("breakdown").textContent,
+    press()].join(" ")),
+  "claimed auth: " + [gaveLine(), el("breakdown").textContent, press()].join(" | "));
+ok("a payload with no status says so instead of guessing a cause",
+  /no status/i.test(gaveLine()), "line: " + gaveLine());
+
+/* an incomplete read: the count is a floor, and the line must still not imply a total.
+   Here more copies are unverified than the read saw entries, which is only possible
+   when the read stopped early - the count cannot be a total, yet the wording may not
+   change, because nothing in the payload says which kind of read produced it. */
+feed({
+  seq: 31, playlist_count: 510, tail_unverified: 725,
+  counts: {source: 1037, unique: 1000, added: 312, skipped: 0, duplicate: 0,
+    unverified: 725, refused: 0, pending: 0},
+});
+ok("an incomplete read's count is worded as an observation, not a total",
+  /510 entries seen in the playlist/.test(gaveLine()) && !CLAIMS_TOTAL.test(gaveLine()),
+  "line: " + gaveLine());
+ok("an incomplete read is not silently promoted by a payload field it does not carry",
+  !/complete|reached the end|whole playlist/i.test(gaveLine()), "line: " + gaveLine());
+
+/* the same refusal, this time with the status the page is allowed to repeat */
+feed({
+  seq: 32, kind: "auth", hint: "YTM/Spotify login rejected it — cookie expired or wrong site.",
+  error: "RuntimeError: append refused (HTTP 401)", reason: "append refused by YouTube Music",
+});
+ok("an emitted 401 is repeated with its code", /HTTP 401/.test(gaveLine()),
+  "line: " + gaveLine());
+ok("an emitted 401 names the reconnect that fixes it", /reconnect YouTube Music/i.test(gaveLine()),
+  "line: " + gaveLine());
+ok("an emitted 401 promises no resume the page cannot prove",
+  !/same playlist|resumes|no second create/i.test(gaveLine()), "line: " + gaveLine());
+ok("an emitted 401 still reports the entries the read saw",
+  /510 entries seen in the playlist/.test(gaveLine()), "line: " + gaveLine());
+
+/* nothing measured is not the same as measured zero */
+feed({seq: 33, playlist_count: 0, tail_unverified: 0, kind: "", hint: "", error: ""});
+ok("an unmeasured entry count is never printed as zero",
+  !/entries seen|playlist holds/.test(gaveLine() + el("breakdown").innerHTML),
+  "line: " + gaveLine() + " · counts: " + el("breakdown").innerHTML);
+
+/* a new transfer starts from nothing: the gave-up run's entry count is not its own */
+run("clearLocal();");
+feed(EMERGENCY, true);
+run("S.ytState='connected';$('srcurl').value='https://open.spotify.com/playlist/PLNEXT';");
+transferReply = () => jsonResponse({ok: true, run_id: "rnext"});
+await run("startTransfer()");
+run("unpoll();S.state='running';S.phase='spotify';render();");
+ok("a new transfer does not inherit the previous read's entry count",
+  run("S.playlist_count") === 0 && run("S.matched") === 0 &&
+  !/entries seen|playlist holds/.test(gaveLine() + el("breakdown").innerHTML),
+  "line: " + gaveLine() + " · counts: " + el("breakdown").innerHTML +
+  " · playlist_count " + run("S.playlist_count") + " · matched " + run("S.matched"));
+transferReply = null;
+run("unpoll();");
+
+/* a done run that the read never confirmed has the same obligation */
+run("clearLocal();");
+feed({
+  run_id: "r5", seq: 34, phase: "done", state: "done", total: 10, declared: 10,
+  matched: 10, playlist_count: 9, reason: "",
+  counts: {source: 10, unique: 10, added: 8, skipped: 0, duplicate: 0,
+    unverified: 2, refused: 0},
+  rows: mixed(["landed", "missing"]),
+}, true);
+ok("a done-with-unverified line reports the entries the read saw as well",
+  /9 entries seen in the playlist/.test(gaveLine()) && !CLAIMS_TOTAL.test(gaveLine()),
+  "line: " + gaveLine());
+ok("a done-with-unverified line never says the plan is on the playlist",
+  !/10 on the playlist/.test(gaveLine()), "line: " + gaveLine());
+
 /* ---------- 5. the large-ledger memo, and its exact invalidation ---------- */
 run(["_sortCalls=0;",
   "(function(){var s=Array.prototype.sort;",
@@ -685,6 +826,73 @@ spotifyReply = null;
 run("clearLocal();");
 spotifyReply = null;
 
+/* ---------- 8. an interrupted record the server will not resume ----------
+   /api/run's `interrupted` payload carries `resumable` and `blocked` (backend
+   _latest_incomplete): a record from before RECORD_VERSION cannot say which copies it
+   already wrote, so the backend fails closed instead of re-adding them. The page used
+   to print one pin for every interrupted run - "press Ctrl+Enter to resume the same
+   playlist" - which for that record is an offer the server refuses. These checks pin
+   the blocked pin: it never offers that resume, it repeats the reason the payload
+   carries, it names the one route that needs no guess (check the linked playlist by
+   hand), and it recommends neither deleting the playlist nor resetting the run, both
+   of which destroy the evidence the check needs. */
+const PIN = () => el("phaseline").textContent;
+const PINTITLE = () => el("phaseline").title;
+const BLOCKED = "this record was written by an older version and cannot be resumed "
+  + "without re-adding copies that may already be on the playlist";
+const INC = (extra) => Object.assign({
+  spotify_id: "SPOTBLOCK", playlist_id: "PLBLOCK",
+  url: "https://music.youtube.com/playlist?list=PLBLOCK",
+  title: "Blocked List", expected: 40, state: "verifying", attempt: 2, pending: ["V1"],
+}, extra);
+const showInc = (inc) => {
+  run("clearLocal();showInterrupted(" + JSON.stringify(inc) + ");render();");
+};
+
+showInc(INC({resumable: false, blocked: BLOCKED}));
+ok("a blocked record never offers Ctrl+Enter as a resume",
+  !/Ctrl\+Enter/.test(PIN()) && !/resume the same playlist/.test(PIN()), "pin: " + PIN());
+ok("a blocked record says the record cannot be resumed",
+  /cannot be resumed/.test(PIN()), "pin: " + PIN());
+ok("a blocked record names the manual check the payload supports",
+  /check that playlist in YouTube Music/i.test(PIN()) && /by hand/i.test(PIN()),
+  "pin: " + PIN());
+ok("a blocked record recommends neither deleting the playlist nor resetting the run",
+  !/delete|reset/i.test(PIN() + " " + PINTITLE()),
+  "pin: " + PIN() + " · title: " + PINTITLE());
+ok("a blocked record repeats the backend's own reason in the title",
+  PINTITLE().includes("cannot be resumed without re-adding copies"), "title: " + PINTITLE());
+ok("a blocked record still links the playlist it left behind",
+  run("S.created") === true && run("S.url").includes("PLBLOCK"),
+  "chip url: " + run("S.url") + " · created: " + run("S.created"));
+ok("a blocked record leaves the source link it was started from",
+  el("srcurl").value === "https://open.spotify.com/playlist/SPOTBLOCK",
+  "source: " + el("srcurl").value);
+
+/* a reason with no resumable flag is a block too: the page must not read the refusal
+   away just because one field is missing */
+showInc(INC({blocked: BLOCKED}));
+ok("a blocked reason with no resumable flag is still treated as blocked",
+  /cannot be resumed/.test(PIN()) && !/Ctrl\+Enter/.test(PIN()), "pin: " + PIN());
+
+/* refused, but told no reason: refuse without inventing one */
+showInc(INC({resumable: false}));
+ok("a blocked record with no reason refuses to invent a cause",
+  /cannot be resumed/.test(PIN()) && !/older version/i.test(PIN() + " " + PINTITLE()),
+  "pin: " + PIN() + " · title: " + PINTITLE());
+
+/* the resume it can honour is still offered, because the payload says it can */
+showInc(INC({resumable: true, blocked: ""}));
+ok("a resumable record still offers the resume it can honour",
+  /press Ctrl\+Enter to resume the same playlist/.test(PIN()) && !/cannot be resumed/.test(PIN()),
+  "pin: " + PIN());
+
+/* a payload with neither field predates the block: it keeps the older page's offer,
+   and it never claims a refusal it was not told about */
+showInc(INC({}));
+ok("a payload with no resumable field keeps the older offer and claims no refusal",
+  /Ctrl\+Enter/.test(PIN()) && !/cannot be resumed|blocked/i.test(PIN()), "pin: " + PIN());
+
 /* ---------- the load-time surface is still intact ---------- */
 ok("the page read its settings and cookie record on load",
   requests.some((u) => u.startsWith("/api/settings")) &&
@@ -698,4 +906,4 @@ if (fails) {
   console.error("UI RED - " + fails + " of " + count + " checks failed");
   process.exit(1);
 }
-console.log("ui: " + count + " checks green - no 1:1 toggle, verified and pending told apart, ledger memoised, rate survives a slice, the preview says what it could not read");
+console.log("ui: " + count + " checks green - no 1:1 toggle, verified and pending told apart, the read's entry count told apart from the plan and never called a total, a blocked interrupted record offers no resume, ledger memoised, rate survives a slice, the preview says what it could not read");

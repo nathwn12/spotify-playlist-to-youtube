@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-11-17
+
+Emergency fix: a copy YouTube Music accepted and no read taken after the send can name is reported as an unknown write and never sent again. The run stops writing instead of repeating the same copies.
+
+### Fixed
+
+- A copy the server accepted that a complete read taken after the send does not show is frozen as an unknown write, not treated as absent and re-sent. The playlist grew by that write, so its row may be on it under a videoId this app cannot name. The freeze is by id, so every other occurrence of that song leaves the repair batch with it. The first pass's accepted outcomes are handed to the repair (`_converge(sent=...)`), which stops a copy it already wrote from being written a second time.
+- The repair pass measures progress on the run's own copies resolving, never on the playlist's row count. A pass whose accepted writes add rows the plan cannot name no longer counts as progress; one live run sent 400 copies it could not attribute. It stops at the first pass that resolves nothing and freezes what it sent.
+- A slice is proved by multiplicity, not by plan slot: for every id the slice had accepted, the read must hold what the authorising read held plus what the slice sent. A copy that landed could be attributed to an earlier, refused occurrence of the same videoId and reported "accepted and is not on the playlist read", which stopped transfers that were fine.
+- A slice's positions stay in the write-ahead until a read has settled them. Unknown replies are recorded at once; a position is cleared only when its verdict is final or its slice was proved, so a crash between an accepted add and its read-back leaves the next run a doubt (`inflight`) instead of a copy that looks unsent. Both `_note_outcomes` calls and the freeze write are checked: a doubt that cannot be saved stops the run.
+- A verdict on the call itself (HTTP 400/401/403/404) ends the run where it was given. The create, resume and complete-record top-up paths return it (`fatal`), the repair pass is not entered, and `/api/run` serves it as `error` with `kind` and `hint` from the status alone (`_write_verdict`). `reason` stays a fixed sentence with no status in it, and the hint names an expired session and a permission answer as the two possibilities, because nothing here can tell them apart. A copy the run never sent is named "not sent" (`not_sent`) instead of counted as an entry a read proved absent.
+- The done line says why a read holds entries this run cannot account for. When the run froze writes of its own it says "writes this run made that no read names" instead of "(outside adds?)". The number is still what the read holds and this run cannot attribute: this release does not claim those entries are duplicates, and it does not claim the transfer succeeded.
+- A record that cannot name the plan it was sent is reported without spending the evidence: nothing is sent, the record is kept, and the message points at checking the playlist and adding what is missing by hand - never at Reset or deleting `created.json`. An unreadable record (`RecordUnreadable`) keeps the same rule, and `classify()` matches it before its generic create-reply branch.
+- A create whose reply was lost, or carried no id, keeps the playlist it may have made. That playlist holds the copies the create carried, so the failure says to check the library, keep it if it is there and finish it by hand, and that no second playlist will be created; the next attach refuses with the same advice.
+- An inline copy no read has proved is unknown, not unsent. The create's record carries every inline copy as unknown before the first read, and the first complete read narrows that set to the copies it does not account for; a read that stopped short clears none of them.
+- A record from an older version is used only when a read proves it. `RECORD_VERSION` is stamped where a record is born (`_persist_incomplete`), and `save_created` stamps nothing, so no unrelated save promotes a record whose evidence is older. Without the version, one complete read must hold every copy the record's own plan asks for before it is used; `complete: true` is not that proof, so a legacy record with a missing copy is refused with its record and playlist untouched. `_latest_incomplete` serves `resumable: false` with that reason.
+
+### Added
+
+- Tests: `tests/test_repair.py` covers the flows above - an accepted copy no read names, a resume after one, a crash between an add and its proof, a freeze that cannot be persisted, a fatal answer in the create, resume and top-up paths, every occurrence of a frozen song leaving the repair, the legacy record rules, and the inline copies a read cannot account for. `tests/check_ui.mjs` pins the done lines: the read's entry count is reported as an observation, never as a total, and an auth refusal is repeated with its code and the reconnect that fixes it.
+
 ## [0.5.0] - 2026-11-17
 
 Large playlists now transfer in 100-track slices, and the words the app uses for progress cost something. The changes below are behaviour changes, not wording changes.
