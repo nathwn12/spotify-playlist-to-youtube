@@ -5,7 +5,7 @@
 <p align="center"><strong>Copy a public Spotify playlist into YouTube Music without an API key.</strong></p>
 
 <p align="center">
-  <img src="assets/app.png" width="520" alt="The sp2yt transfer deck with YouTube Music connected: the Connect card reads Connected and Your account is ready, above an empty Spotify link field, the privacy selector, the 1:1 toggle and an empty track ledger with every outcome count at zero." />
+  <img src="assets/app.png" width="520" alt="The sp2yt transfer deck with YouTube Music connected: the Connect card reads Connected and Your account is ready, above an empty Spotify link field, the privacy selector and an empty track ledger with every outcome count at zero." />
 </p>
 
 ## Install
@@ -23,7 +23,7 @@ Pin an exact version:
 ```bat
 git clone https://github.com/nathwn12/spotify-playlist-to-youtube
 cd spotify-playlist-to-youtube
-git checkout v0.4.0
+git checkout v0.5.0
 ```
 
 ## Use it
@@ -66,7 +66,10 @@ The cookie is never logged — audit lines record lengths and flags only. `pytho
 
 - Spotify read runs through the web player's keyless token (TOTP from the player bundle, memory only) plus the api-partner playlist query, paged 100 at a time past the embed cap. Fewer tracks than Spotify declares fails the run before YouTube is touched.
 - YouTube Music search runs through InnerTube `WEB_REMIX` with the public web client key — no quota, no billing.
-- Titles match across scripts: a Japanese-script spelling and its romaji — or the reverse — align, so either spelling of the same track finds it. A row whose spellings cross scripts and still has no confident match is added anyway, as a labelled best guess, and the ledger says `best guess` on it.
+- Titles match across scripts: a Japanese-script spelling and its romaji — or the reverse — align, so either spelling of the same track finds it. A row whose spellings cross scripts and still has no identified match is skipped with its reason: the rank-1 search answer is not evidence, so the app does not guess a video into the playlist. A candidate's score is a similarity index, never a probability.
+- The write goes out in slices of 100 tracks, each proved by the read that shows it before the next is sent. Progress is verified progress: `added` only counts a copy a read proved present, and a copy that was sent but not proved yet is `pending`.
+- A copy repaired after a later one landed is appended at the end, which the app says out loud (`order_ok` false, named on the done line): the playlist holds every intended copy but not in the source's order.
+- The same song listed twice - the album cut and the single, the standard and the deluxe - is two source rows, so it is two entries. Every add asks YouTube Music to keep the second copy; there is no setting that merges them, and where the source row carries its album, the edition is used to pick the right cut.
 - A newly created playlist inherits the Spotify cover when YouTube Music accepts it. The upload is best-effort: a failed cover is silent and never affects the transfer.
 - YouTube Music write creates the playlist and appends with your cookie (`SAPISIDHASH` derived locally per call, never stored).
 
@@ -93,6 +96,8 @@ Four files: `backend.py` (server and transfer logic), `index.html` (page), `app.
 - Public Spotify playlists only — no Spotify login.
 - YouTube Music caps playlists at 5,000 tracks.
 - Auto-match ran at about 90% on the playlist this was built against; every miss is listed with its reason.
+- A long write costs one playlist read per 100 tracks: a 2,500-track transfer sends ~2,450 adds and ~25 full read-backs. The playlist read is capped at 200 pages.
+- The Spotify read is sequential: 100 tracks per request, ~0.2 s apart. Measured 1,101 tracks in 10.3–10.9 s on this machine; 2,500 tracks extrapolates to ~25 requests and roughly 20–25 s before YouTube Music is touched at all.
 - The cookie expires: a 401 stops the run and asks for a fresh export.
 
 ## Status

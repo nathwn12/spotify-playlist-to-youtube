@@ -7,9 +7,9 @@
   "declared_total": 647
  },
  "search_budget": {
-  "real_searches": 35,
+  "real_searches": 36,
   "probes_before": 2,
-  "total_real": 37,
+  "total_real": 38,
   "limit": 40,
   "spacing_ms": 300
  },
@@ -240,12 +240,13 @@
     "duration_ms": 86160
    },
    "queries": [
-    "MONTAGEM TEM QUE TIRAR O CHAPEU - Remake, Slowed Dj Funks, DJ VICTOR ZL, MC K3"
+    "MONTAGEM TEM QUE TIRAR O CHAPEU - Remake, Slowed Dj Funks, DJ VICTOR ZL, MC K3",
+    "MONTAGEM TEM QUE TIRAR O CHAPEU - Remake, Slowed"
    ],
    "expect": {
     "signature": "slowed",
-    "videoId": "j2bVuTm-gsU",
-    "video_title": "MONTAGEM TEM QUE TIRAR O CHAPEU - ( Slowed )",
+    "videoId": "uPHZoPBcMiI",
+    "video_title": "MONTAGEM TEM QUE TIRAR O CHAPEU (Remake, Slowed)",
     "duration": ""
    }
   },
@@ -444,9 +445,8 @@
    ],
    "expect": {
     "signature": "slowed+ultra",
-    "videoId": "0ua8YyCESYw",
-    "video_title": "MONTAGEM TENTA (Ultra Slowed)",
-    "duration": ""
+    "skip": "title_only",
+    "skip_reason": "RuntimeError: no confident match (title only — no artist agreement and no usable duration reading: 'MONTAGEM TENTA (Ultra Slowed)' | 'Video • Ikeraus 🎼 • 5.6M views' [0ua8YyCESYw], similarity 0.70) fo"
    }
   },
   {
@@ -901,10 +901,8 @@
    ],
    "expect": {
     "signature": "plain",
-    "videoId": "BestGuess01",
-    "video_title": "Ultramarine",
-    "duration": "",
-    "guess": true
+    "skip": "unidentified",
+    "note": "cross-script with no identified candidate: the rank-1 fallback is refused, not guessed (policy 0.5.0)"
    },
    "responses": {
     "群青 YOASOBI": [
@@ -33890,6 +33888,1083 @@
      ]
     }
    }
+  ],
+  "MONTAGEM TEM QUE TIRAR O CHAPEU - Remake, Slowed": [
+   {
+    "musicCardShelfRenderer": {
+     "title": {
+      "runs": [
+       {
+        "text": "MONTAGEM TEM QUE TIRAR O CHAPEU (Remake, Super Slowed)",
+        "navigationEndpoint": {
+         "watchEndpoint": {
+          "videoId": "2nqCiEJLBsA"
+         }
+        }
+       }
+      ]
+     },
+     "subtitle": {
+      "runs": [
+       {
+        "text": "Song"
+       },
+       {
+        "text": " • "
+       },
+       {
+        "text": "DJ Funks"
+       },
+       {
+        "text": ", "
+       },
+       {
+        "text": "DJ VICTOR ZL"
+       },
+       {
+        "text": " & "
+       },
+       {
+        "text": "MC K3"
+       },
+       {
+        "text": " • "
+       },
+       {
+        "text": "1:37"
+       }
+      ]
+     }
+    }
+   },
+   {
+    "itemSectionRenderer": {
+     "contents": [
+      {
+       "musicResponsiveListItemRenderer": {
+        "flexColumns": [
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "MONTAGEM TEM QUE TIRAR O CHAPEU (Remake)"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "EP"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "DJ Funks"
+             },
+             {
+              "text": ", "
+             },
+             {
+              "text": "DJ VICTOR ZL"
+             },
+             {
+              "text": " & "
+             },
+             {
+              "text": "MC K3"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "2025"
+             }
+            ]
+           }
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "itemSectionRenderer": {
+     "contents": [
+      {
+       "musicResponsiveListItemRenderer": {
+        "playlistItemData": {
+         "videoId": "uPHZoPBcMiI"
+        },
+        "flexColumns": [
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "MONTAGEM TEM QUE TIRAR O CHAPEU (Remake, Slowed)"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "Song"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "DJ Funks"
+             },
+             {
+              "text": ", "
+             },
+             {
+              "text": "DJ VICTOR ZL"
+             },
+             {
+              "text": " & "
+             },
+             {
+              "text": "MC K3"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "196K plays"
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "overlay": {
+         "musicItemThumbnailOverlayRenderer": {
+          "content": {
+           "musicPlayButtonRenderer": {
+            "playNavigationEndpoint": {
+             "watchEndpoint": {
+              "videoId": "uPHZoPBcMiI"
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     ]
+    }
+   },
+   {
+    "itemSectionRenderer": {
+     "contents": [
+      {
+       "musicResponsiveListItemRenderer": {
+        "playlistItemData": {
+         "videoId": "863I_Sm2R4o"
+        },
+        "flexColumns": [
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "MONTAGEM TEM QUE TIRAR CHAPEU (Vocal Version, Super Slowed)"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "Song"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "DJ KVNXD"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "102K plays"
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "overlay": {
+         "musicItemThumbnailOverlayRenderer": {
+          "content": {
+           "musicPlayButtonRenderer": {
+            "playNavigationEndpoint": {
+             "watchEndpoint": {
+              "videoId": "863I_Sm2R4o"
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     ]
+    }
+   },
+   {
+    "itemSectionRenderer": {
+     "contents": [
+      {
+       "musicResponsiveListItemRenderer": {
+        "playlistItemData": {
+         "videoId": "Vui3qOR0rsY"
+        },
+        "flexColumns": [
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "MONTAGEM TEM QUE TIRAR O CHAPEU (Remake, Ultra Slowed)"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "Song"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "DJ Funks"
+             },
+             {
+              "text": ", "
+             },
+             {
+              "text": "DJ VICTOR ZL"
+             },
+             {
+              "text": " & "
+             },
+             {
+              "text": "MC K3"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "765K plays"
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "overlay": {
+         "musicItemThumbnailOverlayRenderer": {
+          "content": {
+           "musicPlayButtonRenderer": {
+            "playNavigationEndpoint": {
+             "watchEndpoint": {
+              "videoId": "Vui3qOR0rsY"
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     ]
+    }
+   },
+   {
+    "itemSectionRenderer": {
+     "contents": [
+      {
+       "musicResponsiveListItemRenderer": {
+        "playlistItemData": {
+         "videoId": "MYkNTO_5ncc"
+        },
+        "flexColumns": [
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "Tem que tira o chapéu x turu r9 (Super Slowed)"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "Song"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "yuriz07"
+             },
+             {
+              "text": ", "
+             },
+             {
+              "text": "DJ Ikeraus"
+             },
+             {
+              "text": " & "
+             },
+             {
+              "text": "MC Alexandre Fabuloso"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "633K plays"
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "overlay": {
+         "musicItemThumbnailOverlayRenderer": {
+          "content": {
+           "musicPlayButtonRenderer": {
+            "playNavigationEndpoint": {
+             "watchEndpoint": {
+              "videoId": "MYkNTO_5ncc"
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     ]
+    }
+   },
+   {
+    "itemSectionRenderer": {
+     "contents": [
+      {
+       "musicResponsiveListItemRenderer": {
+        "playlistItemData": {
+         "videoId": "0OIG3-c0FKE"
+        },
+        "flexColumns": [
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "MONTAGEM TEM QUE TIRAR CHAPEU (Vocal Version, Slowed)"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "Song"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "DJ KVNXD"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "38K plays"
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "overlay": {
+         "musicItemThumbnailOverlayRenderer": {
+          "content": {
+           "musicPlayButtonRenderer": {
+            "playNavigationEndpoint": {
+             "watchEndpoint": {
+              "videoId": "0OIG3-c0FKE"
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     ]
+    }
+   },
+   {
+    "itemSectionRenderer": {
+     "contents": [
+      {
+       "musicResponsiveListItemRenderer": {
+        "playlistItemData": {
+         "videoId": "akQocmuRviw"
+        },
+        "flexColumns": [
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "MONTAGEM TEM QUE TIRAR O CHAPEU X TURUR9 REMAKE - DJ DVZ080 (SLOWED)"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "Video"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "DJ JP7"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "3.3K views"
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "overlay": {
+         "musicItemThumbnailOverlayRenderer": {
+          "content": {
+           "musicPlayButtonRenderer": {
+            "playNavigationEndpoint": {
+             "watchEndpoint": {
+              "videoId": "akQocmuRviw"
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     ]
+    }
+   },
+   {
+    "itemSectionRenderer": {
+     "contents": [
+      {
+       "musicResponsiveListItemRenderer": {
+        "playlistItemData": {
+         "videoId": "l-zkUix-mxM"
+        },
+        "flexColumns": [
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "MONTAGEM TEM QUE TIRAR O CHAPEU MEONSITH TURU R9 - dj cerejass (ULTRA SLOWED)"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "Video"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "DJ JP7"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "1.4K views"
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "overlay": {
+         "musicItemThumbnailOverlayRenderer": {
+          "content": {
+           "musicPlayButtonRenderer": {
+            "playNavigationEndpoint": {
+             "watchEndpoint": {
+              "videoId": "l-zkUix-mxM"
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     ]
+    }
+   },
+   {
+    "itemSectionRenderer": {
+     "contents": [
+      {
+       "musicResponsiveListItemRenderer": {
+        "playlistItemData": {
+         "videoId": "cnjXNgUagfo"
+        },
+        "flexColumns": [
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "DJ funks - Montagem TEM QUE TIRAR O CHAPEU (remake & slowed) (Mix)"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "Video"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "SC KO!"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "35 views"
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "overlay": {
+         "musicItemThumbnailOverlayRenderer": {
+          "content": {
+           "musicPlayButtonRenderer": {
+            "playNavigationEndpoint": {
+             "watchEndpoint": {
+              "videoId": "cnjXNgUagfo"
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     ]
+    }
+   },
+   {
+    "itemSectionRenderer": {
+     "contents": [
+      {
+       "musicResponsiveListItemRenderer": {
+        "flexColumns": [
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "DJ ZENITE"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "Artist"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "40.4K subscribers"
+             }
+            ]
+           }
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "itemSectionRenderer": {
+     "contents": [
+      {
+       "musicResponsiveListItemRenderer": {
+        "flexColumns": [
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "MONTAGEM TEM QUE TIRAR O CHAPEU"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "EP"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "Various Artists"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "2025"
+             }
+            ]
+           }
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "itemSectionRenderer": {
+     "contents": [
+      {
+       "musicResponsiveListItemRenderer": {
+        "flexColumns": [
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "0to8"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "Artist"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "78.9M monthly audience"
+             }
+            ]
+           }
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "itemSectionRenderer": {
+     "contents": [
+      {
+       "musicResponsiveListItemRenderer": {
+        "flexColumns": [
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "MC K3"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "Artist"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "1.05K subscribers"
+             }
+            ]
+           }
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "itemSectionRenderer": {
+     "contents": [
+      {
+       "musicResponsiveListItemRenderer": {
+        "flexColumns": [
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "montagem slowed"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "Playlist"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "Springlock_Failure_Afton"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "610K views"
+             }
+            ]
+           }
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "itemSectionRenderer": {
+     "contents": [
+      {
+       "musicResponsiveListItemRenderer": {
+        "flexColumns": [
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "super, mega y ultra slowed"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "Playlist"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "Alexis Luna"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "14K views"
+             }
+            ]
+           }
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "itemSectionRenderer": {
+     "contents": [
+      {
+       "musicResponsiveListItemRenderer": {
+        "flexColumns": [
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "ddhdjdjrjjrjd"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "Playlist"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "Вітя Тік ток"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "5 views"
+             }
+            ]
+           }
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "itemSectionRenderer": {
+     "contents": [
+      {
+       "musicResponsiveListItemRenderer": {
+        "flexColumns": [
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "MONTAGEM LADRAO"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "EP"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "ATLXS"
+             },
+             {
+              "text": ", "
+             },
+             {
+              "text": "MXZI"
+             },
+             {
+              "text": " & "
+             },
+             {
+              "text": "Itamar Mc"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "2025"
+             }
+            ]
+           }
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "itemSectionRenderer": {
+     "contents": [
+      {
+       "musicResponsiveListItemRenderer": {
+        "flexColumns": [
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "Void_tt"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemFlexColumnRenderer": {
+           "text": {
+            "runs": [
+             {
+              "text": "Profile"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "@Void_tt_rrr"
+             }
+            ]
+           }
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "refit": {
+  "at": "2026-11-17",
+  "why": "the title-only guard changed what these two rows match; one query variant they had never needed was recorded with the same machinery",
+  "rows": [
+   "montagem-tem-que-tirar-o-chapeu-remake-slowed-dj-funks-dj-victor-z",
+   "montagem-tenta-ultra-slowed-merunes-mc-rd-dj-mh-"
+  ],
+  "new_searches": [
+   "MONTAGEM TEM QUE TIRAR O CHAPEU - Remake, Slowed"
   ]
  }
 }

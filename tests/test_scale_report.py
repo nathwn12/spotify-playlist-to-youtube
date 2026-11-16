@@ -37,6 +37,7 @@ import backend  # noqa: E402
 
 TRACKS = 500
 PAGE = 100  # InnerTube musicPlaylistShelfRenderer page size
+CREATE_INLINE = backend.CREATE_INLINE_MAX  # ids the create carries inline
 PLID = "PLscaleReport0001"
 SPOTIFY_URL = "https://open.spotify.com/playlist/" + PLID
 YT_COOKIE = "SID=test-only; HSID=test-only; SAPISID=test-only-value"
@@ -297,8 +298,13 @@ class ScaleReport(unittest.TestCase):
     def test_an_incomplete_read_back_never_reports_tracks_as_absent(self):
         upstream = Upstream(source_tracks(), paging_broken=True)
         snap = self.transfer(upstream)
-        self.assertEqual(len(upstream.playlist), TRACKS)
-        # Exactly the first page was proven; the rest is present but unproven.
+        # The create's read proved its 50 inline copies, so ONE slice went out; the
+        # read after it could not reach the end, so no further slice was sent. The
+        # old queue appended all 450 blind and then admitted 400 were unproven;
+        # this run stops at the first unproved read instead of adding to it.
+        self.assertEqual(len(upstream.playlist), CREATE_INLINE + PAGE)
+        self.assertEqual(len(upstream.appends), PAGE)
+        # Exactly the first page was proven; the rest is present-in-plan but unproven.
         self.assertEqual(snap["landed"], PAGE)
         self.assertEqual(snap["refused"], 0)
         self.assertEqual(snap["missing"], 0)

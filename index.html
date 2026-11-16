@@ -167,17 +167,15 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
 .missbtn .missdone{opacity:0;color:var(--grn)}
 .missbtn.is-copied .misslab{opacity:0}
 .missbtn.is-copied .missdone{opacity:1}
-/* 1:1 toggle: the copy button's pill, one step quieter - it sits beside Copy
-   and never competes with it. Placement lives on the toggle so the pair is
-   pushed right as one unit and Copy keeps 12px from it; when Copy is hidden
-   (nothing missing) the toggle still lands in the same place. Pressed carries
-   the same green treatment the filter chips already use, and the label says
-   on/off in words as well as in colour. */
-#oneone{margin-left:auto;font-variant-numeric:tabular-nums}
-#oneone[aria-pressed="true"]{background:var(--grn-dk);border-color:var(--grn);color:var(--grn)}
-#oneone:disabled{opacity:.6;cursor:default}
+/* The copy-what's-missing button keeps the right edge of the counts row: it is
+   the one action there, so it takes the auto margin and the numbers shrink into
+   the space left, at every count shape. */
+#missbtn{margin-left:auto}
+/* Progress rule: the verified share in the accent, the not-yet-verified share in
+   the muted tone right behind it. Two hard stops in one gradient, so the bar stays
+   the same 3px hairline and only tells the truth about which part is proven. */
 .rule{position:relative;overflow:hidden;height:3px;background:#060706;border-top:1px solid var(--line);border-bottom:1px solid var(--line);
-  background-image:linear-gradient(90deg,var(--grn) var(--fill,0%),transparent var(--fill,0%))}
+  background-image:linear-gradient(90deg,var(--grn) var(--fill,0%),var(--pend) var(--fill,0%),var(--pend) var(--fill2,0%),transparent var(--fill2,0%))}
 .rule.live{background-image:none}
 .rule.live::after{content:"";position:absolute;inset:0;transform:translateX(-100%);
   background:linear-gradient(90deg,transparent,var(--grn) 50%,transparent);animation:slidesweep 1.1s linear infinite}
@@ -318,8 +316,6 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
     <div class="totals">
       <div id="bignum" data-den="?" aria-live="polite" title="0 added — total not read yet">0</div>
       <div id="breakdown">paste a link to begin</div>
-      <button id="oneone" class="missbtn" type="button" aria-pressed="false"
-        title="1:1 on: a song that appears twice in the source appears twice in the playlist. Off: the second copy is refused and counted as duplicate. Applies to the next transfer.">1:1 off</button>
       <button id="missbtn" class="missbtn" type="button" hidden
         aria-label="Copy the tracks that were not added"><span class="misslab">Copy</span><span class="missdone" aria-hidden="true">Copied</span></button>
       <span id="misssay" class="sr" role="status" aria-live="polite"></span>
@@ -380,6 +376,9 @@ const $=id=>document.getElementById(id);
 const chip=$("ytchip"),pill=$("statepill"),newbtn=$("newbtn"),retryBtn=$("retrybtn"),big=$("bignum"),brk=$("breakdown"),rule=$("rule");
 const ledger=$("ledger"),pad=$("pad"),zero=$("zerostate"),phaseEl=$("phaseline");
 const startB=$("startbtn"),stopB=$("stopbtn"),clearB=$("clearbtn"),pname=$("pname");
+/* One lookup for the outcome chips: they are rewritten often enough that a
+   document-wide query per paint is pure churn. */
+const fbtns=[...document.querySelectorAll(".fbtn")];
 new MutationObserver(()=>{pname.title=pname.textContent;}).observe(pname,{childList:true,characterData:true,subtree:true});
 const ROWH=50, POLLMS=700;
 const LIVE=new Set(["spotify","search","create","append","verify"]);
@@ -405,10 +404,84 @@ const S={runId:"",since:0,phase:"idle",total:0,declared:0,landed:0,refused:0,ski
   rows:new Map(),filter:"all",timer:null,tick:null,fails:0,lastOk:Date.now(),ceil:0,
   localT0:0,aborted:false,privacy:"PRIVATE",deadNoted:false,hist:[],interrupted:null,
   follow:true,_prog:0,yt:{},ytState:"none",ytHelp:"",detected:null,
-  counts:null,oneToOne:false,oneBusy:false,
+  counts:null,rev:0,
   /* the run's own state machine, straight off /api/run: phase is a label now,
      state is the truth (running|verifying|repairing|standby|gaveup|done) */
   state:"idle",reason:"",residual:[],attempt:0,nextAt:0,nextIn:0,nextSeen:0};
+/* Derived-row memo. Rows arrive in exactly one place (mergeRun), so one revision
+   counter is the whole invalidation story: S.rev moves when a payload carries
+   rows or when the ledger is replaced. A poll that lands nothing recomputes
+   nothing; a poll that lands one row recomputes the sort, the tally and the
+   missing list once for that revision - not once per scroll frame and once per
+   paint. Every value here is derived from S.rows alone, so nothing else needs a
+   key: counts, phase and the clock are read live by the paint functions. */
+const D={all:null,allRev:-1,view:null,viewRev:-1,viewFilter:"",tally:null,tallyRev:-1,
+  miss:null,missRev:-1,missN:0,byId:null,byIdRev:-1,brk:"",fill:"",fill2:"",padH:-1,
+  act:null,actRev:-1,actList:null,pend:null,pendRev:-1};
+/* Source preview. POST /api/spotify answers with every track of the playlist, so
+   it is a full read on the server, not a metadata lookup: the partner query
+   pages 100 tracks at a time and pauses between pages, so the wait grows with
+   the list. Measured ~10.5 s at 1,102 tracks; a 2,500-track list lands around
+   25 s, which is the budget every other request here uses - the preview used
+   that one and then dropped whatever came back in a bare catch, so a big
+   playlist read as a link that never loaded. It therefore gets its own, longer
+   budget, it never blocks a transfer (start reads the same list itself), and
+   its outcome is always said out loud. A link the page already read is never
+   read twice: once remembered, once in flight, is once. */
+const PREVIEW_MS=120000;   /* the read is the wait: tens of seconds for a big list */
+const PREVIEW_KEEP=4;      /* links remembered for the session, so a re-paste is free */
+const PV={url:"",shown:"",err:""};
+const PVC=new Map();       /* url -> what its read answered */
+const PVP=new Map();       /* url -> the read in flight, so nobody starts a second */
+const PV_LOADED="link loaded — title not read";
+/* Why a read produced no preview, in words the line under the box can carry. The
+   server's own message is quoted as it sends it - it names the refusal, an HTTP
+   status included - and a client-side abort is named by the budget it spent. */
+function pvReason(r,e){
+  if(e){const n=String((e&&e.name)||""),m=String((e&&e.message)||"");
+    if(/abort/i.test(n+m))return`no answer within ${Math.round(PREVIEW_MS/60000)} min`;
+    return(m?(n?n+": ":"")+m:"no answer").slice(0,80);}
+  return String((r&&r.error)||"no answer").replace(/^\w*Error:\s*/,"").slice(0,80);}
+function pvRead(u){
+  const going=PVP.get(u);
+  if(going)return going;
+  const p=postJSON("/api/spotify",{url:u,spotify_cookie:""},PREVIEW_MS).then(r=>{
+    if(r&&r.ok&&r.playlist_name&&Array.isArray(r.tracks))
+      return{playlist_name:r.playlist_name,track_count:r.tracks.length,
+        declared_total:r.declared_total||0,cover_url:r.cover_url||""};
+    const er=new Error(pvReason(r,null));
+    er.said=true;throw er;});
+  PVP.set(u,p);
+  p.then(()=>PVP.delete(u),()=>PVP.delete(u));
+  return p;}
+/* The identity line belongs to the link in the box: a name, a cover or a note
+   from another playlist is not this link's, so a different link blanks it until
+   its own read answers - which is also why a failed read says "title not read"
+   instead of claiming no link was ever pasted. */
+function pvBlank(){
+  PV.shown="";
+  if(pname.textContent!==PV_LOADED)pname.textContent=PV_LOADED;
+  pname.dataset.custom="";
+  setCover("",S.title);}
+function pvPaint(u,r){
+  PV.shown=u;
+  setCover(r.cover_url,r.playlist_name);
+  pname.textContent=`${r.playlist_name} — ${r.track_count}/${r.declared_total||"?"}`;
+  pname.dataset.custom="";
+  render();}
+/* What the idle line says about the preview, in the one status line the footer
+   already uses for a fact worth naming: a read in progress says so and names the
+   control that skips it; a read that failed puts that control first, because the
+   reason can be long and a narrow window trims this tail - the title attribute
+   still carries the whole sentence. A note about another link is never repeated. */
+function pvIdleLine(){
+  const u=$("srcurl").value.trim();
+  if(!u)return"paste a Spotify link, then Ctrl+Enter";
+  if(PV.url!==u)return"link loaded — Ctrl+Enter to start";
+  if(PVP.has(u))return"Ctrl+Enter starts now — previewing the playlist, a long list answers in tens of seconds";
+  if(PV.err)return`Ctrl+Enter still starts — the playlist preview could not be read (${PV.err})`;
+  return"link loaded — Ctrl+Enter to start";}
+const bumpRows=()=>{S.rev++;};
 const mmss=ms=>{const s=Math.max(0,Math.round(ms/1000));
   return String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");};
 function elapsedMs(){if(S.phase==="idle")return 0;
@@ -426,19 +499,22 @@ function runState(){const st=S.state||"";
 /* Pill: pulsing dot + live count from the same landedNow()/declared numbers
    the chips use, so it can never disagree. Static when idle. The word comes from
    the run's state: a gave-up run says so, and a done run names what it could not
-   confirm instead of wearing the success word bare. */
+   confirm instead of wearing the success word bare. While live, rows no completed
+   read has settled are named as pending, because a slice of verification can take
+   a while and a frozen number is not a stalled run. */
 function pillLabel(p){
   const st=runState();
   if(st==="gaveup")return"Gave up";
   if(st==="standby")return"Standby";
-  if(st==="done"){const n=vCount();return n?`Done, ${n} unverified`:"Done";}
-  if(LIVE.has(p)){const a=landedNow(),dec=S.declared||S.total||0;
-    return`${human(p)} · ${a}/${dec||"?"}`;}return human(p);}
+  if(st==="done"){const n=unprovenNow();return n?`Done, ${n} unverified`:"Done";}
+  if(LIVE.has(p)){const a=landedNow(),dec=S.declared||S.total||0,pend=countsPending(S.counts);
+    return`${human(p)} · ${a}/${dec||"?"}${pend?` · ${pend} pending`:""}`;}return human(p);}
 function paintPill(){let dot=pill.querySelector(".pdot"),txt=pill.querySelector(".ptxt");
   if(!dot||!txt){pill.textContent="";dot=document.createElement("span");
     dot.className="pdot";dot.setAttribute("aria-hidden","true");
     txt=document.createElement("span");txt.className="ptxt";pill.append(dot,txt);}
-  txt.textContent=pillLabel(S.phase);
+  const label=pillLabel(S.phase);
+  if(txt.textContent!==label)txt.textContent=label;
   const tone=termTone();
   if(tone)pill.dataset.t=tone;else delete pill.dataset.t;}
 function setPhase(p){S.phase=p;const live=LIVE.has(p);
@@ -453,29 +529,50 @@ function setRunning(on){
   startB.disabled=on; stopB.disabled=!on; clearB.disabled=on;
   startB.classList.toggle("ghost",on); stopB.classList.toggle("ghost",!on);
 }
-function tally(){const t={};
+function tally(){if(D.tallyRev===S.rev&&D.tally)return D.tally;
+  const t={};
   for(const row of S.rows.values()){const b=bucketsOf(row);t[b]=(t[b]||0)+1;}
-  return t;}
+  D.tally=t;D.tallyRev=S.rev;return t;}
 /* Landed once: a row is landed when its video is on the playlist, seeds included.
    The server's `counts.added` counts only rows a completed read confirmed, so it
-   is the one number the counter, the pill and the chips may show; a sent row the
-   read never confirmed stays pending. The row tally is the fallback for a payload
-   that carries no counts, never a second opinion beside it. */
+   is the one number the counter, the pill and the chips may show; a row the read
+   never confirmed stays pending. The row tally is the fallback for a payload that
+   carries no counts, never a second opinion beside it. */
 function landedNow(){const c=S.counts;
   if(c&&c.added!=null)return Math.max(0,+c.added||0);
   return tally().added||0;}
 const nz=(c,k)=>Math.max(0,+((c||{})[k])||0);
-/* Rows sent but not yet confirmed by a read. Derived from the server's own seven
-   numbers when it does not serve `pending` itself; clamped, because a count that
-   went backwards is still zero rows waiting. */
+/* Rows no completed read has settled yet. `counts.pending` is the server's own sum
+   of the two states that mean exactly that: `pending` (the add was accepted and the
+   read has not confirmed it) and `appending` (the request is in flight, or it came
+   back FAILED and is still unread). It is not a count of sends - a queued, in-flight
+   or failed add carries it too - so no label here may call it "sent"; the honest
+   words are pending or awaiting verification.
+   An older payload has no `pending` at all, and the remainder of source minus the
+   settled outcomes is not a substitute: that remainder also holds rows never sent,
+   rows the payload does not represent and rows a capped read never reached, so it
+   would report work waiting on a read that is not happening. Only the rows are
+   evidence, so count the two states the server counts, and no such row is an
+   explicit 0 - never a guess. */
 function countsPending(c){
-  if(!c)return 0;
-  if(c.pending!=null)return nz(c,"pending");
-  return Math.max(0,nz(c,"source")-nz(c,"added")-nz(c,"skipped")
-    -nz(c,"duplicate")-nz(c,"unverified")-nz(c,"refused"));}
+  if(c&&c.pending!=null)return nz(c,"pending");
+  return pendingRows();}
+function pendingRows(){
+  if(D.pendRev===S.rev&&D.pend!=null)return D.pend;
+  let n=0;
+  for(const r of S.rows.values())
+    if(r.state==="pending"||r.state==="appending")n++;
+  D.pend=n;D.pendRev=S.rev;return n;}
 function vCount(){const c=S.counts;
   if(c&&c.unverified!=null)return nz(c,"unverified");
   return tally().notverified||0;}
+/* Everything the playlist read never confirmed. At rest an unverified row and a
+   row still waiting for a read are the same claim - not proven present - so a
+   terminal line that counted only `unverified` could call a run done while its
+   last slice was still pending. */
+function unprovenNow(){const c=S.counts;
+  if(c&&c.unverified!=null)return nz(c,"unverified")+countsPending(c);
+  const t=tally();return(t.notverified||0)+(t.pending||0);}
 /* nextAttemptAt is epoch seconds; a bare small number is a relative wait, so both
    shapes count down from the moment the page saw them. */
 function setNextAt(v){const n=+v||0;
@@ -494,9 +591,12 @@ function attemptsPhrase(){const n=+S.attempt||0;
 function residualNames(max){
   const list=Array.isArray(S.residual)?S.residual:[];
   if(!list.length)return"";
-  const byId=new Map();
-  for(const r of S.rows.values())
-    if(r.videoId&&!byId.has(r.videoId))byId.set(r.videoId,(r.title||"").trim()||missName(r));
+  if(D.byIdRev!==S.rev||!D.byId){
+    const m=new Map();
+    for(const r of S.rows.values())
+      if(r.videoId&&!m.has(r.videoId))m.set(r.videoId,(r.title||"").trim()||missName(r));
+    D.byId=m;D.byIdRev=S.rev;}
+  const byId=D.byId;
   const name=v=>typeof v==="string"?byId.get(v)||v
     :((v&&(v.title||v.name||v.videoId||v.id))||String(v));
   const head=list.slice(0,max).map(name), k=list.length-max;
@@ -526,7 +626,7 @@ function gaveupLine(){
   return s+(res?` · ${res}`:" · no residual was recorded");}
 /* A run the read never confirmed is done with the work, never done with proof. */
 function unprovenLine(){
-  const n=vCount(), res=residualPhrase();
+  const n=unprovenNow(), res=residualPhrase();
   let s=`Done${attemptsPhrase()} — ${n} ${n===1?"track is":"tracks are"} unverified`;
   if(S.reason)s+=` · ${S.reason}`;
   return s+(res?` · ${res}`:" · the playlist read never confirmed them");}
@@ -536,7 +636,7 @@ function termTone(){
   const st=runState();
   if(st==="gaveup")return"bad";
   if(st==="standby")return"warn";
-  if(st==="done")return vCount()>0?"warn":"ok";
+  if(st==="done")return unprovenNow()>0?"warn":"ok";
   if(st==="failed"||S.phase==="failed")return"bad";
   return"";}
 /* The counts row is the server's own ledger from /api/run (counts: source,
@@ -555,30 +655,42 @@ function countsLine(){
   if(!S.total&&!S.declared)return $("srcurl").value.trim()?"link loaded — Ctrl+Enter to start":"paste a link to begin";
   const c=S.counts;
   if(c)return countParts(c).map(([k,n])=>`<b>${Math.max(0,+n||0)}</b> ${k}`).join(" · ");
-  /* no counts on the wire yet: the row states still answer, same order */
-  const t=tally();
-  const out=[["added",t.added||0],["skipped",t.skipped||0]];
+  /* no counts on the wire yet: the row states still answer, same order. Pending
+     comes from the rows here too, so the line and the pending chip name one
+     number even before the server's first ledger arrives. */
+  const t=tally(), out=[["added",t.added||0],["skipped",t.skipped||0]];
+  const pr=pendingRows();
+  if(pr)out.push(["pending",pr]);
   for(const k of["duplicate","notverified","refused"])if(t[k])out.push([k==="notverified"?"unverified":k,t[k]]);
   return out.map(([k,n])=>`<b>${n}</b> ${k}`).join(" · ");}
-/* Counter: landed/declared, monotonic, never full on a short fetch. */
+/* Counter: landed/declared, monotonic, never full on a short fetch. The number is
+   only what a completed read proved; rows no read has settled are named in the
+   title, so a slice that takes a while reads as waiting, not as a stalled run. */
 function paintCounter(){
-  if(!S.total&&!S.declared){big.textContent="0";big.dataset.den="?";
-    big.title="0 added — total not read yet";return;}
-  const a=landedNow(), dec=S.declared||S.total;
+  if(!S.total&&!S.declared){
+    if(big.textContent!=="0")big.textContent="0";
+    if(big.dataset.den!=="?")big.dataset.den="?";
+    const t0="0 added — total not read yet";
+    if(big.title!==t0)big.title=t0;return;}
+  const a=landedNow(), dec=S.declared||S.total, pend=countsPending(S.counts);
   S.ceil=Math.max(S.ceil,a);
-  big.textContent=String(a); big.dataset.den=String(dec);
-  big.title=`${a} of ${dec} added`;
+  const aS=String(a), dS=String(dec);
+  if(big.textContent!==aS)big.textContent=aS;
+  if(big.dataset.den!==dS)big.dataset.den=dS;
+  const ti=`${a} of ${dec} added`+(pend?` · ${pend} awaiting verification`:"");
+  if(big.title!==ti)big.title=ti;
 }
 function factsStr(){
   const now=Date.now(), a=landedNow();
   if(!S.hist)S.hist=[];
-  const lastA=S.hist.length?S.hist[S.hist.length-1].a:a;
-  if(S.hist.length&&(a-lastA)>20){
-    S.hist=[{t:now,a}];
-    const e0=elapsedMs();
-    return`${mmss(e0)} elapsed · —/min · ~— left`;
-  }
-  S.hist.push({t:now,a});
+  const last=S.hist[S.hist.length-1], lastA=last?last.a:a;
+  /* Only a count that goes backwards is a new baseline. Forward movement is how a
+     run actually arrives now - one slice verified in a single read-back - so a
+     jump is a sample like any other; resetting on it blanked the rate and the ETA
+     at every slice, which read as a stall. */
+  if(last&&a<lastA)S.hist=[];
+  /* Sampling every scroll frame buys nothing: the rate is per-minute. */
+  if(!S.hist.length||now-S.hist[S.hist.length-1].t>=250)S.hist.push({t:now,a});
   while(S.hist.length&&now-S.hist[0].t>60000)S.hist.shift();
   if(S.hist.length>240)S.hist.splice(0,S.hist.length-240);
   const e=elapsedMs();
@@ -596,48 +708,56 @@ function factsStr(){
    what the server proved: standing by says so with its countdown, gave up says
    why and what is still absent, and done never claims success the read did not
    establish. Phase names are the fallback for a payload with no state. */
-function liveLabel(){const dec=S.declared||S.total||0, a=landedNow(), st=runState();
+function liveLabel(){const dec=S.declared||S.total||0, a=landedNow(), st=runState(),
+    pend=countsPending(S.counts), pendSay=pend?` · ${pend} pending`:"";
   if(st==="standby")return standbyLine();
   if(st==="gaveup")return gaveupLine();
-  if(st==="done")return vCount()>0?unprovenLine()
+  if(st==="done")return unprovenNow()>0?unprovenLine()
     :(S.summary||`Done — ${a} of ${dec} on the playlist`);
   switch(S.phase){
     case"spotify":return`Reading playlist — fetching declared tracks, no rows yet…`;
     case"search":return`Reading playlist — ${S.matched||0} of ${dec} matched`;
     case"create":return`Creating playlist — playlist shell live · ${a} of ${dec} on the playlist`;
-    case"append":return`Adding — ${a} of ${dec} on the playlist`;
-    case"verify":return`Reconciling — ${a} of ${dec} on the playlist`;
-    case"done":return S.summary||`Done — ${a} of ${dec} on the playlist`;
+    case"append":return`Adding — ${a} of ${dec} on the playlist${pendSay}`;
+    case"verify":return`Reconciling — ${a} of ${dec} on the playlist${pendSay}`;
+    case"done":return unprovenNow()>0?unprovenLine()
+      :(S.summary||`Done — ${a} of ${dec} on the playlist`);
     case"failed":return S.hint?`Stopped — ${S.hint}`:`Stopped: ${S.error||"unknown"}`;
     case"aborted":return`Detached at ${a} of ${dec||"?"} — still running on the server · press Ctrl+Enter to re-attach.`;
     default:return human(S.phase);}}
 function paintFacts(){
-  if(S.pin){phaseEl.textContent=S.pin;phaseEl.title=S.pinTitle||S.pin;return;}
-  if(S.phase==="idle"){const t=$("srcurl").value.trim()?"link loaded — Ctrl+Enter to start":"paste a Spotify link, then Ctrl+Enter";
-    phaseEl.textContent=t;phaseEl.title=t;return;}
+  if(S.pin){
+    if(phaseEl.textContent!==S.pin)phaseEl.textContent=S.pin;
+    const pt=S.pinTitle||S.pin;if(phaseEl.title!==pt)phaseEl.title=pt;return;}
+  if(S.phase==="idle"){const t=pvIdleLine();
+    if(phaseEl.textContent!==t)phaseEl.textContent=t;
+    if(phaseEl.title!==t)phaseEl.title=t;return;}
   const line=`${liveLabel()} · ${factsStr()}`;
-  phaseEl.textContent=line;
   /* One visual line, but never an unreachable sentence: a narrow window trims
      the tail, and the title carries the complete line - the counts and the
      verification words included - so nothing is lost to the ellipsis. */
-  phaseEl.title=line;return;}
+  if(phaseEl.textContent!==line)phaseEl.textContent=line;
+  if(phaseEl.title!==line)phaseEl.title=line;return;}
 function paintChips(){
   /* The chips are the server's ledger, never a second tally of the rows: during a
-     run the rows are still arriving, and a row cannot tell a sent add from a
-     stored one. `added` is what a completed read proved; everything sent and not
-     yet proved is pending. */
+     run the rows are still arriving, and a row cannot tell an add the playlist
+     accepted from one it never stored. `added` is what a completed read proved;
+     everything the read has not settled yet is pending. The nodes are looked up
+     once, and a chip is only rewritten when its own word or count moved. */
   const c=S.counts, dec=S.declared||S.total||0;
   const labels={all:c?nz(c,"source"):dec,added:nz(c,"added"),skipped:nz(c,"skipped"),
     duplicate:nz(c,"duplicate"),refused:nz(c,"refused"),
     notverified:nz(c,"unverified"),pending:countsPending(c)};
   const show=c||S.total||S.declared;
-  document.querySelectorAll(".fbtn").forEach(b=>{
+  for(const b of fbtns){
     const f=b.dataset.f;
     /* duplicate is its own outcome, so its chip is only there when one exists:
        a 0 duplicate chip is noise, a non-zero one is what the user came to see */
     if(f==="duplicate")b.hidden=!labels.duplicate;
-    b.textContent=`${(DISP[f]||f).toLowerCase()} ${show?labels[f]||0:0}`;
-    b.setAttribute("aria-pressed",String(S.filter===f));});}
+    const label=`${(DISP[f]||f).toLowerCase()} ${show?labels[f]||0:0}`;
+    if(b.textContent!==label)b.textContent=label;
+    const pressed=String(S.filter===f);
+    if(b.getAttribute("aria-pressed")!==pressed)b.setAttribute("aria-pressed",pressed);}}
 /* Missing list: every row that is not landed, selected with bucketsOf() - the one
    place a row state becomes a bucket. The chips read the server's counts instead,
    so this list is the ledger's own answer to "which tracks", never a second count. */
@@ -648,8 +768,10 @@ const missBtn=$("missbtn"),missSay=$("misssay"),missLab=missBtn.querySelector(".
    claim a track is absent from the playlist, and nothing here proves that. */
 const CLAIM={added:"added",skipped:"not attempted",duplicate:"already in the playlist",
   refused:"refused by YouTube Music",notverified:"not verified",pending:"pending"};
-function missingRows(){return[...S.rows.values()].filter(r=>bucketsOf(r)!=="added")
-  .sort((x,y)=>x.i-y.i);}
+function missingRows(){
+  if(D.missRev===S.rev&&D.miss)return D.miss;
+  D.miss=[...S.rows.values()].filter(r=>bucketsOf(r)!=="added").sort((x,y)=>x.i-y.i);
+  D.missRev=S.rev;return D.miss;}
 const missName=r=>{const t=(r.title||"").trim(),a=(r.artist||"").trim();
   if(t&&a)return`${a} — ${t}`;if(t)return t;if(a)return a;
   return r.videoId||`track ${r.i}`;};
@@ -664,6 +786,8 @@ function paintMissBtn(){
   const n=missingRows().length;
   missBtn.hidden=!n;
   if(!n)return;
+  if(D.missN===n)return;
+  D.missN=n;
   missLab.textContent=`Copy ${n}`;
   missBtn.setAttribute("aria-label",`Copy the ${n} ${n===1?"track":"tracks"} that were not added`);
   missBtn.title=`Paste-ready list of the ${n} ${n===1?"track":"tracks"} not added`;}
@@ -688,41 +812,30 @@ async function copyMissing(){
     await navigator.clipboard.writeText(txt);missFlash(true);
   }catch(e){missDownload(txt);missFlash(false);}}
 missBtn.addEventListener("click",copyMissing);
-/* 1:1 toggle. The server owns the setting: a click sends the intent and waits,
-   so the pill never shows a state the backend did not store; a failed call
-   restores what the server last said. It stays live during a run because the
-   setting is only read when a transfer sends (the title says so). */
-const oneBtn=$("oneone");
-function paintOne(){
-  const on=!!S.oneToOne;
-  oneBtn.textContent=`1:1 ${on?"on":"off"}`;
-  oneBtn.setAttribute("aria-pressed",String(on));
-  oneBtn.setAttribute("aria-label",
-    `One to one: ${on?"on":"off"} — press to ${on?"refuse the second copy of a song and count it as duplicate":"add a song twice when the source has it twice"}.`);
-  oneBtn.disabled=!!S.oneBusy;
-  oneBtn.setAttribute("aria-busy",S.oneBusy?"true":"false");}
-function oneFrom(d){
-  const v=d?[d.on,d.oneToOne,d.one_to_one,d.counts&&d.counts.oneToOne]
-    .find(x=>typeof x==="boolean"):undefined;
-  if(typeof v==="boolean")S.oneToOne=v;
-  return typeof v==="boolean";}
-async function toggleOne(){
-  if(S.oneBusy)return;
-  const want=!S.oneToOne,was=S.oneToOne;
-  S.oneBusy=true;paintOne();
-  let r=null;
-  try{r=await postJSON("/api/one-to-one",{on:want});}catch(e){r=null;}
-  S.oneBusy=false;
-  /* reflect the server: a rejected call must not leave the pill claiming a
-     setting that was never stored */
-  if(!oneFrom(r))S.oneToOne=(r&&r.ok!==false)?want:was;
-  paintOne();}
-oneBtn.addEventListener("click",toggleOne);
-paintOne();
-function filtered(){const all=[...S.rows.values()].sort((x,y)=>x.i-y.i);
-  if(!all.length)return[];
+/* One sorted array per revision, and a view per (revision, filter): scrolling and
+   every poll reuse them, so a 5000-track ledger is sorted when a row lands, not
+   sixty times a second while the user drags the scrollbar. */
+function sortedRows(){if(D.allRev===S.rev&&D.all)return D.all;
+  const all=[...S.rows.values()];
+  all.sort((x,y)=>x.i-y.i);
+  D.all=all;D.allRev=S.rev;return all;}
+function filtered(){
+  const all=sortedRows();
+  if(!all.length)return all;
   if(S.filter==="all")return all;
-  return all.filter(r=>bucketsOf(r)===S.filter);}
+  if(D.view&&D.viewRev===S.rev&&D.viewFilter===S.filter)return D.view;
+  D.view=all.filter(r=>bucketsOf(r)===S.filter);
+  D.viewRev=S.rev;D.viewFilter=S.filter;return D.view;}
+/* Last row the run touched, for scroll-follow. Same revision key as the sort: it
+   depends on S.rows alone, so it is computed once per arriving payload rather than
+   once per scroll frame. */
+function activeIndex(list){
+  if(D.actRev!==S.rev||D.actList!==list){
+    let act=-1;
+    for(let k=0;k<list.length;k++){const st=list[k].state;
+      if(st==="appending"||st==="landed")act=k;}
+    D.act=act;D.actRev=S.rev;D.actList=list;}
+  return D.act;}
 /* Pin when the user scrolls up: S.follow records the user's intent at scroll
    time (sticky across polls). A stateless nearBottom() check at render time
    goes stale the moment new rows extend scrollHeight: after returning to the
@@ -734,12 +847,10 @@ function nearBottom(){try{const gap=ledger.scrollHeight-(ledger.scrollTop+ledger
 function noteScroll(){try{S.follow=nearBottom();}catch(e){S.follow=true;}}
 function render(){
   paintNewBtn();
-  const list=filtered(),t=tally();
+  const list=filtered();
   // follow the active row while running (filter all only; pinned when scrolled up)
   if(LIVE.has(S.phase)&&S.filter==="all"&&list.length&&(S.follow||nearBottom())){
-    let act=-1;
-    for(let k=0;k<list.length;k++){const st=list[k].state;
-      if(st==="appending"||st==="landed")act=k;}
+    const act=activeIndex(list);
     if(act>=0){
       const vh0=ledger.clientHeight||392, top=act*ROWH, cur=ledger.scrollTop;
       if(top<cur||top+ROWH>cur+vh0){const nt=Math.max(0,top-Math.floor(vh0/2));
@@ -747,16 +858,27 @@ function render(){
     }
   }
   paintCounter();paintFacts();paintPill();
-  brk.innerHTML=countsLine();
-  brk.title=brk.textContent;
+  /* The counts row is the widest churn in the page; it is rebuilt only when the
+     server's numbers actually changed, which spares innerHTML on every scroll. */
+  const ch=countsLine();
+  if(ch!==D.brk){brk.innerHTML=ch;brk.title=brk.textContent;D.brk=ch;}
   paintChips();
   paintMissBtn();
   /* Rule: indeterminate sweep while the total is unknown, determinate fill
-     once known — fill capped at the known count, never a percent on unknown. */
-  const known=S.total>0||S.declared>0, a=landedNow(), dec=S.declared||S.total||1;
-  rule.style.setProperty("--fill",(known?Math.min(100,100*a/Math.max(1,dec)):0)+"%");
+     once known — fill capped at the known count, never a percent on unknown.
+     Against that verified fill sits the not-yet-verified band in the muted tone,
+     so a verification slice that is still in flight shows as work in progress
+     rather than as a counter that stopped. It is a separate colour on purpose:
+     only the green part is proven. */
+  const known=S.total>0||S.declared>0, a=landedNow(), dec=S.declared||S.total||1,
+    pend=countsPending(S.counts);
+  const fill=(known?Math.min(100,100*a/Math.max(1,dec)):0)+"%";
+  const fill2=(known?Math.min(100,100*(a+pend)/Math.max(1,dec)):0)+"%";
+  if(fill!==D.fill){rule.style.setProperty("--fill",fill);D.fill=fill;}
+  if(fill2!==D.fill2){rule.style.setProperty("--fill2",fill2);D.fill2=fill2;}
   rule.classList.toggle("live",LIVE.has(S.phase)&&!known);
-  pad.style.height=(list.length*ROWH)+"px";
+  const padH=list.length*ROWH;
+  if(padH!==D.padH){pad.style.height=padH+"px";D.padH=padH;}
   zero.hidden=list.length>0;
   const st=ledger.scrollTop;
   pad.textContent="";
@@ -784,10 +906,16 @@ function render(){
   ledger.scrollTop=st;
 }
 ledger.addEventListener("scroll",()=>{
-  if(S._prog>0){S._prog--;requestAnimationFrame(render);return;}
-  noteScroll();requestAnimationFrame(render);});
+  if(S._prog>0){S._prog--;schedRender();return;}
+  noteScroll();schedRender();});
+/* One repaint per frame at most: a scroll can fire many times before the frame
+   that shows it, and each one used to queue its own full render. */
+let rafQ=false;
+function schedRender(){
+  if(rafQ)return;rafQ=true;
+  requestAnimationFrame(()=>{rafQ=false;render();});}
 function setFilter(f){S.filter=f;S._prog++;ledger.scrollTop=0;noteScroll();S._prog--;render();}
-document.querySelectorAll(".fbtn").forEach(b=>b.addEventListener("click",()=>setFilter(b.dataset.f)));
+fbtns.forEach(b=>b.addEventListener("click",()=>setFilter(b.dataset.f)));
 function paintChip(){
   if(S.created&&S.url){chip.hidden=false;chip.href=S.url;
     const nm=S.title||"YouTube Music playlist";
@@ -797,6 +925,9 @@ function mergeRun(d,full){
   if(full){S.rows=new Map();S.ceil=0;S.hist=[];}
   if(d.run_id)S.runId=d.run_id;
   if(d.seq!=null)S.since=d.seq;
+  /* Every row write is a new revision. A payload with no rows leaves the derived
+     arrays valid - the poll changed a count or a phase, never a row. */
+  if(full||(d.rows&&d.rows.length))bumpRows();
   for(const r of(d.rows||[]))S.rows.set(r.i,r);
   for(const k of["total","declared","matched","sent","landed","refused","skipped",
     "missing","attempted","created","existing","url","title","summary","playlist_count",
@@ -812,9 +943,7 @@ function mergeRun(d,full){
   if(d.residual!==undefined)S.residual=Array.isArray(d.residual)?d.residual:[];
   if(d.nextAttemptAt!==undefined)setNextAt(d.nextAttemptAt);
   else if(d.next_attempt_at!==undefined)setNextAt(d.next_attempt_at);
-  /* counts is the server's ledger for the row; oneToOne is its stored setting */
   if(d.counts&&typeof d.counts==="object")S.counts=d.counts;
-  if(!S.oneBusy)oneFrom(d);
   if(d.cover_url!==undefined)setCover(d.cover_url,S.title);
   if(d.started_at&&!window.__t0srv)window.__t0srv=d.started_at*1000;
   if(d.interrupted!==undefined)S.interrupted=d.interrupted||null;
@@ -889,7 +1018,7 @@ async function startTransfer(){
       S.runId=t.run_id;render();poll();pollOnce();}
     else{setRunning(false);S.pin="transfer not started: "+(t.error||"unknown");render();}
     return;}
-  S.rows=new Map();S.since=0;S.fails=0;S.lastOk=Date.now();S.deadNoted=false;
+  S.rows=new Map();bumpRows();S.since=0;S.fails=0;S.lastOk=Date.now();S.deadNoted=false;
   S.pin=null;S.pinTitle="";S.interrupted=null;
   S.aborted=false;S.ceil=0;S.hist=[];window.__t0srv=0;S.localT0=Date.now();
   S.runId=t.run_id;S.created=false;S.url="";S.title="";S.summary="";
@@ -928,12 +1057,14 @@ function clearLocal(){
   S.runId="";S.since=0;S.phase="idle";S.total=0;S.declared=0;S.matched=0;S.sent=0;
   S.landed=0;S.refused=0;S.skipped=0;S.missing=0;S.attempted=0;S.playlist_count=0;
   S.created=false;S.existing=false;S.url="";S.title="";S.summary="";
-  S.rows=new Map();S.filter="all";S.fails=0;S.lastOk=Date.now();S.deadNoted=false;
+  S.rows=new Map();bumpRows();S.filter="all";S.fails=0;S.lastOk=Date.now();S.deadNoted=false;
   S.ceil=0;S.hist=[];S.localT0=0;S.aborted=false;S.pin=null;S.pinTitle="";S.interrupted=null;
   S.counts=null;S.state="idle";S.reason="";S.residual=[];S.attempt=0;S.nextAt=0;S.nextIn=0;
   window.__t0srv=0;
   $("srcurl").value="";wipeDetect();paintSrcX();
   setCover("","");
+  /* the preview's identity is gone with the field: no name on screen, no note */
+  PV.shown="";PV.err="";
   pname.textContent="no playlist yet — paste a link";pname.dataset.custom="";
   setRunning(false);setPhase("idle");paintChip();S._prog++;ledger.scrollTop=0;S.follow=true;S._prog--;render();
 }
@@ -1195,26 +1326,39 @@ $("copybtn").addEventListener("click",async()=>{
     .map(r=>`${r.i}. ${r.title||"—"} — ${r.artist||"?"} [${r.videoId||"-"}] ${r.state}`).join("\n");
   try{await navigator.clipboard.writeText(txt);
     phaseEl.textContent=`rows copied (${txt.length} chars).`;}catch(e){}});
-/* title auto-detect: same-origin spotify metadata only; never blocks start */
+/* title auto-detect: same-origin spotify metadata only; never blocks start.
+   The read behind it is a full track fetch, so it is bounded by PREVIEW_MS, it
+   is remembered per link, and a run that has taken the screen keeps it: see the
+   preview block above. */
 let detTok=0,detT=null;
 $("srcurl").addEventListener("input",()=>{paintSrcX();clearTimeout(detT);detT=setTimeout(autoTitle,600);});
 async function autoTitle(){
   if(LIVE.has(S.phase))return;
   const u=$("srcurl").value.trim();
   if(!/open\.spotify\.com\/playlist\/[A-Za-z0-9]+/.test(u))return;
+  if(u!==PV.url){PV.url=u;PV.err="";if(PV.shown!==u)pvBlank();}
+  const seen=PVC.get(u);
+  if(seen){pvPaint(u,seen);return;}
   const my=++detTok;
-  try{const r=await postJSON("/api/spotify",{url:u,spotify_cookie:""},25000);
-    if(my!==detTok||!r.ok||!r.playlist_name)return;
-    setCover(r.cover_url,r.playlist_name);
-    pname.textContent=`${r.playlist_name} — ${r.tracks.length}/${r.declared_total||"?"}`;
-    pname.dataset.custom="";}catch(e){}}
+  /* Registered before the paint, so the line can say a read is running while it
+     runs - the whole point of naming the wait instead of looking idle in it. */
+  const reading=pvRead(u);
+  render();
+  let got=null,err="";
+  try{got=await reading;}
+  catch(e){err=e&&e.said?e.message:pvReason(null,e);}
+  if(got){PVC.set(u,got);while(PVC.size>PREVIEW_KEEP)PVC.delete(PVC.keys().next().value);}
+  else PV.err=err;
+  /* A newer link, or a run that has taken the screen, owns the identity now:
+     the read stays remembered, but it may not repaint over that. */
+  if(my!==detTok||LIVE.has(S.phase))return;
+  if(got)pvPaint(u,got);else render();}
 /* reload re-attach: full rows once, then live deltas; never reset a live run.
    After a process restart an idle server reports {interrupted} — show it, link it. */
 (async()=>{try{
     const c=new AbortController();const t=setTimeout(()=>c.abort(),10000);
     const r=await fetch("/api/run?since=0",{signal:c.signal});clearTimeout(t);
     const d=await r.json();if(!d.ok)return;
-    if(!S.oneBusy&&oneFrom(d))paintOne();
     if(!d.run_id&&d.interrupted){showInterrupted(d.interrupted);return;}
     if(!d.run_id)return;
     mergeRun(d,true);

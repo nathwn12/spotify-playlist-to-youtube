@@ -108,11 +108,15 @@ class Upstream:
 
     def __init__(self, page=PAGE, extra=(), throttle=0, paging_broken=False,
                  break_after=0, drop=(), blind_rows=False, empty_reads=0,
-                 lose_reply=(), fail_read_after_loss=False, browse_broken=False):
+                 lose_reply=(), fail_read_after_loss=False, browse_broken=False,
+                 lose_before_apply=(), add_script=(), accept_repeats=False,
+                 create_keeps_repeats=False):
         self.page = page
         self.playlist = list(extra)   # ids the playlist really holds, in order
         self.appends = []             # every id an ACTION_ADD_VIDEO asked for
+        self.sends = []               # every add attempt, failures included
         self.creates = 0
+        self.create_keeps_repeats = create_keeps_repeats  # a create that kept both copies
         self.throttle = throttle      # how many appends answer 429 before one lands
         self.throttled = 0
         self.paging_broken = paging_broken
@@ -121,6 +125,9 @@ class Upstream:
         self.blind_rows = blind_rows  # rows the parser cannot name (no videoId)
         self.empty_reads = empty_reads  # initial browses served as a stale empty shelf
         self.lose_reply = set(lose_reply)  # appends YTM applies, whose reply is lost
+        self.lose_before_apply = set(lose_before_apply)  # the reply is lost, nothing applied
+        self.add_script = list(add_script)  # per-append behaviour: failed/lost, consumed in order
+        self.accept_repeats = accept_repeats  # a server that honours the skip for a held id
         self.fail_read_after_loss = fail_read_after_loss  # the read after one cannot complete
         self.browse_broken = browse_broken  # every read fails on the wire
         self.deletes = []             # every playlist id a delete asked for
@@ -147,9 +154,12 @@ class Upstream:
 
     def create(self, body):
         self.creates += 1
-        # A real create keeps one copy of each id: the playlist cannot hold two.
-        for v in dict.fromkeys(body.get("videoIds") or []):
-            if v not in self.playlist:
+        # A real create keeps one copy of each id: the playlist cannot hold two. The
+        # `create_keeps_repeats` fake models the other possibility - the server kept both
+        # copies the create carried - which a read can then prove by multiplicity.
+        ids = list(body.get("videoIds") or [])
+        for v in (ids if self.create_keeps_repeats else dict.fromkeys(ids)):
+            if self.create_keeps_repeats or v not in self.playlist:
                 self.playlist.append(v)
         return Resp({"playlistId": PLID})
 
@@ -157,12 +167,22 @@ class Upstream:
         v = ""
         for act in body.get("actions") or []:
             v = act.get("addedVideoId") or ""
+        self.sends.append(v)          # every attempt, including the ones that failed
         if self.throttled < self.throttle:
             self.throttled += 1
             raise urllib.error.HTTPError(url, 429, "Too Many Requests", {}, None)
+        step = self.add_script.pop(0) if self.add_script else ""
         self.appends.append(v)
+        if step == "lost" or v in self.lose_before_apply:
+            # The reply never arrived and the request was never applied: the caller
+            # cannot know whether the copy is on the playlist.
+            self.lose_before_apply.discard(v)
+            raise urllib.error.URLError("reply lost before it was applied")
         self.actions.append(dict((body.get("actions") or [{}])[0]))
-        if v in self.playlist:
+        if step == "failed":
+            return Resp({"status": "STATUS_FAILED"})
+        if v in self.playlist and not (self.accept_repeats
+                                       and self.actions[-1].get("dedupeOption") == "DEDUPE_OPTION_SKIP"):
             return Resp(DUP_REPLY)
         if v not in self.drop:
             self.playlist.append(v)
@@ -235,15 +255,12 @@ class Repair(unittest.TestCase):
             setattr(backend, k, v)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def transfer(self, upstream, tracks, one_to_one=None, batch=None):
+    def transfer(self, upstream, tracks, batch=None):
         self.upstream = upstream
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch("urllib.request.urlopen", upstream))
             stack.enter_context(mock.patch.object(backend, "fetch_spotify_tracks", fake_fetch(tracks)))
             stack.enter_context(mock.patch.object(backend, "yt_search_batch", batch or fake_batch))
-            if one_to_one is not None:
-                stack.enter_context(mock.patch.object(backend, "one_to_one_setting",
-                                                      lambda: one_to_one))
             rid = backend.run_begin("", "")
             backend._transfer_thread(SPOTIFY_URL, COOKIE, "", "PRIVATE", rid)
         return backend.run_snapshot()
@@ -255,19 +272,61 @@ class Repair(unittest.TestCase):
         except Exception:
             return {}
 
-    # --- 1a: a transport failure is never success ---------------------------
-    def test_a_429_from_an_append_is_a_transport_failure_not_success(self):
+    # --- 1a: a failure on the wire is never success, and never a retryable write ---
+    def test_a_429_from_an_append_is_an_unknown_write_not_success(self):
+        """The write endpoint is unofficial, so a 429 is not proof the request was
+        refused unapplied. It is an unknown outcome like any other, and nothing may
+        re-send it."""
         def throttled(req, timeout=None):
             raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", {}, None)
 
         with mock.patch("urllib.request.urlopen", throttled):
             st = backend.yt_add_one(PLID, vid(1), COOKIE)
-        self.assertTrue(str(st).startswith(backend.STATUS_TRANSPORT), st)
+        self.assertTrue(str(st).startswith(backend.STATUS_UNSURE), st)
         self.assertNotIn("SUCCEEDED", str(st).upper())
-        self.assertTrue(backend.is_transport_status(st))
+        self.assertTrue(backend.is_unsure_status(st))
+        self.assertFalse(hasattr(backend, "is_retry_status"),
+                         "a predicate that authorises re-sending an append is back")
 
-    # --- 1b: a refused second copy is a duplicate, not a refusal ------------
-    def test_a_duplicated_source_pair_lands_once_and_is_never_retried(self):
+    # --- 1c: what "complete" may say ---------------------------------------
+    def test_a_refused_copy_keeps_the_record_incomplete(self):
+        """A duplicate is a source row the playlist does not hold, so the create's own
+        write of `complete` may not count it. The record a later run starts from must
+        say a copy is missing, not that every copy is there."""
+        upstream = Upstream()                       # refuses a second copy of an id
+        with mock.patch("urllib.request.urlopen", upstream):
+            backend._create_new(COOKIE, "Repair Test", "", [vid(i) for i in
+                                                           (1, 2, 3, 4, 3)], "PRIVATE", "SPOTREPAIR")
+        rec = self.created()["SPOTREPAIR"]
+        self.assertIs(rec["complete"], False,
+                      "the create's record counts a refused copy as complete")
+
+    def test_a_partial_read_keeps_the_record_incomplete(self):
+        """`complete` needs a read that reached the end of the playlist. A page that
+        happens to hold every copy is not the whole playlist."""
+        class PlanFirst(Upstream):
+            """The plan's rows are served first, with unrelated rows behind them."""
+
+            def create(self, body):
+                self.playlist[0:0] = [v for v in dict.fromkeys(body.get("videoIds") or [])]
+                return Resp({"playlistId": PLID})
+
+        upstream = PlanFirst(extra=["X%010d" % i for i in range(60)], paging_broken=True)
+        with mock.patch("urllib.request.urlopen", upstream):
+            backend._create_new(COOKIE, "Repair Test", "", [vid(i) for i in range(1, 51)],
+                                "PRIVATE", "SPOTREPAIR")
+        rec = self.created()["SPOTREPAIR"]
+        self.assertIs(rec["complete"], False,
+                      "a partial read of a playlist that held every copy read as complete")
+
+    # --- 1b: a second copy inside the inline create is never re-sent --------
+    def test_a_repeat_inside_the_inline_create_is_never_re_sent(self):
+        """The create carried one videoId twice. The server may have kept one copy or
+        both, and a read cannot say which - so a stale page showing one copy must not
+        authorise the second: it is frozen for the run and named, never sent again.
+
+        (A copy the run actually sends gets the server's own verdict; that path is
+        pinned in test_counts, with the repeat past the inline batch.)"""
         tracks = tracks_for(4, repeat_of=3)      # 5 rows, rows 3 and 5 are one videoId
         upstream = Upstream()
         snap = self.transfer(upstream, tracks)
@@ -276,45 +335,64 @@ class Repair(unittest.TestCase):
         rows = snap["rows"]
         states = [r.get("state") for r in rows]
         self.assertEqual(states.count("landed"), 4, states)
-        self.assertEqual(states.count("duplicate"), 1, states)
+        self.assertEqual([r for r in rows if r.get("unverified")], [rows[4]],
+                         "the unattributable copy is not filed as unknown")
+        self.assertEqual(states.count("duplicate"), 0, states)
         self.assertEqual(states.count("refused"), 0, states)
-        # The repeated videoId is on the playlist once and is not re-sent.
+        # The repeated videoId is on the playlist once, and the second copy was never
+        # sent: no read could attribute it.
         self.assertEqual(upstream.playlist.count(vid(3)), 1)
-        self.assertEqual(upstream.appends.count(vid(3)), 1)
-        self.assertIn("1 duplicate", snap["summary"])
-        self.assertNotIn("1 refused", snap["summary"])
-        self.assertEqual(snap["duplicate"], 1)
-        self.assertEqual(snap["refused"], 0)
-        # A duplicate is unaddable, not unfinished: the record must not ask for
-        # another resume of a playlist that is exactly as complete as it can be.
-        self.assertIs(self.created()["SPOTREPAIR"]["complete"], True)
+        self.assertEqual(upstream.appends.count(vid(3)), 0,
+                         "a copy the create carried twice was sent again")
+        self.assertEqual(snap["counts"]["unverified"], 1, snap["counts"])
+        self.assertIn("unverified", snap["summary"])
+        self.assertEqual(snap["state"], "gaveup")
+        self.assertEqual(snap["residual"], [vid(3)])
+        self.assertIs(self.created()["SPOTREPAIR"]["complete"], False)
 
-    # --- 2: a 429 stands by, appends nothing, then realigns -----------------
-    def test_a_throttled_append_stands_by_and_resumes_with_exactly_the_missing_copies(self):
+    def test_a_stale_read_cannot_resend_an_inline_repeat(self):
+        """The reported shape: plan `[A,A]`, the create stored one, every read is a page
+        from before the create. The old floor counted distinct ids (1), so a stale one-A
+        page passed it and the second copy was appended - a playlist with two A's for a
+        plan that asked two, or three if the create had kept both. The copy is frozen."""
+        a = vid(1)
+        upstream = Upstream(accept_repeats=True)
+        with mock.patch("urllib.request.urlopen", upstream):
+            out = backend._converge(PLID, COOKIE, [a, a], refused=[], unsure=[0, 1])
+        self.assertEqual(out["state"], "gaveup", out)
+        self.assertEqual(upstream.sends, [],
+                         "a copy the create carried twice was re-sent")
+        self.assertEqual(out["residual"], [a, a])
+
+    # --- 2: a throttled append is an unknown write: named, never re-sent ----
+    def test_a_throttled_append_is_named_unverified_and_never_re_sent(self):
+        """A 429 is not proof the write was refused unapplied (the endpoint is
+        unofficial), so the copy joins the unknown set: it is never sent again in this
+        run, it is reported unverified, and the run says so. The copies after it that
+        the server does accept still land - its verified writes are preserved."""
         tracks = tracks_for(60)                   # 50 inline at create, 10 appended
-        upstream = Upstream(throttle=2)           # both attempts on one append answer 429
+        upstream = Upstream(throttle=2)           # the first two appends answer 429
         snap = self.transfer(upstream, tracks)
 
         self.assertEqual(snap["phase"], "done", snap.get("error"))
-        self.assertEqual(snap["state"], "done")
-        # The run stood by once, with a clock and a reason, and appended nothing
-        # while it could not see whether the throttled copy had landed.
-        self.assertTrue(self.waits, "the run never stood by")
-        stood = self.waits[0]
-        self.assertEqual(stood["snap"]["state"], "standby")
-        self.assertEqual(stood["snap"]["attempt"], 1)
-        self.assertGreater(stood["snap"]["next_attempt_at"], 0)
-        self.assertEqual(stood["snap"]["reason"], "append failed on the wire")
-        self.assertEqual(stood["appends"], [])
-        # Resumed: exactly the verified-absent copies, once each.
-        self.assertEqual(upstream.appends, [vid(i) for i in range(51, 61)])
-        self.assertEqual(len(upstream.playlist), 60)
-        self.assertEqual(len(upstream.playlist), len(set(upstream.playlist)))
-        self.assertEqual(snap["landed"], 60)
-        self.assertEqual(snap["playlist_count"], 60)
+        self.assertEqual(snap["state"], "gaveup")
+        self.assertEqual(self.waits, [], "no append is waited out: a wait is not a proof")
+        # The two unknown copies are named, and neither is on the playlist twice.
+        self.assertEqual(snap["counts"]["unverified"], 2, snap["counts"])
+        self.assertEqual(snap["counts"]["added"], 58, snap["counts"])
+        self.assertEqual(snap["residual"], [vid(51), vid(52)])
+        self.assertEqual(len(upstream.sends), len(set(upstream.sends)),
+                         "a copy was sent twice")
+        # Every copy the run proved is on the playlist, once, and the two unknown
+        # ones are not claimed as landed.
+        self.assertEqual(upstream.playlist,
+                         [vid(i) for i in list(range(1, 51)) + list(range(53, 61))])
         rec = self.created()["SPOTREPAIR"]
-        self.assertEqual(rec["state"], "done")
-        self.assertIs(rec["complete"], True)
+        self.assertEqual(rec["state"], "gaveup")
+        self.assertIs(rec["complete"], False)
+        # What the run knows is on disk: the unknown copies and the accepted floor.
+        self.assertEqual(rec["unsure"], [50, 51])
+        self.assertEqual(rec["expected_min"], 58)
 
     # --- 3: an incomplete read-back appends nothing -------------------------
     def test_an_incomplete_read_back_stands_by_and_appends_nothing(self):
@@ -340,10 +418,11 @@ class Repair(unittest.TestCase):
         self.assertIn("10 unverified", snap["summary"])
         self.assertEqual(len(upstream.playlist), 110)
         # A run that never completed a read cannot call itself done: it spends the
-        # budget it has and ends in a terminal state that names the shortfall.
+        # budget it has and ends in a terminal state that names the shortfall - the
+        # ten copies the read never reached, by name, not an empty residual.
         self.assertEqual(len(self.waits), backend.RUN_RETRY_MAX)
         self.assertEqual(snap["state"], "gaveup")
-        self.assertEqual(snap["residual"], [])
+        self.assertEqual(snap["residual"], [vid(i) for i in range(31, 41)])
 
     # --- 3b: a pending repair is never attempted off an incomplete read ------
     def test_an_incomplete_read_back_holds_back_a_pending_repair(self):
@@ -398,33 +477,36 @@ class Repair(unittest.TestCase):
         # Never spin: one send by the create pass, at most one by the repair pass.
         self.assertLessEqual(upstream.appends.count(vid(60)), 2, upstream.appends)
 
-    # --- 4: the budget is bounded and the give-up names the residue ---------
-    def test_an_exhausted_budget_gives_up_with_the_residual_list(self):
+    # --- 4: a playlist the server refuses every write for stays bounded -----
+    def test_a_wire_that_refuses_every_append_is_bounded_and_names_each_copy(self):
+        """Every append answers 429. Each one is an unknown write, so none is re-sent,
+        and the run may not write forever: the passes are bounded, the copies it did
+        not prove are named, and no copy is ever written twice."""
         tracks = tracks_for(60)
         upstream = Upstream(throttle=99)          # every append answers 429
+        started = time.monotonic()
         snap = self.transfer(upstream, tracks)
+        elapsed = time.monotonic() - started
 
-        self.assertEqual(len(self.waits), backend.RUN_RETRY_MAX)
-        self.assertEqual([w["snap"]["attempt"] for w in self.waits], [1, 2, 3, 4, 5, 6])
+        self.assertLess(elapsed, 5.0, "the bounded loop took %.1fs" % elapsed)
+        self.assertEqual(self.waits, [], "an append was waited out")
         self.assertEqual(snap["state"], "gaveup")
+        self.assertEqual(snap["counts"]["added"], 50, snap["counts"])
+        self.assertEqual(snap["counts"]["unverified"], 10, snap["counts"])
+        self.assertEqual(snap["counts"]["refused"], 0, snap["counts"])
         self.assertEqual(snap["residual"], [vid(i) for i in range(51, 61)])
-        # Quiet and truthful: it names what is still absent and claims no more.
-        self.assertEqual(snap["refused"], 0)
-        self.assertNotIn("refused 10", snap["summary"])
-        self.assertIn("10", snap["summary"])
-        # The wait lengthens: 30s, 1m, 2m, 5m, 10m, 20m, +/-20% jitter, capped.
-        delays = [w["delay"] for w in self.waits]
-        self.assertLess(delays[0], delays[-1])
-        for seconds, base in zip(delays, (30, 60, 120, 300, 600, 1200), strict=True):
-            self.assertGreaterEqual(seconds, base * 0.8 - 0.001)
-            self.assertLessEqual(seconds, min(1200, base * 1.2) + 0.001)
+        # Bounded: one send attempt per copy, never a second, and never more passes
+        # than the convergence bound allows.
+        self.assertEqual(len(upstream.sends), 10, upstream.sends)
+        self.assertEqual(len(upstream.sends), len(set(upstream.sends)))
+        self.assertEqual(upstream.playlist, [vid(i) for i in range(1, 51)])
         # No second playlist: the run repaired the one it had.
         self.assertEqual(upstream.creates, 1)
         rec = self.created()["SPOTREPAIR"]
         self.assertEqual(rec["state"], "gaveup")
-        self.assertEqual(rec["attempt"], backend.RUN_RETRY_MAX)
-        self.assertEqual(rec["pending"], [vid(i) for i in range(51, 61)])
         self.assertIs(rec["complete"], False)
+        self.assertEqual(rec["unsure"], list(range(50, 60)))
+        self.assertEqual(rec["expected_min"], 50)
 
     # --- 4b: a resume continues the same run and never creates a playlist ---
     def test_a_persisted_run_resumes_in_place_with_its_own_attempt_count(self):
@@ -441,9 +523,9 @@ class Repair(unittest.TestCase):
                                       "title": "Repair Test", "expected": 60,
                                       "complete": False, "state": "standby",
                                       "attempt": 3, "next_run_at": due,
-                                      "one_to_one": False, "video_ids": plan,
+                                      "video_ids": plan,
                                       "pending": []}}, f)
-        snap = self.transfer(upstream, tracks, one_to_one=True)
+        snap = self.transfer(upstream, tracks)
 
         self.assertEqual(upstream.creates, 0, "a resume must never create a playlist")
         self.assertEqual(snap["state"], "done")
@@ -457,11 +539,14 @@ class Repair(unittest.TestCase):
         self.assertEqual(stood["snap"]["attempt"], 3)
         self.assertGreaterEqual(stood["delay"], 590, "the resume waited less than the record asked")
         self.assertEqual(stood["appends"], [], "the resume appended before its retry time")
-        # ...and it replays the plan and the toggle it was interrupted with.
+        # ...and it replays the plan it was interrupted with.
         self.assertEqual(upstream.appends, [vid(i) for i in range(60, 55, -1)])
         self.assertTrue(upstream.actions, "no append was sent")
+        # A transfer is 1:1 with the source, always: the resume asks the server to
+        # keep the copy too, whether or not an older record carried a toggle. The
+        # toggle is gone from the settings, the API and the run state.
         for act in upstream.actions:
-            self.assertNotIn("dedupeOption", act, "the persisted 1:1 off was flipped on resume")
+            self.assertEqual(act.get("dedupeOption"), "DEDUPE_OPTION_SKIP", act)
 
     # --- 4c: a resume replays the persisted plan, never a fresh match -------
     def test_a_resume_uses_the_plan_the_interrupted_run_persisted(self):
@@ -580,9 +665,9 @@ class Repair(unittest.TestCase):
         upstream = Upstream(lose_reply={vid(1)}, paging_broken=True)
         upstream.playlist = ["X%010d" % i for i in range(150)]   # more than one page
         with mock.patch("urllib.request.urlopen", upstream):
-            st = backend.yt_add_one(PLID, vid(1), COOKIE, one_to_one=True)
+            st = backend.yt_add_one(PLID, vid(1), COOKIE)
 
-        self.assertTrue(backend.is_transport_status(st), st)
+        self.assertTrue(backend.is_unsure_status(st), st)
         self.assertEqual(upstream.appends.count(vid(1)), 1,
                          "an ambiguous add was resent without a complete read")
 
@@ -599,8 +684,43 @@ class Repair(unittest.TestCase):
         self.assertEqual(snap["phase"], "done", snap.get("error"))
         self.assertEqual(snap["landed"], 60)
 
+    def test_an_add_whose_reply_is_lost_is_not_resent_off_one_complete_read(self):
+        """The write landed and its reply was lost. The read straight after it is
+        token-complete and shows the copy - and a resend sent on that read is not a
+        repair: every add carries the skip, so the server keeps the second copy and
+        the playlist ends up holding one source row twice. A complete read is not
+        proof the copy stayed out, so the add reports the ambiguity and sends
+        nothing more; the repair pass re-reads after its own backoff and decides."""
+        held, sends = [], []
+
+        def fake(req, timeout=None):
+            url = getattr(req, "full_url", "") or ""
+            try:
+                body = json.loads((getattr(req, "data", b"") or b"{}").decode("utf-8"))
+            except Exception:
+                body = {}
+            if "edit_playlist" in url:
+                v = (body.get("actions") or [{}])[0].get("addedVideoId") or ""
+                sends.append(v)
+                held.append(v)      # the skip is honoured: a second copy lands
+                raise urllib.error.URLError("timed out")
+            rows = [{"musicResponsiveListItemRenderer": {"playlistItemData": {"videoId": v}}}
+                    for v in held]
+            return Resp({"contents": {"musicPlaylistShelfRenderer": {"contents": rows}}})
+
+        with mock.patch("urllib.request.urlopen", fake):
+            st = backend.yt_add_one(PLID, vid(1), COOKIE)
+
+        self.assertTrue(backend.is_unsure_status(st), st)
+        self.assertNotIn("SUCCEEDED", str(st).upper())
+        self.assertEqual(sends, [vid(1)], "an add whose outcome is unknown was re-sent")
+        self.assertEqual(held, [vid(1)], "one source row asked the server for two copies")
+
     def test_a_lost_reply_in_the_repair_pass_is_not_resent_either(self):
-        """The repair sender has the same rule: read first, resend only off proof."""
+        """The repair sender has the same rule, and it goes further: a write whose
+        outcome is unknown is never sent again by this run, whatever a read says.
+        Here the fake applied it, so the read proves the copy and the run is done -
+        with one send and no standby, because there is no retry to wait for."""
         upstream = Upstream(lose_reply={vid(6)}, fail_read_after_loss=True)
         self.upstream = upstream
         upstream.playlist = [vid(i) for i in range(1, 6)]
@@ -608,11 +728,125 @@ class Repair(unittest.TestCase):
             out = backend._converge(PLID, COOKIE, [vid(i) for i in range(1, 7)])
 
         self.assertEqual(upstream.appends.count(vid(6)), 1,
-                         "the repair resent an add whose outcome was unknown")
-        self.assertTrue(self.waits, "the repair never stood by")
-        self.assertEqual(self.waits[0]["appends"].count(vid(6)), 1,
-                         "an append was sent while the outcome was unknown")
+                         "the repair re-sent an add whose outcome was unknown")
         self.assertEqual(out["state"], "done", out)
+        self.assertEqual(self.waits, [],
+                         "the run waited out a retry it must never make")
+
+    def test_a_stale_read_hiding_an_unknown_write_never_authorises_a_resend(self):
+        """The write landed, its reply was lost, and every read after it is a stale
+        snapshot taken before the write. A complete read that does not show the copy
+        used to be the whole proof for sending it again - and every add carries the
+        skip, so the playlist ended up holding one source row twice. Absence in a
+        possibly-stale read proves nothing, so the copy is frozen for the run and
+        reported unknown instead."""
+        held, appends = [vid(1)], []
+        snapshot = {"reads": 0}
+
+        def fake(req, timeout=None):
+            url = getattr(req, "full_url", "") or ""
+            body = json.loads((getattr(req, "data", b"") or b"{}").decode("utf-8"))
+            if "edit_playlist" in url:
+                v = (body.get("actions") or [{}])[0].get("addedVideoId") or ""
+                appends.append(v)
+                held.append(v)              # the write lands...
+                raise urllib.error.URLError("reply lost")   # ...and the reply does not
+            snapshot["reads"] += 1
+            rows = [{"musicResponsiveListItemRenderer": {"playlistItemData": {"videoId": v}}}
+                    for v in held[:1]]       # a stale page: only what the first read saw
+            return Resp({"contents": {"musicPlaylistShelfRenderer": {"contents": rows}}})
+
+        with mock.patch("urllib.request.urlopen", fake):
+            out = backend._converge(PLID, COOKIE, [vid(1), vid(2)])
+
+        self.assertEqual(appends, [vid(2)],
+                         "an unknown write was sent again off a stale read")
+        self.assertEqual(out["state"], "gaveup", out)
+        self.assertIn("outcome is unknown", out["reason"])
+        self.assertEqual(out["residual"], [vid(2)])
+        self.assertTrue(backend.is_unsure_status(out["statuses"].get(1, "")),
+                        out["statuses"])
+
+    def test_an_unknown_write_that_did_not_land_is_unverified_not_resent(self):
+        """The reply was lost and the write never landed. Absence proves nothing
+        either way, so the copy is not re-sent: the run ends gaveup naming it, the
+        row is unverified rather than refused or missing, and the row says how to
+        recover it. Its verified neighbours still land - nothing else is held back."""
+        tracks = tracks_for(60)
+        upstream = Upstream(lose_before_apply={vid(55)})
+        snap = self.transfer(upstream, tracks)
+
+        self.assertEqual(upstream.appends.count(vid(55)), 1,
+                         "an unknown write was re-sent automatically")
+        self.assertEqual(snap["counts"]["added"], 59, snap["counts"])
+        self.assertEqual(snap["counts"]["unverified"], 1, snap["counts"])
+        self.assertEqual(snap["counts"]["refused"], 0, snap["counts"])
+        self.assertEqual(snap["state"], "gaveup")
+        self.assertIn("outcome is unknown", snap["reason"])
+        self.assertEqual(snap["residual"], [vid(55)])
+        row = snap["rows"][54]
+        self.assertEqual(row["state"], "missing", row)
+        self.assertTrue(row.get("unverified"), row)
+        self.assertIn("outcome unknown", row["status"])
+        self.assertIn("not re-sent", row["status"])
+        # The read reached the end, so nothing here may blame a short read.
+        self.assertEqual(snap["tail_unverified"], 0, snap)
+        self.assertIn("1 unverified", snap["summary"])
+        self.assertNotIn("read stopped", snap["summary"])
+        self.assertIs(self.created()["SPOTREPAIR"]["complete"], False)
+
+    def test_an_unknown_write_reads_back_as_unverified_not_missing(self):
+        """`_reconcile` is the one place a status becomes an outcome: an unknown
+        write absent from a read is unverified and named for recovery, never a
+        refusal and never a proven absence. A 429 is one of those: for this endpoint
+        it does not prove the request was refused unapplied."""
+        vids = [vid(1), vid(2), vid(3)]
+        ledger = backend._reconcile(
+            vids, [vid(1)],
+            {1: backend.STATUS_UNSURE + " URLError",
+             2: backend.STATUS_UNSURE + " HTTPError 429"})
+        self.assertEqual(ledger[0]["outcome"], "landed")
+        for i in (1, 2):
+            self.assertEqual(ledger[i]["outcome"], "missing", ledger[i])
+            self.assertTrue(ledger[i].get("unverified"), ledger[i])
+            self.assertTrue(ledger[i].get("unsure"), ledger[i])
+            self.assertIn("outcome unknown", ledger[i]["status"])
+            self.assertIn("not re-sent", ledger[i]["status"])
+        # A refusal the server actually stated stays a refusal: only an unreadable
+        # outcome is unknown.
+        refused = backend._reconcile(vids, [vid(1)], {1: "STATUS_FAILED"})
+        self.assertEqual(refused[1]["outcome"], "rejected")
+        self.assertFalse(refused[1].get("unverified"), refused[1])
+
+    def test_a_429_is_an_unknown_write_and_is_never_re_sent(self):
+        """A 429 on this endpoint is not proof the write was refused unapplied, so it
+        takes the same path as a lost reply: one send, unverified, no retry."""
+        self.assertTrue(backend.is_unsure_status(backend.STATUS_UNSURE + " HTTPError 429"))
+        tracks = tracks_for(60)
+        upstream = Upstream(throttle=2)
+        snap = self.transfer(upstream, tracks)
+
+        self.assertEqual(snap["state"], "gaveup", snap)
+        self.assertEqual(snap["counts"]["added"], 58, snap["counts"])
+        self.assertEqual(snap["counts"]["unverified"], 2, snap["counts"])
+        self.assertEqual(len(upstream.sends), len(set(upstream.sends)))
+
+    def test_a_refused_copy_does_not_block_another_occurrence_of_the_same_song(self):
+        """A verdict belongs to the copy the server answered about. The plan asks for
+        three copies of one videoId, the playlist holds one, and the server refused the
+        second copy: the third is still free to be sent, and sending it is what makes
+        the playlist hold what the plan asks. Blocking by videoId denies that write."""
+        a = vid(1)
+        upstream = Upstream(accept_repeats=True)
+        upstream.playlist = [a]
+        with mock.patch("urllib.request.urlopen", upstream):
+            out = backend._converge(PLID, COOKIE, [a, a, a], refused=[1])
+
+        self.assertTrue(upstream.sends, "the refused copy blocked a later occurrence")
+        self.assertEqual(set(upstream.sends), {a})
+        self.assertEqual(upstream.playlist, [a, a, a])
+        self.assertEqual(out["state"], "done", out)
+        self.assertEqual(out["statuses"], {2: "STATUS_SUCCEEDED"}, out["statuses"])
 
     def test_progress_is_measured_against_the_previous_read_not_the_union(self):
         """Present ids {A} -> {B} -> {A}: the third read shows a playlist that
@@ -636,6 +870,728 @@ class Repair(unittest.TestCase):
         self.assertEqual(out["state"], "done", out)
         self.assertEqual(self.waits, [], "a playlist that changed was read as no progress")
         self.assertEqual(len(calls), 4, "the run stopped before it could see the whole list")
+
+    def test_the_repair_pass_publishes_its_own_progress(self):
+        """Convergence runs its own sender, so it takes the same hooks the first pass
+        does: the phase it is in, the copies it sends, and the rows its own complete
+        read proves. Without them a repairing run is invisible to the page and reads
+        as a stall."""
+        a, b, c = vid(1), vid(2), vid(3)
+        upstream = Upstream()
+        upstream.playlist = [a, c]
+        seen = []
+
+        def on_verified(ledger):
+            seen.append(("verified", [e["i"] for e in ledger if e["outcome"] == "landed"]))
+
+        hooks = {"on_phase": seen.append,
+                 "on_append_start": lambda pos: seen.append(("start", pos)),
+                 "on_append_one": lambda pos, st: seen.append(("one", pos, bool(st))),
+                 "on_verified": on_verified}
+        with mock.patch("urllib.request.urlopen", upstream):
+            out = backend._converge(PLID, COOKIE, [a, b, c], hooks=hooks)
+
+        self.assertEqual(out["state"], "done", out)
+        self.assertIn("append", seen, seen)
+        self.assertIn("verify", seen, seen)
+        self.assertIn(("start", 1), seen, seen)   # position 1 is the absent copy
+        self.assertTrue(any(isinstance(e, tuple) and e[0] == "one" and e[1] == 1
+                            for e in seen), seen)
+        self.assertTrue(any(isinstance(e, tuple) and e[0] == "verified" and 2 in e[1]
+                            for e in seen), seen)
+
+    def test_a_seed_read_that_stopped_short_publishes_no_landed_row(self):
+        """The create's own read reaches page one and loses the continuation. Those
+        copies really are on the playlist, and the read still proved nothing about the
+        playlist: mid-run, `added` moves only on a read that reached the end, and this
+        read's presence is accounted for once, by the final ledger, in the open."""
+        tracks = tracks_for(60)
+        extras = ["X%010d" % i for i in range(70)]
+        upstream = Upstream(extra=extras, paging_broken=True)   # 130 entries, tail unreadable
+        snap = self.transfer(upstream, tracks)
+
+        self.assertTrue(self.waits, "the run never stood by")
+        for stood in self.waits:
+            self.assertEqual(stood["snap"]["counts"]["added"], 0,
+                             "a read that stopped short published verified progress")
+            self.assertFalse([r for r in stood["snap"]["rows"] if r.get("state") == "landed"],
+                             "a partial read published landed rows")
+        # The final ledger is where those pages count, once: the 30 copies the read
+        # served are landed, the 30 it never reached are unverified.
+        self.assertEqual(snap["counts"]["added"], 30, snap["counts"])
+        self.assertEqual(snap["counts"]["unverified"], 30, snap["counts"])
+
+    def test_a_resume_seed_that_stopped_short_publishes_no_landed_row(self):
+        """The resume's first read is a seed with the same rule: a read that stopped
+        before the end of the playlist proves no copy landed mid-run."""
+        tracks = tracks_for(60)
+        plan = [vid(i) for i in range(1, 61)]
+        upstream = Upstream(extra=["X%010d" % i for i in range(70)] + plan,
+                            paging_broken=True)
+        with open(backend.CREATEDF, "w", encoding="utf-8") as f:
+            json.dump({"SPOTREPAIR": {"yt_id": PLID, "url": "https://example.invalid/p",
+                                      "title": "Repair Test", "expected": 60,
+                                      "complete": False, "state": "verifying",
+                                      "attempt": 0, "next_run_at": 0,
+                                      "video_ids": plan, "pending": []}}, f)
+        snap = self.transfer(upstream, tracks)
+
+        self.assertTrue(self.waits, "the run never stood by")
+        for stood in self.waits:
+            self.assertEqual(stood["snap"]["counts"]["added"], 0,
+                             "a resume's partial read published verified progress")
+        self.assertEqual(snap["counts"]["unverified"], 30, snap["counts"])
+
+    def test_a_second_slice_carries_a_write_ahead_whose_note_was_lost(self):
+        """The end-to-end form of the same rule: with 150 copies to send there are two
+        slices, and the first slice's note is lost. The record at the second slice's
+        first add must still name BOTH slices - the queue is merged, never replaced."""
+        tracks = tracks_for(250)                  # 50 inline, 200 appended: two slices
+        upstream = Upstream()
+        seen = []
+        real_save = backend.save_created
+        state = {"armed": False, "failed": False}
+
+        def save(d):
+            rec = (d or {}).get("SPOTREPAIR") or {}
+            if rec.get("inflight") and not state["armed"]:
+                state["armed"] = True             # the first slice's write-ahead landed
+                return real_save(d)
+            if state["armed"] and not state["failed"] and not rec.get("inflight"):
+                state["failed"] = True            # its note is lost: the queue stays
+                return False
+            return real_save(d)
+
+        def watch(req, timeout=None):
+            rec = (backend.load_created() or {}).get("SPOTREPAIR") or {}
+            if "edit_playlist" in (getattr(req, "full_url", "") or ""):
+                seen.append(list(rec.get("inflight") or []))
+            return upstream(req, timeout)
+
+        with mock.patch.object(backend, "save_created", save), \
+                mock.patch("urllib.request.urlopen", watch):
+            rid = backend.run_begin("", "")
+            with mock.patch.object(backend, "fetch_spotify_tracks",
+                                   fake_fetch(tracks)), \
+                    mock.patch.object(backend, "yt_search_batch", fake_batch):
+                backend._transfer_thread(SPOTIFY_URL, COOKIE, "", "PRIVATE", rid)
+
+        self.assertGreaterEqual(len(seen), 101, "the run did not send two slices")
+        # At the second slice's first add (index 100), both slices are still queued:
+        # the first one's note never landed.
+        self.assertIn(50, seen[100], seen[100])
+        self.assertIn(150, seen[100], seen[100])
+
+    def test_a_new_playlist_does_not_inherit_an_old_records_evidence(self):
+        """A create starts a new evidence set. A record whose playlist is gone can still
+        carry a floor and an unknown from the run that made it; inheriting them would
+        make the new playlist read as short from its very first page."""
+        with open(backend.CREATEDF, "w", encoding="utf-8") as f:
+            json.dump({"SPOTREPAIR": {"expected_min": 50, "unsure": [3, 4],
+                                      "inflight": [5], "complete": True}}, f)
+        upstream = Upstream()
+        with mock.patch("urllib.request.urlopen", upstream):
+            backend._create_new(COOKIE, "Repair Test", "", [vid(i) for i in range(1, 11)],
+                                "PRIVATE", "SPOTREPAIR")
+
+        rec = self.created()["SPOTREPAIR"]
+        self.assertEqual(rec.get("unsure"), [], "the new playlist inherited stale unknowns")
+        self.assertEqual(rec.get("inflight"), [])
+        self.assertEqual(rec.get("expected_min"), 10,
+                         "the floor is the new playlist's inline count, not the old record's")
+        # ...and this create really did land every copy, so its own record may say so.
+        self.assertIs(rec.get("complete"), True)
+
+    def test_a_top_up_persists_the_plan_its_positions_index(self):
+        """The top-up writes against the CURRENT match, which can be a different plan from
+        the record's. A position means nothing without its plan, so both are persisted
+        before the first send: a restart must not freeze the wrong copies."""
+        old = [vid(i) for i in range(10, 16)]          # the record's older plan
+        new = [vid(i) for i in range(20, 26)]          # this run's match
+        upstream = Upstream()
+        upstream.playlist = list(new[:5])              # the new plan, one copy absent
+        with open(backend.CREATEDF, "w", encoding="utf-8") as f:
+            json.dump({"SPOTREPAIR": {
+                "yt_id": PLID, "url": "https://example.invalid/p",
+                "title": "Repair Test", "expected": 6, "complete": True,
+                "video_ids": old, "plan_slots": old}}, f)
+
+        def mismatched(chunk, workers=8):
+            return [{"ok": True, "query": (t or {}).get("title", ""),
+                     "videoId": new[int(re.match(r"Track (\d+)$", t["title"]).group(1)) - 1]}
+                    for t in chunk]
+
+        with mock.patch("urllib.request.urlopen", upstream), \
+                mock.patch.object(backend, "fetch_spotify_tracks",
+                                  fake_fetch(tracks_for(6))), \
+                mock.patch.object(backend, "yt_search_batch", mismatched):
+            rid = backend.run_begin("", "")
+            backend._transfer_thread(SPOTIFY_URL, COOKIE, "", "PRIVATE", rid)
+
+        rec = self.created()["SPOTREPAIR"]
+        self.assertEqual(rec.get("video_ids"), new,
+                         "the record still describes the older plan its positions no longer mean")
+        self.assertEqual(rec.get("plan_slots"), new)
+
+    def test_the_append_floor_starts_at_the_reading_read(self):
+        """A stored floor can be older and lower than the read that authorises a pass.
+        The pass must start from what that read actually showed, or a later short read
+        passes as complete."""
+        a, b, c = vid(1), vid(2), vid(3)
+        scripted = [[a, b, c], [a]]        # the authorising read, then a stale page
+        calls = []
+
+        def reader(plid, cookie):
+            calls.append(plid)
+            entries = scripted[min(len(calls) - 1, len(scripted) - 1)]
+            return {"entries": list(entries), "complete": True, "why": ""}
+
+        upstream = Upstream()
+        upstream.playlist = [a, b, c]
+        with mock.patch("urllib.request.urlopen", upstream), \
+                mock.patch.object(backend, "yt_playlist_read", reader):
+            # floor=0 is the stale stored value; the read proves 3.
+            attempts, entries, complete, expected_min = backend._append_verify(
+                PLID, [a, b, c], [], COOKIE, None, [a, b, c], True, floor=0)
+        self.assertEqual(expected_min, 3,
+                         "the floor ignored the entries the authorising read returned")
+
+    def test_a_corrupt_record_fails_closed_instead_of_creating_a_playlist(self):
+        """An unreadable created.json is not an empty one: a run that treated it as empty
+        would create a second playlist and then overwrite the record it could not read."""
+        with open(backend.CREATEDF, "w", encoding="utf-8") as f:
+            f.write("{not json")
+        upstream = Upstream()
+        with self.assertRaises(backend.RecordUnreadable):
+            backend.transfer_create_append(COOKIE, "Repair Test", "",
+                                           [vid(1), vid(2)], "PRIVATE", "SPOTREPAIR")
+        self.assertEqual(upstream.creates, 0, "a playlist was created over a bad record")
+
+    def test_a_missing_record_is_still_a_first_run(self):
+        """The control: no file at all is a first run, and it creates."""
+        upstream = Upstream()
+        with mock.patch("urllib.request.urlopen", upstream):
+            out = backend.transfer_create_append(COOKIE, "Repair Test", "",
+                                                 [vid(1), vid(2)], "PRIVATE", "SPOTREPAIR")
+        self.assertEqual(out["playlistId"], PLID)
+        self.assertEqual(upstream.creates, 1)
+
+    def test_a_lost_create_reply_never_advises_a_retry(self):
+        """The create may have made a playlist whose id we never saw. Retrying would make
+        a second one, so the failure names the manual check and the record keeps the
+        intent: a later run refuses to create over it."""
+        class LostReply(Upstream):
+            def __call__(self, req, timeout=None):
+                if "playlist/create" in (getattr(req, "full_url", "") or ""):
+                    raise urllib.error.URLError("reply lost")
+                return super().__call__(req, timeout)
+
+        upstream = LostReply()
+        with mock.patch("urllib.request.urlopen", upstream):
+            with self.assertRaises(RuntimeError) as caught:
+                backend.transfer_create_append(COOKIE, "Repair Test", "",
+                                               [vid(1), vid(2)], "PRIVATE", "SPOTREPAIR")
+        msg = str(caught.exception).lower()
+        self.assertIn("library", msg, "the failure does not send the user to check YTM")
+        self.assertNotIn("retry", msg, "the failure advises a retry that would duplicate")
+        self.assertEqual(upstream.creates, 0)
+        rec = self.created()["SPOTREPAIR"]
+        self.assertTrue(rec.get("create_pending"), "the create intent was not recorded")
+        # ...and a second attempt refuses instead of creating another playlist.
+        with mock.patch("urllib.request.urlopen", Upstream()):
+            with self.assertRaises(RuntimeError) as again:
+                backend.transfer_create_append(COOKIE, "Repair Test", "",
+                                               [vid(1), vid(2)], "PRIVATE", "SPOTREPAIR")
+        self.assertIn("second one", str(again.exception).lower())
+
+    def test_a_top_up_adds_a_track_the_source_gained(self):
+        """A record that was complete for five tracks is topped up against a six-track
+        plan (the source gained a song). The read must reach what the LAST run proved,
+        not what this run intends: demanding six entries refuses the new track by
+        definition, because the playlist cannot hold it yet.
+
+        Pinned on the synchronous top-up (`/api/create-playlist`), which has no convergence
+        pass behind it: there, a refused read is a track the user never gets."""
+        old = [vid(i) for i in range(1, 6)]
+        new = old + [vid(6)]
+        upstream = Upstream()
+        upstream.playlist = list(old)              # holds exactly what the last run proved
+        with open(backend.CREATEDF, "w", encoding="utf-8") as f:
+            json.dump({"SPOTREPAIR": {
+                "yt_id": PLID, "url": "https://example.invalid/p",
+                "title": "Repair Test", "expected": 5, "complete": True,
+                "video_ids": old, "plan_slots": old, "expected_min": 5}}, f)
+
+        with mock.patch("urllib.request.urlopen", upstream):
+            out = backend.transfer_create_append(COOKIE, "Repair Test", "", new,
+                                                 "PRIVATE", "SPOTREPAIR")
+
+        self.assertEqual(upstream.sends, [vid(6)],
+                         "the new track was refused because the read could not hold it yet")
+        self.assertEqual(out["added"], 6, out)
+        rec = self.created()["SPOTREPAIR"]
+        self.assertEqual(rec.get("video_ids"), new, "the record did not adopt the new plan")
+        self.assertIs(rec.get("complete"), True)
+
+    def test_a_saved_unknown_position_is_translated_through_its_own_plan(self):
+        """A top-up runs against a fresh match, so a saved position can name a different
+        song in the new plan. The unknown copy keeps its song: the song it belongs to is
+        frozen, and the song that happens to sit at that position now is not."""
+        a, b, c = vid(1), vid(2), vid(3)
+        rec = {"video_ids": [a, b, c], "unsure": [0], "expected_min": 2}
+        floor, frozen, ids, need = backend._persisted_unknown(rec, [b, a, c])
+        self.assertEqual(floor, 2)
+        self.assertEqual(frozen, {1},
+                         "the saved position was applied to the new plan as-is")
+        self.assertEqual(ids, {a}, "the unknown copy lost its durable id")
+
+    def test_an_unknown_id_survives_a_plan_that_drops_it(self):
+        """A record knows A's write was unknown. The next match no longer contains A, so
+        the adopted plan has no position for it - but the unknown must survive as an ID,
+        or a later run that matches A again would send it. Reintroduced here: it is
+        frozen and never sent."""
+        a, b, c = vid(1), vid(2), vid(3)
+        rec = {"video_ids": [a, b, c], "unsure": [0], "expected_min": 2}
+        floor, frozen, ids, need = backend._persisted_unknown(rec, [b, c])
+        self.assertEqual(frozen, set(), "an id with no position cannot be frozen by name")
+        self.assertEqual(ids, {a}, "the unknown was forgotten when the plan dropped it")
+        # ...and a later plan that names A again inherits the freeze.
+        floor2, frozen2, ids2, _ = backend._persisted_unknown(
+            {"video_ids": [a, b, c], "unsure_ids": sorted(ids)}, [c, b, a])
+        self.assertEqual(frozen2, {2}, "the reintroduced copy was not frozen")
+        self.assertEqual(ids2, {a})
+
+    def test_one_visible_copy_does_not_resolve_an_unknown_second_copy(self):
+        """The record says [A,A] and one copy's write is unknown. A complete read showing
+        one A answers nothing: the doubt exists precisely because the second copy may be
+        the one that landed. Resolving on a smaller plan would let a later run add A
+        again, making three."""
+        a = vid(1)
+        need = {a: 2}
+        self.assertEqual(backend._unresolved_ids({a}, [a], need=need), {a},
+                         "one visible copy resolved an unknown second copy")
+        # The original evidence - two copies seen - does resolve it.
+        self.assertEqual(backend._unresolved_ids({a}, [a, a], need=need), set())
+        # A doubt with no recorded multiplicity is never cleared: the evidence that
+        # could answer it was not kept.
+        self.assertEqual(backend._unresolved_ids({a}, [a, a, a]), {a},
+                         "an unprovable doubt was cleared by a read that cannot prove it")
+
+    def test_an_unknown_id_is_not_forgotten_across_plans_and_is_never_resent(self):
+        """The durable rule, end to end: A's write was unknown, the next match excludes A
+        (so the adopted plan has no slot for it), and the match after that brings A back.
+        If the record forgot A when the plan dropped it, that last run would send A again
+        - a second copy of a song whose first copy nobody ever saw land."""
+        a, b, c = vid(1), vid(2), vid(3)
+        upstream = Upstream()
+        upstream.playlist = [b, c]
+        with open(backend.CREATEDF, "w", encoding="utf-8") as f:
+            json.dump({"SPOTREPAIR": {
+                "yt_id": PLID, "url": "https://example.invalid/p",
+                "title": "Repair Test", "expected": 3, "complete": True,
+                "video_ids": [a, b, c], "plan_slots": [a, b, c],
+                "unsure": [0], "unsure_ids": [a], "expected_min": 2}}, f)
+
+        with mock.patch("urllib.request.urlopen", upstream):
+            # Match 1: A is gone from the source.
+            backend.transfer_create_append(COOKIE, "Repair Test", "", [b, c],
+                                           "PRIVATE", "SPOTREPAIR")
+            rec = self.created()["SPOTREPAIR"]
+            self.assertEqual(rec.get("video_ids"), [b, c])
+            self.assertEqual(rec.get("unsure_ids"), [a],
+                             "the unknown was dropped when the plan stopped naming it")
+            self.assertEqual(upstream.sends, [])
+
+            # Match 2: A is back.
+            backend.transfer_create_append(COOKIE, "Repair Test", "", [a, b, c],
+                                           "PRIVATE", "SPOTREPAIR")
+
+        self.assertEqual(upstream.sends, [],
+                         "a song whose earlier write was unknown was sent again")
+        self.assertEqual(upstream.playlist.count(a), 0)
+        rec = self.created()["SPOTREPAIR"]
+        self.assertIn(a, rec.get("unsure_ids") or [], "the unknown was resolved for free")
+
+    def test_a_rematch_cannot_resend_the_song_whose_write_was_unknown(self):
+        """End to end: the record knows A's write was unknown, the fresh match puts A at a
+        different position, and A is missing from the read. The top-up must not send A -
+        and must not freeze B, which is on the playlist."""
+        a, b, c = vid(1), vid(2), vid(3)
+        upstream = Upstream()
+        upstream.playlist = [b, c]                  # A absent from the read
+        with open(backend.CREATEDF, "w", encoding="utf-8") as f:
+            json.dump({"SPOTREPAIR": {
+                "yt_id": PLID, "url": "https://example.invalid/p",
+                "title": "Repair Test", "expected": 3, "complete": True,
+                "video_ids": [a, b, c], "plan_slots": [a, b, c],
+                "unsure": [0], "expected_min": 2}}, f)
+
+        # The fresh match reorders: A is now the second copy of the plan.
+        def rematched(chunk, workers=8):
+            order = [b, a, c]
+            return [{"ok": True, "query": (t or {}).get("title", ""),
+                     "videoId": order[int(re.match(r"Track (\d+)$", t["title"]).group(1)) - 1]}
+                    for t in chunk]
+
+        with mock.patch("urllib.request.urlopen", upstream), \
+                mock.patch.object(backend, "fetch_spotify_tracks",
+                                  fake_fetch(tracks_for(3))), \
+                mock.patch.object(backend, "yt_search_batch", rematched):
+            rid = backend.run_begin("", "")
+            backend._transfer_thread(SPOTIFY_URL, COOKIE, "", "PRIVATE", rid)
+        snap = backend.run_snapshot()
+
+        self.assertEqual(upstream.sends, [],
+                         "a song whose write was unknown was sent again after a rematch")
+        self.assertEqual(snap["state"], "gaveup", snap)
+        self.assertIn("outcome is unknown", snap["reason"])
+        self.assertEqual(snap["counts"]["unverified"], 1, snap["counts"])
+        rec = self.created()["SPOTREPAIR"]
+        # The unknown is now associated with A's position in the adopted plan.
+        self.assertEqual(rec.get("video_ids"), [b, a, c])
+        self.assertEqual(rec.get("unsure"), [1],
+                         "the unknown stayed in the old plan's coordinates")
+
+    def test_a_sync_top_up_never_persists_complete_over_an_unknown_copy(self):
+        """The synchronous top-up has no convergence pass behind it, so its own record
+        write is the only one: an unknown copy may not be reported as a whole playlist."""
+        plan = [vid(i) for i in range(1, 6)]
+        upstream = Upstream()
+        upstream.playlist = list(plan[:4])         # one copy absent, one write unknown
+        with open(backend.CREATEDF, "w", encoding="utf-8") as f:
+            json.dump({"SPOTREPAIR": {
+                "yt_id": PLID, "url": "https://example.invalid/p",
+                "title": "Repair Test", "expected": 5, "complete": True,
+                "video_ids": plan, "plan_slots": plan,
+                "unsure": [4], "expected_min": 4}}, f)
+
+        with mock.patch("urllib.request.urlopen", upstream):
+            out = backend.transfer_create_append(COOKIE, "Repair Test", "", plan,
+                                                 "PRIVATE", "SPOTREPAIR")
+
+        self.assertEqual(upstream.sends, [], "the unknown copy was re-sent")
+        self.assertIs(self.created()["SPOTREPAIR"].get("complete"), False,
+                      "a run with an unknown copy persisted complete")
+        self.assertEqual(out.get("missing"), 1, out)
+
+    def test_a_partial_read_never_lets_a_top_up_declare_complete(self):
+        """The top-up has no convergence pass behind it, so its own write is the last word
+        on the record. A read that stopped before the end of the playlist proves nothing
+        about its tail, even when every copy it did show is there."""
+        plan = [vid(i) for i in range(1, 4)]
+        upstream = Upstream()
+        upstream.playlist = list(plan)
+        with open(backend.CREATEDF, "w", encoding="utf-8") as f:
+            json.dump({"SPOTREPAIR": {
+                "yt_id": PLID, "url": "https://example.invalid/p",
+                "title": "Repair Test", "expected": 3, "complete": True,
+                "video_ids": plan, "plan_slots": plan, "expected_min": 3}}, f)
+
+        with mock.patch("urllib.request.urlopen", upstream), \
+                mock.patch.object(backend, "_read_back_retry",
+                                  lambda *a, **k: (list(plan), False)):
+            backend.transfer_create_append(COOKIE, "Repair Test", "", plan,
+                                           "PRIVATE", "SPOTREPAIR")
+
+        self.assertEqual(upstream.sends, [])
+        self.assertIs(self.created()["SPOTREPAIR"].get("complete"), False,
+                      "a partial read was recorded as a whole playlist")
+
+    def test_two_visible_copies_do_prove_a_repeat_landed(self):
+        """Duplicates are allowed, so an inline repeat is not automatically unverified. A
+        read cannot say WHICH copy landed, but it can say HOW MANY: when it holds two, the
+        plan's two copies are satisfied and nothing is left unknown."""
+        tracks = tracks_for(4, repeat_of=3)      # 5 rows, rows 3 and 5 are one videoId
+        upstream = Upstream(create_keeps_repeats=True)
+        snap = self.transfer(upstream, tracks)
+
+        self.assertEqual(snap["state"], "done", snap)
+        self.assertEqual(snap["counts"]["added"], 5, snap["counts"])
+        self.assertEqual(snap["counts"]["unverified"], 0, snap["counts"])
+        self.assertEqual(upstream.playlist.count(vid(3)), 2)
+        self.assertEqual(upstream.sends, [], "a copy the read proved was sent again")
+        self.assertIs(self.created()["SPOTREPAIR"]["complete"], True)
+
+    def test_the_write_ahead_persists_the_multiplicity_it_queues(self):
+        """A slice is written ahead before its first add. If the process dies there, the
+        next run inherits those positions as unknowns - and an unknown with no recorded
+        multiplicity can never be resolved, so a complete read showing both copies would
+        still leave the song frozen forever. The count goes on disk in the same write."""
+        a = vid(1)
+        self.assertTrue(backend._write_ahead("SPOTREPAIR", [0, 1], 0, plan=[a, a]))
+        rec = self.created()["SPOTREPAIR"]
+        self.assertEqual(rec.get("inflight"), [0, 1])
+        self.assertEqual((rec.get("inflight_need") or {}).get(a), 2,
+                         "the write-ahead queued copies without their multiplicity")
+        floor, frozen, ids, need = backend._persisted_unknown(rec, [a, a])
+        self.assertEqual(ids, {a})
+        self.assertEqual(backend._unresolved_ids(ids, [a, a], need=need), set(),
+                         "a read holding every copy could not clear the unknown")
+        self.assertEqual(frozen, {0, 1})
+
+    def test_a_crashed_slices_copy_clears_when_a_read_shows_every_copy(self):
+        """End to end on the resume path: the write-ahead left one copy of a repeated song
+        queued, the playlist really holds both, and the complete read says so. The copy is
+        proven, not unverified - the run must not leave a doubt it can answer."""
+        a = vid(1)
+        upstream = Upstream(accept_repeats=True)
+        upstream.playlist = [a, a]
+        backend._write_ahead("SPOTREPAIR", [0, 1], 0, plan=[a, a])
+        backend._persist_fields("SPOTREPAIR", yt_id=PLID,
+                                url="https://example.invalid/p", title="Repair Test",
+                                expected=2)
+        with mock.patch("urllib.request.urlopen", upstream):
+            out = backend.transfer_create_append(COOKIE, "Repair Test", "", [a, a],
+                                                 "PRIVATE", "SPOTREPAIR")
+
+        self.assertEqual(upstream.sends, [], "a copy the read proved was sent again")
+        self.assertEqual(out.get("unsure"), [], out.get("unsure"))
+        self.assertEqual(out.get("added"), 2, out)
+        rec = self.created()["SPOTREPAIR"]
+        self.assertIs(rec.get("complete"), True, "a proven run left the record incomplete")
+        self.assertEqual(rec.get("unsure_ids") or [], [])
+
+    def test_a_done_run_never_leaves_its_record_calling_a_copy_unknown(self):
+        """The contradiction: `_converge` returned done while its own record said a copy
+        was unknown, because the read had accounted for that copy and the frozen set was
+        never re-examined. A complete read that holds both copies answers the doubt, so
+        the record and the verdict agree - and the run is done on evidence, not on a
+        count that ignores the doubt."""
+        a = vid(1)
+        upstream = Upstream(accept_repeats=True)
+        upstream.playlist = [a, a]
+        with mock.patch("urllib.request.urlopen", upstream):
+            out = backend._converge(PLID, COOKIE, [a, a], spotify_id="SPOTREPAIR",
+                                    title="Repair Test",
+                                    url="https://example.invalid/p", unsure=[1])
+
+        self.assertEqual(out["state"], "done", out)
+        rec = self.created()["SPOTREPAIR"]
+        self.assertIs(rec.get("complete"), True,
+                      "the run said done while its record said a copy was unknown")
+        self.assertEqual(rec.get("unsure_ids") or [], [])
+
+    def test_a_done_run_refuses_when_the_doubt_cannot_be_answered(self):
+        """The other half of the same rule: when the read does not hold enough copies to
+        answer the doubt, the run may not say done. It ends unresolved and names it."""
+        a = vid(1)
+        upstream = Upstream(accept_repeats=True)
+        upstream.playlist = [a]                  # one copy seen, two in doubt
+        with mock.patch("urllib.request.urlopen", upstream):
+            out = backend._converge(PLID, COOKIE, [a, a], spotify_id="SPOTREPAIR",
+                                    title="Repair Test",
+                                    url="https://example.invalid/p", unsure=[1])
+
+        self.assertEqual(out["state"], "gaveup", out)
+        self.assertIn(a, out["residual"])
+        self.assertIs(self.created()["SPOTREPAIR"].get("complete"), False)
+
+    # --- 6d: the record is the safety net, so it fails closed ---------------
+    def test_a_write_ahead_that_cannot_be_saved_sends_nothing(self):
+        """A run whose record cannot be written does not know what a restart will be
+        told about its writes, so it may not write at all: the append never leaves, and
+        the run says why."""
+        tracks = tracks_for(55)
+        upstream = Upstream()
+        real_save = backend.save_created
+
+        def refuse_write_ahead(d):
+            rec = (d or {}).get("SPOTREPAIR") or {}
+            if rec.get("inflight"):
+                return False            # the write-ahead of a slice cannot be saved
+            return real_save(d)
+
+        with mock.patch.object(backend, "save_created", refuse_write_ahead):
+            snap = self.transfer(upstream, tracks)
+
+        self.assertEqual(upstream.sends, [],
+                         "the run appended without a durable resume record")
+        self.assertEqual(snap["phase"], "failed", snap)
+        self.assertIn("resume record", snap["error"])
+        self.assertEqual(snap["counts"]["unverified"], 5, snap["counts"])
+
+    def test_a_top_up_honours_an_unknown_write_from_the_record(self):
+        """The complete-record branch used to read, then append, trusting `complete`.
+        A run interrupted while topping up leaves that flag set, so the unknown copies
+        the record carries must be honoured here exactly as a resume honours them."""
+        plan = [vid(i) for i in range(1, 7)]
+        upstream = Upstream()
+        upstream.playlist = list(plan[:5])        # copy 6 absent
+        with open(backend.CREATEDF, "w", encoding="utf-8") as f:
+            json.dump({"SPOTREPAIR": {
+                "yt_id": PLID, "url": "https://example.invalid/p",
+                "title": "Repair Test", "expected": 6, "complete": True,
+                "video_ids": plan, "plan_slots": plan,
+                "inflight": [5], "expected_min": 5}}, f)
+        snap = self.transfer(upstream, tracks_for(6))
+
+        self.assertEqual(upstream.sends, [],
+                         "a top-up re-sent a copy whose write was unknown")
+        self.assertEqual(snap["state"], "gaveup", snap)
+        self.assertIn("outcome is unknown", snap["reason"])
+        self.assertEqual(snap["counts"]["unverified"], 1, snap["counts"])
+        self.assertIs(self.created()["SPOTREPAIR"]["complete"], False)
+
+    def test_a_new_slice_never_erases_an_earlier_write_ahead(self):
+        """A slice's write-ahead merges with the queue instead of replacing it, and a
+        slice only removes the positions it classified. A note that fails to save
+        therefore leaves the queue for the next slice to carry, not to overwrite."""
+        with open(backend.CREATEDF, "w", encoding="utf-8") as f:
+            json.dump({"SPOTREPAIR": {"yt_id": PLID, "complete": False}}, f)
+
+        self.assertTrue(backend._write_ahead("SPOTREPAIR", [3], 1))
+        self.assertEqual(self.created()["SPOTREPAIR"]["inflight"], [3])
+        # The note of that slice is lost (the save fails), then the next slice queues.
+        with mock.patch.object(backend, "save_created", lambda d: False):
+            backend._note_outcomes("SPOTREPAIR", [3], [3], 1)
+        backend._write_ahead("SPOTREPAIR", [7], 2)
+
+        rec = self.created()["SPOTREPAIR"]
+        self.assertEqual(rec["inflight"], [3, 7],
+                         "a new write-ahead erased the queue the failed note left")
+        # Only positions that were classified leave the queue.
+        backend._note_outcomes("SPOTREPAIR", [7], [7], 3)
+        rec = self.created()["SPOTREPAIR"]
+        self.assertEqual(rec["inflight"], [3])
+        self.assertEqual(rec["unsure"], [7])
+        self.assertEqual(rec["expected_min"], 3)
+
+    def test_the_created_floor_is_on_disk_before_the_first_read_back(self):
+        """The create's inline batch is a write the playlist already accepted: the floor
+        it establishes (one entry per distinct inline id) must be on disk before the
+        read-back, or a crash in that window lets a restart read a short playlist as a
+        plan and append the rest of it."""
+        upstream = Upstream(browse_broken=True)   # the create works, every read fails
+        snap = self.transfer(upstream, tracks_for(60))
+
+        self.assertEqual(snap["phase"], "failed", snap.get("error"))
+        rec = self.created()["SPOTREPAIR"]
+        self.assertEqual(rec.get("expected_min"), 50,
+                         "the inline floor was not recorded at create time")
+        self.assertIs(rec.get("complete"), False)
+
+    def test_an_unknown_write_freezes_every_copy_of_that_song(self):
+        """A playlist read cannot tell two copies of one videoId apart, so an unknown
+        write on one occurrence makes the others unattributable too: none of them is
+        sent, and each is named. Sending the other copy could be the second row of a
+        song the playlist already holds twice."""
+        a = vid(1)
+        upstream = Upstream(accept_repeats=True)
+        upstream.playlist = []                    # both copies absent from the read
+        with mock.patch("urllib.request.urlopen", upstream):
+            out = backend._converge(PLID, COOKIE, [a, a], unsure=[1])
+
+        self.assertEqual(upstream.sends, [],
+                         "another copy of a song with an unknown write was sent")
+        self.assertEqual(out["state"], "gaveup", out)
+        self.assertEqual(out["residual"], [a, a])
+
+    def test_a_later_write_never_lowers_the_persisted_floor(self):
+        """The record's floor only rises. A repair pass that computed its own, older
+        floor - or a progress write with a stale one - must not put it back over a
+        floor another writer already proved: a restart reading a low floor treats a
+        short playlist as complete."""
+        with open(backend.CREATEDF, "w", encoding="utf-8") as f:
+            json.dump({"SPOTREPAIR": {"yt_id": PLID, "complete": False,
+                                      "expected_min": 50, "unsure": [3]}}, f)
+
+        backend._persist_progress("SPOTREPAIR", PLID, "https://example.invalid/p",
+                                  "Repair Test", 6, state="repairing", attempt=1,
+                                  expected_min=2, unsure=[])
+        rec = self.created()["SPOTREPAIR"]
+        self.assertEqual(rec["expected_min"], 50, "a stale floor was written back")
+        self.assertEqual(rec["unsure"], [3], "a persisted unknown was dropped")
+
+    # --- 6c: what the run knows is on disk, so a restart cannot guess ---------
+    def test_every_slice_is_written_ahead_before_it_is_sent(self):
+        """A close mid-slice must not turn copies the run already sent into copies it
+        never sent. Each slice's positions go on disk before its first add, and are
+        replaced by its outcomes after it."""
+        tracks = tracks_for(55)
+        upstream = Upstream()
+        seen = []
+        real_rec = backend.load_created
+
+        def watch():
+            rec = (real_rec() or {}).get("SPOTREPAIR") or {}
+            seen.append((list(rec.get("inflight") or []), int(rec.get("expected_min") or 0)))
+            return real_rec()
+
+        with mock.patch.object(backend, "load_created", watch):
+            snap = self.transfer(upstream, tracks)
+
+        self.assertEqual(snap["phase"], "done", snap.get("error"))
+        # The five copies beyond the inline create are written ahead as one slice.
+        self.assertIn(([50, 51, 52, 53, 54], 50), seen, seen)
+        rec = self.created()["SPOTREPAIR"]
+        self.assertEqual(rec.get("inflight"), [], "the write-ahead list was never cleared")
+        self.assertEqual(rec.get("expected_min"), 55)
+        self.assertEqual(rec.get("unsure"), [])
+
+    def test_a_resume_does_not_resend_a_copy_whose_write_was_unknown(self):
+        """The record says which copies were written with an unknown outcome. A resume
+        is automatic, so it may not send them again: it freezes them and says so. Both
+        the outcome list and the write-ahead list of a slice cut short count."""
+        for field in ("unsure", "inflight"):
+            with self.subTest(field=field):
+                upstream = Upstream()
+                upstream.playlist = [vid(i) for i in range(1, 6)]   # copy 6 is absent
+                with open(backend.CREATEDF, "w", encoding="utf-8") as f:
+                    json.dump({"SPOTREPAIR": {
+                        "yt_id": PLID, "url": "https://example.invalid/p",
+                        "title": "Repair Test", "expected": 6, "complete": False,
+                        "state": "verifying", "attempt": 0, "next_run_at": 0,
+                        "video_ids": [vid(i) for i in range(1, 7)],
+                        "plan_slots": [vid(i) for i in range(1, 7)],
+                        "pending": [], field: [5]}}, f)
+                snap = self.transfer(upstream, tracks_for(6))
+
+                self.assertEqual(upstream.appends, [],
+                                 "a resume re-sent a copy whose write was %s" % field)
+                self.assertEqual(snap["state"], "gaveup", snap)
+                self.assertEqual(snap["counts"]["unverified"], 1, snap["counts"])
+                self.assertEqual(snap["residual"], [vid(6)])
+                self.assertIn("outcome is unknown", snap["reason"])
+                self.assertIs(self.created()["SPOTREPAIR"]["complete"], False)
+
+    def test_a_resume_restores_the_accepted_floor(self):
+        """The floor a run proved is on disk. A resume that forgot it would take a
+        short read for a whole playlist and append a copy that is already there."""
+        upstream = Upstream()
+        upstream.playlist = [vid(i) for i in range(1, 6)]      # holds 5, floor says 6
+        with open(backend.CREATEDF, "w", encoding="utf-8") as f:
+            json.dump({"SPOTREPAIR": {
+                "yt_id": PLID, "url": "https://example.invalid/p",
+                "title": "Repair Test", "expected": 6, "complete": False,
+                "state": "verifying", "attempt": 0, "next_run_at": 0,
+                "video_ids": [vid(i) for i in range(1, 7)],
+                "plan_slots": [vid(i) for i in range(1, 7)],
+                "pending": [], "expected_min": 6}}, f)
+        snap = self.transfer(upstream, tracks_for(6))
+
+        self.assertEqual(upstream.appends, [],
+                         "a resume appended off a read below the floor it inherited")
+        self.assertEqual(snap["state"], "gaveup", snap)
+        self.assertTrue(self.waits, "the run did not stand by on the short read")
+        self.assertEqual(self.waits[0]["snap"]["reason"], "read incomplete")
+
+    def test_a_resume_without_a_floor_still_repairs_what_is_missing(self):
+        """The control for the two above: a clean record's resume does send the absent
+        copy, so the freezes are what stop it, not the resume itself."""
+        upstream = Upstream()
+        upstream.playlist = [vid(i) for i in range(1, 6)]
+        with open(backend.CREATEDF, "w", encoding="utf-8") as f:
+            json.dump({"SPOTREPAIR": {
+                "yt_id": PLID, "url": "https://example.invalid/p",
+                "title": "Repair Test", "expected": 6, "complete": False,
+                "state": "verifying", "attempt": 0, "next_run_at": 0,
+                "video_ids": [vid(i) for i in range(1, 7)],
+                "plan_slots": [vid(i) for i in range(1, 7)], "pending": []}}, f)
+        snap = self.transfer(upstream, tracks_for(6))
+
+        self.assertEqual(upstream.appends, [vid(6)])
+        self.assertEqual(snap["state"], "done", snap)
+        self.assertEqual(snap["counts"]["added"], 6, snap["counts"])
 
     # --- 7: a short complete read is short, not complete --------------------
     def test_a_token_complete_read_below_the_minimum_is_not_complete(self):
