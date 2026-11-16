@@ -235,15 +235,12 @@ class Repair(unittest.TestCase):
             setattr(backend, k, v)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def transfer(self, upstream, tracks, one_to_one=None, batch=None):
+    def transfer(self, upstream, tracks, batch=None):
         self.upstream = upstream
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch("urllib.request.urlopen", upstream))
             stack.enter_context(mock.patch.object(backend, "fetch_spotify_tracks", fake_fetch(tracks)))
             stack.enter_context(mock.patch.object(backend, "yt_search_batch", batch or fake_batch))
-            if one_to_one is not None:
-                stack.enter_context(mock.patch.object(backend, "one_to_one_setting",
-                                                      lambda: one_to_one))
             rid = backend.run_begin("", "")
             backend._transfer_thread(SPOTIFY_URL, COOKIE, "", "PRIVATE", rid)
         return backend.run_snapshot()
@@ -285,9 +282,15 @@ class Repair(unittest.TestCase):
         self.assertNotIn("1 refused", snap["summary"])
         self.assertEqual(snap["duplicate"], 1)
         self.assertEqual(snap["refused"], 0)
-        # A duplicate is unaddable, not unfinished: the record must not ask for
-        # another resume of a playlist that is exactly as complete as it can be.
-        self.assertIs(self.created()["SPOTREPAIR"]["complete"], True)
+        # This fake will not hold two copies of one id, whatever the action asks
+        # (a real edit_playlist accepts the second when it carries the skip). The
+        # plan is therefore one copy short and the record says so: `complete` is a
+        # claim that every intended copy is on the playlist, and that claim would
+        # be false here. The copy is not re-sent more than once: the server's own
+        # verdict ends the retries.
+        self.assertEqual(snap["state"], "gaveup")
+        self.assertEqual(snap["residual"], [vid(3)])
+        self.assertIs(self.created()["SPOTREPAIR"]["complete"], False)
 
     # --- 2: a 429 stands by, appends nothing, then realigns -----------------
     def test_a_throttled_append_stands_by_and_resumes_with_exactly_the_missing_copies(self):
@@ -340,10 +343,11 @@ class Repair(unittest.TestCase):
         self.assertIn("10 unverified", snap["summary"])
         self.assertEqual(len(upstream.playlist), 110)
         # A run that never completed a read cannot call itself done: it spends the
-        # budget it has and ends in a terminal state that names the shortfall.
+        # budget it has and ends in a terminal state that names the shortfall - the
+        # ten copies the read never reached, by name, not an empty residual.
         self.assertEqual(len(self.waits), backend.RUN_RETRY_MAX)
         self.assertEqual(snap["state"], "gaveup")
-        self.assertEqual(snap["residual"], [])
+        self.assertEqual(snap["residual"], [vid(i) for i in range(31, 41)])
 
     # --- 3b: a pending repair is never attempted off an incomplete read ------
     def test_an_incomplete_read_back_holds_back_a_pending_repair(self):
@@ -441,9 +445,9 @@ class Repair(unittest.TestCase):
                                       "title": "Repair Test", "expected": 60,
                                       "complete": False, "state": "standby",
                                       "attempt": 3, "next_run_at": due,
-                                      "one_to_one": False, "video_ids": plan,
+                                      "video_ids": plan,
                                       "pending": []}}, f)
-        snap = self.transfer(upstream, tracks, one_to_one=True)
+        snap = self.transfer(upstream, tracks)
 
         self.assertEqual(upstream.creates, 0, "a resume must never create a playlist")
         self.assertEqual(snap["state"], "done")
@@ -457,11 +461,14 @@ class Repair(unittest.TestCase):
         self.assertEqual(stood["snap"]["attempt"], 3)
         self.assertGreaterEqual(stood["delay"], 590, "the resume waited less than the record asked")
         self.assertEqual(stood["appends"], [], "the resume appended before its retry time")
-        # ...and it replays the plan and the toggle it was interrupted with.
+        # ...and it replays the plan it was interrupted with.
         self.assertEqual(upstream.appends, [vid(i) for i in range(60, 55, -1)])
         self.assertTrue(upstream.actions, "no append was sent")
+        # A transfer is 1:1 with the source, always: the resume asks the server to
+        # keep the copy too, whether or not an older record carried a toggle. The
+        # toggle is gone from the settings, the API and the run state.
         for act in upstream.actions:
-            self.assertNotIn("dedupeOption", act, "the persisted 1:1 off was flipped on resume")
+            self.assertEqual(act.get("dedupeOption"), "DEDUPE_OPTION_SKIP", act)
 
     # --- 4c: a resume replays the persisted plan, never a fresh match -------
     def test_a_resume_uses_the_plan_the_interrupted_run_persisted(self):
@@ -580,7 +587,7 @@ class Repair(unittest.TestCase):
         upstream = Upstream(lose_reply={vid(1)}, paging_broken=True)
         upstream.playlist = ["X%010d" % i for i in range(150)]   # more than one page
         with mock.patch("urllib.request.urlopen", upstream):
-            st = backend.yt_add_one(PLID, vid(1), COOKIE, one_to_one=True)
+            st = backend.yt_add_one(PLID, vid(1), COOKIE)
 
         self.assertTrue(backend.is_transport_status(st), st)
         self.assertEqual(upstream.appends.count(vid(1)), 1,

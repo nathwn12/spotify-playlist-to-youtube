@@ -18,12 +18,18 @@ def envelope(sections):
 
 
 def skip_class(text):
-    """Map yt_match's skip text to the class recorded in the fixture."""
+    """Map yt_match's skip text to the class recorded in the fixture.
+
+    `unidentified` is its own class: the row crossed scripts and no candidate
+    carried the evidence a match needs, so the rank-1 fallback was refused rather
+    than guessed. It is a skip, and it is named for the reason it happened."""
     t = (text or "").lower()
     if "version mismatch" in t:
         return "version_mismatch"
     if "versions found" in t and "only " in t:
         return "only_versioned"
+    if "not identified" in t:
+        return "unidentified"
     if "no confident match (best" in t:
         return "low_confidence"
     if "no ytm result" in t:

@@ -901,10 +901,8 @@
    ],
    "expect": {
     "signature": "plain",
-    "videoId": "BestGuess01",
-    "video_title": "Ultramarine",
-    "duration": "",
-    "guess": true
+    "skip": "unidentified",
+    "note": "cross-script with no identified candidate: the rank-1 fallback is refused, not guessed (policy 0.5.0)"
    },
    "responses": {
     "群青 YOASOBI": [

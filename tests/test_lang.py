@@ -139,11 +139,13 @@ def test_pick_best_ladder():
                                      [cand("Slowed00001", "夜に駆ける (Slowed)", "YOASOBI \u2022 4:40", "4:40")]),
            "versions found", "a plain source never falls back to a slowed copy")
 
-    g = backend._pick_best("群青 YOASOBI", "群青", "YOASOBI", 252000,
-                           [cand("BestGuess01", "Ultramarine", "YOASOBI")])
-    eq(g.get("videoId"), "BestGuess01", "crossing with no evidence lands rank 1")
-    eq(bool(g.get("best_guess")), True, "crossing with no evidence is a guess")
-    eq(bool(g.get("why")), True, "a guess records why")
+    # Policy: a cross-script row with no identified candidate is REFUSED, not
+    # guessed. Rank 1 of a search is the search engine's opinion, and a guess is
+    # the one way a wrong video could enter a playlist with no fact behind it.
+    # This used to return the rank-1 card as a labelled guess.
+    raises(lambda: backend._pick_best("群青 YOASOBI", "群青", "YOASOBI", 252000,
+                                      [cand("BestGuess01", "Ultramarine", "YOASOBI")]),
+           "not identified", "crossing with no evidence is refused, not guessed")
 
     near = [cand("LatinNearA1", "Hello There", "Adele"),
             cand("LatinNearB1", "Hello Again", "Adele")]
@@ -153,35 +155,34 @@ def test_pick_best_ladder():
 
 
 def test_yt_match_policy():
-    """A guess on an early variant never blocks a confident hit on a later one."""
+    """A guess-flagged reply is never a match: it never blocks a confident hit on
+    a later variant, and on its own it leaves the row skipped."""
     real = backend.yt_search
     try:
-        def fake(q, title="", artist="", duration_ms=0):
+        def fake(q, title="", artist="", duration_ms=0, album=""):
             if q == "Yoru ni Kakeru YOASOBI":
                 return {"videoId": "GuessFirst1", "title": "夜に駆ける", "artist": "YOASOBI",
                         "duration": "4:21", "score": 0.31, "best_guess": True,
-                        "why": "cross-script best guess"}
+                        "why": "legacy label"}
             if q == "YOASOBI - Yoru ni Kakeru":
                 return {"videoId": "Confident03", "title": "夜に駆ける", "artist": "YOASOBI",
                         "duration": "4:21", "score": 0.87, "confidence": "aligned"}
             raise RuntimeError("no confident match (best 0.20) for: " + q)
         backend.yt_search = fake
         r = backend.yt_match("Yoru ni Kakeru", "YOASOBI", 261000)
-        eq(r.get("videoId"), "Confident03", "confident variant 3 beats a guess on variant 1")
+        eq(r.get("videoId"), "Confident03", "confident variant 3 beats a flagged variant 1")
         eq(r.get("via"), "YOASOBI - Yoru ni Kakeru", "via names the variant that hit")
-        eq(bool(r.get("best_guess")), False, "a confident hit is not a guess")
+        eq(bool(r.get("best_guess")), False, "an identified hit is not a guess")
 
-        def only_guess(q, title="", artist="", duration_ms=0):
-            score = 0.31 if q == "Yoru ni Kakeru YOASOBI" else 0.44
+        def only_flagged(q, title="", artist="", duration_ms=0, album=""):
             return {"videoId": "Guess" + str(len(q)), "title": "夜に駆ける", "artist": "YOASOBI",
-                    "duration": "", "score": score, "best_guess": True, "why": "cross-script best guess"}
-        backend.yt_search = only_guess
+                    "duration": "", "score": 0.44, "best_guess": True, "why": "legacy label"}
+        backend.yt_search = only_flagged
         r = backend.yt_match("Yoru ni Kakeru", "YOASOBI", 261000)
-        eq(bool(r.get("best_guess")), True, "with no confident variant the guess is returned")
-        eq(r.get("score"), 0.44, "the highest-scoring guess wins")
-        eq(bool(r.get("why")), True, "the guess keeps its reason")
+        eq(r.get("videoId"), None, "a flagged reply alone leaves the row skipped")
+        eq(bool(r.get("skipped")), True, "a skip keeps its reason")
 
-        def nothing(q, title="", artist="", duration_ms=0):
+        def nothing(q, title="", artist="", duration_ms=0, album=""):
             raise RuntimeError("no ytm result for: " + q)
         backend.yt_search = nothing
         r = backend.yt_match("Yoru ni Kakeru", "YOASOBI", 261000)
@@ -189,7 +190,7 @@ def test_yt_match_policy():
         eq(bool(r.get("skipped")), True, "a skip keeps its reason")
     finally:
         backend.yt_search = real
-    ok("yt_match guess policy")
+    ok("yt_match refuses a guess")
 
 
 def main():
