@@ -16,6 +16,8 @@ if errorlevel 1 exit /b 1
 if errorlevel 1 exit /b 1
 %PY% -X utf8 tests\check_page.py
 if errorlevel 1 exit /b 1
+node tests\check_ui.mjs
+if errorlevel 1 exit /b 1
 %PY% -X utf8 tests\test_cookies.py
 if errorlevel 1 exit /b 1
 %PY% -X utf8 tests\test_connect_card.py
