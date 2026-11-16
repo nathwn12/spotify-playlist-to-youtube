@@ -144,6 +144,7 @@ class Upstream:
         self.pages = 0
         self.searches = {}
         self.watcher = None
+        self.seq = []               # ("add", videoId) / ("read", entries) in call order
         for src in tracks:
             song = song_no(src["title"])
             for q in backend._query_variants(src["title"], src["artist"]):
@@ -204,6 +205,7 @@ class Upstream:
         act = (body.get("actions") or [{}])[0]
         self.actions.append(act)
         v = act.get("addedVideoId") or ""
+        self.seq.append(("add", v))
         if self.frozen and self.snapshot is None:
             # The playlist as it stood when the first append was accepted: every
             # later read is token-complete and hides everything this run sent.
@@ -230,6 +232,8 @@ class Upstream:
             self.reads += 1
             start = 0
         held = list(self.snapshot if self.snapshot is not None else self.playlist)
+        if not token:
+            self.seq.append(("read", len(held)))
         page = held[start:start + PAGE]
         shelf = {"contents": [{"musicResponsiveListItemRenderer": {"playlistItemData": {"videoId": v}}}
                               for v in page]}
@@ -430,6 +434,37 @@ class Slices(unittest.TestCase):
             self.assertLessEqual(s["added"], seed,
                                  "a partial read published verified progress: %r" % (s,))
         self.assertEqual(snap["landed"], 100, snap["counts"])
+
+
+    # --- 7: the repair is sliced exactly like the first pass -----------------
+    def test_the_repair_is_sent_in_slices_proved_by_their_own_read(self):
+        """A repair is 100-copy slices too. Sending every absent copy in one batch is
+        not the same mechanism as the first pass: no read stands between the batches,
+        so a stale reply cannot stop the rest, and a single accepted-but-dropped copy
+        is only discovered after the whole plan went out."""
+        n = 250
+        vids = [vid(i) for i in range(1, n + 1)]
+        upstream = Upstream([])          # the playlist holds none of them
+        with mock.patch("urllib.request.urlopen", upstream):
+            out = backend._converge(PLID, COOKIE, vids)
+
+        self.assertEqual(out["state"], "done", out)
+        self.assertEqual(upstream.playlist, vids,
+                         "the repair did not send the plan once, in plan order")
+        runs, run = [], 0
+        for kind, _ in upstream.seq:
+            if kind == "add":
+                run += 1
+            else:
+                runs.append(run)
+                run = 0
+        self.assertEqual(sum(runs), n)
+        self.assertLessEqual(max(runs), backend.TRANSFER_SLICE,
+                             "a repair batch of %d went out with no read between them"
+                             % max(runs))
+        self.assertEqual(upstream.reads, 1 + -(-n // backend.TRANSFER_SLICE),
+                         "the repair made %d read bursts for %d slices"
+                         % (upstream.reads, -(-n // backend.TRANSFER_SLICE)))
 
 
 if __name__ == "__main__":

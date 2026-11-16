@@ -22,7 +22,10 @@ def skip_class(text):
 
     `unidentified` is its own class: the row crossed scripts and no candidate
     carried the evidence a match needs, so the rank-1 fallback was refused rather
-    than guessed. It is a skip, and it is named for the reason it happened."""
+    than guessed. It is a skip, and it is named for the reason it happened.
+    `title_only` is the other named refusal: the winner agreed on the title and on
+    nothing else, so the row is skipped instead of matching an upload the evidence
+    does not identify."""
     t = (text or "").lower()
     if "version mismatch" in t:
         return "version_mismatch"
@@ -30,6 +33,8 @@ def skip_class(text):
         return "only_versioned"
     if "not identified" in t:
         return "unidentified"
+    if "title only" in t:
+        return "title_only"
     if "no confident match (best" in t:
         return "low_confidence"
     if "no ytm result" in t:

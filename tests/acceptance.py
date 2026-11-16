@@ -299,24 +299,29 @@ def test_reconcile_absent_stays_refused():
         return "FAIL reconcile-absent: %s: %s" % (type(e).__name__, e)
 
 
-def test_timeout_retry_already_exists():
-    """A transport blip never loses the track - and never reads as success.
+def test_uncertain_writes_are_never_resent():
+    """A lost reply is never treated as a lost add, and never re-sent by guesswork.
 
-    yt_add_one's contract is: a timeout is a transport failure, distinguishable and
-    retryable, and it is never reported as an add. Its own resend now waits for a
-    COMPLETE read of the playlist, so an add whose outcome is unknown is not sent
-    blind. The retry that keeps the track therefore lives one layer UP, in the
-    repair pass (_converge): it reads the whole playlist, sees the copy absent and
-    sends it once. Both halves are pinned here - a timeout reads as transport and
-    is not re-sent from inside the add, and the repair pass lands the copy without
-    a second copy ever being asked for.
+    Three halves, all of them pinned here:
+
+      (a) the add itself: a timeout reads as transport, never success, and nothing is
+          re-sent from inside it;
+      (b) the repair pass does not re-send it either. A complete read that does not
+          show the copy is not proof the copy stayed out - the read can be a snapshot
+          taken before the write - so the run ends give-up and names the copy as
+          unverified, for the user to check. That is the safe stop, not a retry;
+      (c) a 429 is different: the server declined the request, so the copy was never
+          written and retrying it is a first write. That one is retried after the
+          backoff the run chose.
     """
     try:
         import time
 
         real = urllib.request.urlopen
         real_sleep = time.sleep
+        real_wait = backend._standby_wait
         time.sleep = lambda s: None
+        backend._standby_wait = lambda s: None   # the wait between passes is not this check
 
         class FakeResp:
             def __init__(self, obj):
@@ -332,14 +337,17 @@ def test_timeout_retry_already_exists():
                 return False
 
         held, sends = [], []
-        mode = {"browse": "broken"}
+        mode = {"browse": "broken", "fail": "timeout"}
+        vid = "VID00000001"
 
         def fake(req, timeout=None):
             url = getattr(req, "full_url", "")
             if "edit_playlist" in url:
-                sends.append(1)
-                if mode["browse"] == "broken" or len(sends) == 2:
-                    raise urllib.error.URLError("timed out")
+                sends.append(mode["fail"])
+                if mode["fail"] == "timeout":
+                    raise urllib.error.URLError("timed out")     # may have been applied
+                if mode["fail"] == "429" and sends.count("429") <= 2:
+                    raise urllib.error.HTTPError(url, 429, "Too Many Requests", {}, None)
                 for act in json.loads((req.data or b"{}").decode()).get("actions") or []:
                     v = act.get("addedVideoId")
                     if v and v not in held:
@@ -353,26 +361,45 @@ def test_timeout_retry_already_exists():
 
         try:
             urllib.request.urlopen = fake
-            # (a) the add itself: a timeout whose read cannot prove the playlist is
-            # a transport failure - distinguishable, retryable, never an add - and
-            # the unknown outcome is not sent blind.
-            st = backend.yt_add_one("PLX", "VID00000001", "SAPISID=x")
-            if "SUCCEEDED" in (st or "").upper() or not backend.is_transport_status(st):
+            # (a) the add: a timeout is a transport failure, never an add, and the
+            # unknown outcome is not sent blind from inside.
+            st = backend.yt_add_one("PLX", vid, "SAPISID=x")
+            if "SUCCEEDED" in (st or "").upper() or not backend.is_unsure_status(st):
                 return "FAIL retry: a timeout read as %r" % (st,)
             if len(sends) != 1:
                 return "FAIL retry: an unknown outcome was re-sent blind (sends=%d)" % len(sends)
-            # (b) the repair pass owns the retry: it reads the playlist, proves the
-            # copy absent, and sends it - the blip costs a read, never the track.
+
+            # (b) the repair pass: a complete read cannot prove the copy stayed out, so
+            # the copy is frozen and named, never sent a second time. The run hands the
+            # unknown position in, exactly as the transfer worker does.
             mode["browse"] = "ok"
-            out = backend._converge("PLX", "SAPISID=x", ["VID00000001"])
-            if held != ["VID00000001"]:
-                return "FAIL retry: the copy was lost (%r)" % (held,)
-            if out.get("state") != "done":
-                return "FAIL retry: the repair ended %r" % (out.get("state"),)
+            out = backend._converge("PLX", "SAPISID=x", [vid], unsure=[0])
+            if len(sends) != 1:
+                return "FAIL retry: the repair pass re-sent an unknown write (sends=%d)" % len(sends)
+            if out.get("state") != "gaveup":
+                return "FAIL retry: an unknown write ended %r" % (out.get("state"),)
+            if vid not in (out.get("residual") or []):
+                return "FAIL retry: the unknown copy is not named (%r)" % (out.get("residual"),)
+            if held:
+                return "FAIL retry: an unknown write read as landed (%r)" % (held,)
+
+            # (c) a 429 is not proof the write was refused unapplied on this endpoint,
+            # so it takes the same path: it is named unknown and never re-sent.
+            held.clear()
+            sends.clear()
+            mode["fail"] = "429"
+            out = backend._converge("PLX", "SAPISID=x", [vid])
+            if len(sends) != 1:
+                return "FAIL retry: a 429 was re-sent (sends=%d)" % len(sends)
+            if out.get("state") != "gaveup":
+                return "FAIL retry: a 429 ended %r" % (out.get("state"),)
+            if held:
+                return "FAIL retry: a 429 write read as landed (%r)" % (held,)
         finally:
             urllib.request.urlopen = real
             time.sleep = real_sleep
-        print("retry: a timeout is transport and never success; the repair pass re-reads and lands the copy once")
+            backend._standby_wait = real_wait
+        print("retry: a lost reply and a 429 are unknowns; neither is ever re-sent")
         return None
     except Exception as e:
         return "FAIL retry: %s: %s" % (type(e).__name__, e)
@@ -619,7 +646,7 @@ def main():
 
     for fn in (test_reconcile_present_but_refused,
                test_reconcile_absent_stays_refused,
-               test_timeout_retry_already_exists,
+               test_uncertain_writes_are_never_resent,
                test_done_line_never_splits,
                test_guess_summary):
         try:

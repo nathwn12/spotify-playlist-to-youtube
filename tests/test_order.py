@@ -55,11 +55,12 @@ class Upstream:
     """A playlist that accepts every add carrying the skip, and refuses a second
     copy without it (unless `refuse_extra` models a server that refuses anyway)."""
 
-    def __init__(self, held, refuse_extra=False):
+    def __init__(self, held, refuse_extra=False, script=()):
         self.playlist = list(held)
         self.appends = []
         self.actions = []
         self.refuse_extra = refuse_extra
+        self.script = [list(s) for s in script]   # complete replies, one per first-page read
         self.reads = 0
 
     def __call__(self, req, timeout=None):
@@ -90,10 +91,15 @@ class Upstream:
         start = int(re.sub(r"\D", "", token) or 0) if token else 0
         if not token:
             self.reads += 1
-        page = self.playlist[start:start + PAGE]
+        held = list(self.playlist)
+        if not token and self.script:
+            # A complete reply that is not the playlist's current state: the stale
+            # snapshot served for a read taken before the writes it should show.
+            held = list(self.script.pop(0))
+        page = held[start:start + PAGE]
         shelf = {"contents": [{"musicResponsiveListItemRenderer":
                                {"playlistItemData": {"videoId": v}}} for v in page]}
-        if start + len(page) < len(self.playlist):
+        if start + len(page) < len(held):
             shelf["continuations"] = [{"nextContinuationData":
                                        {"continuation": "page:%d" % (start + len(page))}}]
         return Resp({"contents": {"musicPlaylistShelfRenderer": shelf}})
@@ -159,6 +165,22 @@ class Order(unittest.TestCase):
         self.assertEqual(out["state"], "done", out)
         self.assertEqual(upstream.appends, [B, A], "the repair did not follow plan order")
         self.assertEqual(upstream.playlist, [A, C, B, A])
+
+    def test_a_repair_of_a_repeated_copy_is_proved_by_the_copies_it_sent(self):
+        """Plan [A,A,B] against a playlist holding [B]: two copies are absent and the
+        repair sends both. The read that follows must prove TWO new entries. Counted
+        by videoId the batch promises one, so a stale read one entry short reads as
+        complete, one copy looks absent, and it is sent a third time - for a plan
+        that asks for two. The pass also reports one status per copy, never one per
+        videoId."""
+        upstream = Upstream([B], script=[[B], [B, A]])   # read 2 is a stale page
+        out = self.converge(upstream, [A, A, B])
+        self.assertEqual(out["state"], "done", out)
+        self.assertEqual(upstream.appends, [A, A],
+                         "a copy was re-sent off a stale read")
+        self.assertEqual(upstream.playlist, [B, A, A], upstream.playlist)
+        self.assertEqual(sorted(out["statuses"]), [0, 1],
+                         "the pass reported %r for two copies" % (out["statuses"],))
 
     def test_a_repeat_the_server_will_not_accept_is_not_a_finished_run(self):
         plan = [A, B, A, C]

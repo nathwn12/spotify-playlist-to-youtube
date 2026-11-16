@@ -259,21 +259,190 @@ class Counts(unittest.TestCase):
         self.assertEqual(upstream.actions[-1].get("dedupeOption"), SKIP)
         self.assertEqual(len(upstream.playlist), 6)
 
+    # --- (d) a soft second search: bounded, and never a weaker match --------
+    def test_a_row_whose_search_timed_out_is_searched_once_more_and_lands(self):
+        """The row's search never answered - that skip says nothing about the song.
+        One more request, with the row's own first query and the same evidence bar,
+        resolves it; the row says where it came from, and the plan keeps it."""
+        rows = tracks(3)
+        upstream = Upstream()
+        searched = []
+
+        def flaky_batch(chunk, workers=8):
+            out = []
+            for t in chunk:
+                n = int(re.match(r"Track (\d+)$", str((t or {}).get("title", ""))).group(1))
+                if n == 2:
+                    out.append({"ok": True, "query": t.get("title", ""), "videoId": None,
+                                "skipped": "no match on any variant (URLError: timed out)"})
+                else:
+                    out.append({"ok": True, "query": t.get("title", ""), "videoId": vid(n)})
+            return out
+
+        def second(q, title="", artist="", duration_ms=0, album="", tries=3):
+            searched.append(q)
+            return {"videoId": vid(2), "title": title, "artist": artist,
+                    "duration": "", "score": 0.9, "query": q}
+
+        with mock.patch("urllib.request.urlopen", upstream), \
+                mock.patch.object(backend, "fetch_spotify_tracks", fake_fetch(rows)), \
+                mock.patch.object(backend, "yt_search_batch", flaky_batch), \
+                mock.patch.object(backend, "yt_search", second):
+            rid = backend.run_begin("", "")
+            backend._transfer_thread(SPOTIFY_URL, COOKIE, "", "PRIVATE", rid)
+        snap = backend.run_snapshot()
+
+        self.assertEqual(snap["phase"], "done", snap.get("error"))
+        self.assertEqual(searched, ["Track 002 Artist 002"], searched)
+        self.assertEqual(snap["rows"][1]["videoId"], vid(2))
+        self.assertEqual(snap["rows"][1]["status"], "found on a second search")
+        self.assertEqual(snap["counts"]["added"], 3, snap["counts"])
+        self.assertEqual(snap["counts"]["skipped"], 0, snap["counts"])
+        self.assertEqual(len(upstream.playlist), 3)
+
+    def test_a_skip_that_answered_about_the_song_is_never_searched_again(self):
+        """A refusal about the song is an answer. Asking the same question again gets
+        the same answer, and a second pass that accepted less evidence would be the
+        defect it exists to prevent."""
+        rows = tracks(2)
+        upstream = Upstream()
+        searched = []
+
+        def refusing_batch(chunk, workers=8):
+            return [{"ok": True, "query": (t or {}).get("title", ""),
+                     "videoId": vid(1) if i == 0 else None,
+                     "skipped": "" if i == 0 else
+                     "no match on any variant (RuntimeError: no confident match (best 0.55))"}
+                    for i, t in enumerate(chunk)]
+
+        def second(q, **kw):
+            searched.append(q)
+            return {"videoId": vid(2), "title": "", "artist": "", "duration": "", "score": 0.9}
+
+        with mock.patch("urllib.request.urlopen", upstream), \
+                mock.patch.object(backend, "fetch_spotify_tracks", fake_fetch(rows)), \
+                mock.patch.object(backend, "yt_search_batch", refusing_batch), \
+                mock.patch.object(backend, "yt_search", second):
+            rid = backend.run_begin("", "")
+            backend._transfer_thread(SPOTIFY_URL, COOKIE, "", "PRIVATE", rid)
+        snap = backend.run_snapshot()
+
+        self.assertEqual(searched, [], "an answered skip was searched again")
+        self.assertEqual(snap["counts"]["skipped"], 1, snap["counts"])
+        self.assertEqual(snap["counts"]["added"], 1, snap["counts"])
+        self.assertIn("no confident match", snap["rows"][1]["status"])
+
+    def test_a_second_search_that_still_fails_stops_the_pass(self):
+        """The API is still not answering: the first retry says so, and the pass
+        stops there instead of spending the run's budget proving it four more times.
+        Every row keeps the skip it already had."""
+        rows = tracks(4)
+        upstream = Upstream()
+        calls = []
+
+        def dead_batch(chunk, workers=8):
+            return [{"ok": True, "query": (t or {}).get("title", ""), "videoId": None,
+                     "skipped": "no match on any variant (URLError: timed out)"}
+                    for t in chunk]
+
+        def second(q, **kw):
+            calls.append(q)
+            raise RuntimeError("URLError: timed out")
+
+        with mock.patch("urllib.request.urlopen", upstream), \
+                mock.patch.object(backend, "fetch_spotify_tracks", fake_fetch(rows)), \
+                mock.patch.object(backend, "yt_search_batch", dead_batch), \
+                mock.patch.object(backend, "yt_search", second):
+            rid = backend.run_begin("", "")
+            backend._transfer_thread(SPOTIFY_URL, COOKIE, "", "PRIVATE", rid)
+        snap = backend.run_snapshot()
+
+        self.assertEqual(len(calls), 1, "the pass kept retrying a dead wire")
+        self.assertEqual(snap["counts"]["skipped"], 4, snap["counts"])
+        self.assertEqual(snap["counts"]["added"], 0, snap["counts"])
+
+    def test_the_second_search_spends_one_request_per_row(self):
+        """The pass advertises one request per row, so it may not inherit the search's
+        own three-attempt retry: a dead wire would cost three requests a row."""
+        import time as _time
+        calls = []
+
+        def dead(req, timeout=None):
+            calls.append(getattr(req, "full_url", ""))
+            raise urllib.error.URLError("timed out")
+
+        st = {"title": "Track 001", "artist": "Artist 001", "duration_ms": 180001,
+              "album": "", "skipped": "no match on any variant (URLError: timed out)"}
+        backend._SEARCH_CACHE.clear()
+        with mock.patch("urllib.request.urlopen", dead), \
+                mock.patch.object(_time, "sleep", lambda s: None):
+            out, attempted, stop = backend._second_search_skipped([dict(st, i=0)])
+        self.assertEqual(len(calls), 1, "one row cost %d requests" % len(calls))
+        self.assertEqual(attempted, [0])
+        self.assertEqual(out, {})
+        self.assertTrue(stop, "a dead wire did not stop the pass")
+
+        # ...and the matching pass keeps its own budget.
+        calls.clear()
+        backend._SEARCH_CACHE.clear()
+        with mock.patch("urllib.request.urlopen", dead), \
+                mock.patch.object(_time, "sleep", lambda s: None):
+            with self.assertRaises(urllib.error.URLError):
+                backend.yt_search("Track 001 Artist 001", title="Track 001",
+                                  artist="Artist 001", duration_ms=180001)
+        self.assertEqual(len(calls), 3, "the matching pass lost its retries")
+
+    def test_the_second_search_stops_at_its_hard_cap(self):
+        """A hard cap, not a budget that scales with the playlist: 20 unresolved rows
+        cost at most SECOND_SEARCH_MAX requests, and the rest keep their skip."""
+        rows = tracks(20)
+        upstream = Upstream()
+        calls = []
+
+        def dead_batch(chunk, workers=8):
+            return [{"ok": True, "query": (t or {}).get("title", ""), "videoId": None,
+                     "skipped": "no match on any variant (HTTPError: 503 Service Unavailable)"}
+                    for t in chunk]
+
+        def second(q, title="", artist="", duration_ms=0, album="", tries=3):
+            calls.append(q)
+            n = int(re.search(r"(\d+)$", title).group(1))
+            return {"videoId": vid(n), "title": title, "artist": artist,
+                    "duration": "", "score": 0.9, "query": q}
+
+        with mock.patch("urllib.request.urlopen", upstream), \
+                mock.patch.object(backend, "fetch_spotify_tracks", fake_fetch(rows)), \
+                mock.patch.object(backend, "yt_search_batch", dead_batch), \
+                mock.patch.object(backend, "yt_search", second):
+            rid = backend.run_begin("", "")
+            backend._transfer_thread(SPOTIFY_URL, COOKIE, "", "PRIVATE", rid)
+        snap = backend.run_snapshot()
+
+        self.assertEqual(len(calls), backend.SECOND_SEARCH_MAX, calls)
+        self.assertEqual(snap["counts"]["added"], backend.SECOND_SEARCH_MAX, snap["counts"])
+        self.assertEqual(snap["counts"]["skipped"], 20 - backend.SECOND_SEARCH_MAX, snap["counts"])
+        self.assertEqual(sum(snap["counts"][k] for k in ("added", "skipped")), 20)
+
     # --- (c) a refusal is only claimed with the server's own answer ---------
     def test_a_server_that_still_refuses_a_copy_is_refused_not_duplicate(self):
         """The skip was sent and the server refused anyway: that copy is refused,
-        and it is not called a duplicate because nothing said it was."""
+        and it is not called a duplicate because nothing said it was.
+
+        The repeated row is past the inline create on purpose: a copy the create carried
+        a second time is an unknown for the run (a read cannot say which copy it kept),
+        so it is never sent and never earns a verdict."""
         upstream = Upstream()
         upstream.refuse_vids = {vid(1)}
-        snap = self.transfer(upstream, tracks(3, 1))
+        snap = self.transfer(upstream, tracks(55, 1))
 
         self.assertEqual(snap["phase"], "done", snap.get("error"))
         counts = snap["counts"]
         self.assertEqual(counts["refused"], 1, counts)
         self.assertEqual(counts["duplicate"], 0, counts)
+        self.assertEqual(counts["unverified"], 0, counts)
         # The inline create still carries the first copy of vid(1); the refused
-        # one is only the second occurrence.
-        self.assertEqual(counts["added"], 3, counts)
+        # one is only the second occurrence, appended with the skip.
+        self.assertEqual(counts["added"], 55, counts)
         self.assertEqual([r["state"] for r in snap["rows"]].count("refused"), 1)
         self.assertIn("1 refused", snap["summary"])
         self.assertNotIn("1 duplicate", snap["summary"])
@@ -284,13 +453,13 @@ class Counts(unittest.TestCase):
         and never landed."""
         upstream = Upstream()
         upstream.duplicate_despite_skip = True
-        snap = self.transfer(upstream, tracks(3, 1))
+        snap = self.transfer(upstream, tracks(55, 1))
 
         self.assertEqual(snap["phase"], "done", snap.get("error"))
         counts = snap["counts"]
         self.assertEqual(counts["duplicate"], 1, counts)
         self.assertEqual(counts["refused"], 0, counts)
-        self.assertEqual(counts["added"], 3, counts)
+        self.assertEqual(counts["added"], 55, counts)
         self.assertEqual([r["state"] for r in snap["rows"]].count("duplicate"), 1)
         self.assertIn("1 duplicate", snap["summary"])
         self.assertNotIn("1 refused", snap["summary"])

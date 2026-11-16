@@ -23,7 +23,7 @@ import webbrowser
 from ctypes import wintypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.5.0"
 
 # Test seams: every wait and every clock read the retry machinery reasons with
 # goes through these two, so a test can exercise the backoff without spending it.
@@ -76,6 +76,8 @@ RUN = {
     "unverified": 0,
     "duplicate": 0,
     "pending": 0,
+    "unsure": 0,
+    "tail_unverified": 0,
     "guessed": 0,
     "rows": [],
     "error": "",
@@ -152,6 +154,8 @@ def run_begin(spotify_id="", title=""):
         RUN["unverified"] = 0
         RUN["duplicate"] = 0
         RUN["pending"] = 0
+        RUN["unsure"] = 0
+        RUN["tail_unverified"] = 0
         RUN["guessed"] = 0
         RUN["order_ok"] = True
         RUN["declared"] = 0
@@ -202,6 +206,8 @@ def run_reset() -> bool:
         RUN["unverified"] = 0
         RUN["duplicate"] = 0
         RUN["pending"] = 0
+        RUN["unsure"] = 0
+        RUN["tail_unverified"] = 0
         RUN["guessed"] = 0
         RUN["order_ok"] = True
         RUN["declared"] = 0
@@ -688,8 +694,10 @@ def classify(msg: str) -> dict:
         return {"kind": "write", "hint": "YTM created the empty playlist but no songs could be added — the cookie has create-but-cannot-add scope; re-export a fresh full Cookie from music.youtube.com and retry."}
     if "did not land" in m or "add failed" in m or "add rejected" in m:
         return {"kind": "write", "hint": "YTM took the empty playlist but the songs could not be added — cookie has create-but-cannot-add scope; re-export a fresh full Cookie and retry."}
-    if "returned no id" in m or "did not accept the create" in m:
-        return {"kind": "write", "hint": "YTM did not accept the playlist create; retry once, then re-export the cookie if it repeats."}
+    if "returned no id" in m or "did not accept the create" in m or "cannot tell whether" in m:
+        return {"kind": "write", "hint": "Check your YouTube Music library for a playlist with this title: the create may have been made. Delete it if it is there, then start again."}
+    if "resume record" in m or "created.json" in m:
+        return {"kind": "write", "hint": "The local resume record could not be read or written — check the app data folder; if created.json is damaged, delete it and start again."}
     if "401" in m or "unauthorized" in m or "sapisid" in m or "login" in m:
         return {"kind": "auth", "hint": "YTM/Spotify login rejected it — cookie expired or wrong site. Re-export fresh cookie file and re-upload."}
     if "429" in m or "rate" in m or "quota" in m or "too many" in m:
@@ -1505,6 +1513,23 @@ def _score_candidates(want_title: str, want_artist: str, want_ms: int, cands: li
     out.sort(key=lambda x: -x["score"])
     return out
 
+def _supported(c: dict) -> bool:
+    """True when a candidate carries evidence besides its title: an artist that
+    agrees, or a duration reading that is not plainly wrong.
+
+    A title alone is the one feature the query itself supplied, so a candidate held
+    up by it alone is the search engine's ranking, not this row's identity. Two
+    features agreeing is a match; one feature agreeing with itself is a coincidence
+    waiting to enter a playlist."""
+    try:
+        if float(c.get("a") or 0) > 0:
+            return True
+        d = c.get("d")
+        return d is not None and float(d) > 0
+    except Exception:
+        return False
+
+
 def _pick_best(query: str, want_title: str, want_artist: str, want_ms: int, cands: list,
                album: str = "") -> dict:
     """The best candidate, or a refusal that names what it saw.
@@ -1516,7 +1541,14 @@ def _pick_best(query: str, want_title: str, want_artist: str, want_ms: int, cand
     or an aligned title AND artist AND a duration that is not plainly wrong - and
     why a row that crosses scripts with no such evidence is skipped rather than
     guessed: rank 1 of a search is the search engine's opinion, not this row's
-    identity."""
+    identity.
+
+    One feature is not evidence either. A candidate whose title matches exactly and
+    whose artist does not agree at all, on a reply that carried no duration, is the
+    title the query asked for and nothing else - a curator upload wearing it is the
+    search engine's ranking, so it is refused by name ("title only") and the next
+    query variant gets its turn. That is the shape that put an unrelated curator
+    into a playlist at 0.70."""
     cands = [c for c in (cands or []) if isinstance(c, dict)]
     want_sig = _version_sig(want_title)
     if want_sig:
@@ -1548,9 +1580,11 @@ def _pick_best(query: str, want_title: str, want_artist: str, want_ms: int, cand
         raise RuntimeError("no ytm result for: " + query)
     scored = _prefer_edition(scored, album)
     best = scored[0]
-    if best["score"] >= 0.85:
+    evidence = _supported(best)
+    if evidence and best["score"] >= 0.85:
         return best
-    if best["score"] >= 0.60 and (len(scored) == 1 or (best["score"] - scored[1]["score"]) >= 0.08):
+    if evidence and best["score"] >= 0.60 and (len(scored) == 1
+                                               or (best["score"] - scored[1]["score"]) >= 0.08):
         return best
     second = scored[1]["score"] if len(scored) > 1 else -1.0
     # Tier 2: aligned scoring, only when a script the legacy fold erases is in
@@ -1561,7 +1595,8 @@ def _pick_best(query: str, want_title: str, want_artist: str, want_ms: int, cand
         if aligned:
             top = aligned[0]
             margin = top["score"] - (aligned[1]["score"] if len(aligned) > 1 else 0.0)
-            if top["score"] >= 0.72 and top["t"] >= 0.45 and (len(aligned) == 1 or margin >= 0.10):
+            if (_supported(top) and top["score"] >= 0.72 and top["t"] >= 0.45
+                    and (len(aligned) == 1 or margin >= 0.10)):
                 return {**top, "confidence": "aligned"}
             # No aligned winner. When the row really crosses scripts, rank 1 is
             # the only thing left and it is not evidence: the row is refused and
@@ -1573,6 +1608,11 @@ def _pick_best(query: str, want_title: str, want_artist: str, want_ms: int, cand
                     f"{top['score']:.2f} '{top.get('title', '')}' | "
                     f"'{top.get('artist', '')}' — the rank-1 fallback is refused, "
                     f"not guessed) for: " + query)
+    if not evidence:
+        raise RuntimeError(
+            f"no confident match (title only — no artist agreement and no usable "
+            f"duration reading: '{best.get('title', '')}' | '{best.get('artist', '')}' "
+            f"[{best.get('videoId', '')}], similarity {best['score']:.2f}) for: " + query)
     raise RuntimeError(
         f"no confident match (best {best['score']:.2f}: '{best.get('title', '')}' | "
         f"'{best.get('artist', '')}' [{best.get('videoId', '')}], "
@@ -1673,12 +1713,18 @@ def _search_cache_put(key, cands):
 
 
 def yt_search(query: str, title: str = "", artist: str = "", duration_ms: int = 0,
-              album: str = ""):
+              album: str = "", tries: int = 3):
     """Identified match. Raises with best-candidate + score when nothing clears
-    the bar; the score is a similarity index, never a probability."""
+    the bar; the score is a similarity index, never a probability.
+
+    `tries` is how many requests this call may spend on a transport failure. Three by
+    default for the matching pass, which can afford to wait out a blip; a caller with
+    its own request budget (the soft second search) passes 1, so "one request per
+    row" is the number actually spent. A cache hit spends none either way."""
     want_title = (title or query or "").strip()
     want_artist = (artist or "").strip()
     want_ms = int(duration_ms or 0)
+    tries = max(1, int(tries or 1))
     key = _search_key(query, want_title, want_artist, want_ms, album)
     hit = _search_cache_get(key)
     if hit is not None:
@@ -1688,7 +1734,7 @@ def yt_search(query: str, title: str = "", artist: str = "", duration_ms: int = 
     body = json.dumps({"context": {"client": CLIENT}, "query": query,
                        "params": "EgWKAQIIAWoQEAMQBBAJEAkQBRAK"}).encode()
     last = None
-    for attempt in range(3):
+    for attempt in range(tries):
         try:
             req = urllib.request.Request(
                 f"https://music.youtube.com/youtubei/v1/search?key={YT_KEY}&prettyPrint=false",
@@ -1698,7 +1744,7 @@ def yt_search(query: str, title: str = "", artist: str = "", duration_ms: int = 
             break
         except Exception as e:
             last = e
-            if not _is_transport(e) or attempt == 2:
+            if not _is_transport(e) or attempt == tries - 1:
                 raise
             time.sleep(1.0 + attempt)
     else:
@@ -1752,6 +1798,80 @@ def yt_match(title: str, artist: str = "", duration_ms: int = 0, album: str = ""
         skip = "no match on any variant" + (f" ({skip})" if skip else "")
     return {"ok": True, "query": want_q, "videoId": None,
             "title": "", "duration": "", "skipped": skip[:220]}
+
+SECOND_SEARCH_MAX = 8   # skipped rows one run may search again, a hard cap
+
+def _retryable_skip(text) -> bool:
+    """True when a skip says the search itself did not answer - a timeout, a closed
+    connection, a 429 or a 5xx - so the song was never refused.
+
+    A refusal about the song ("no confident match", "no ytm result") is an answer,
+    and it is not one of these: asking it again would get the same answer, and a
+    second pass that lowered the bar to get a different one would be the defect, not
+    the fix."""
+    low = (text or "").lower()
+    if not low or "no confident match" in low or "no ytm result" in low:
+        return False
+    return _is_transport_text(low)
+
+def _fatal_skip(text) -> bool:
+    """True when a request was refused outright (bad request, dead cookie, gone
+    playlist). The next row would be refused the same way, so a soft retry stops."""
+    low = (text or "").lower()
+    if "httperror" not in low and "forbidden" not in low and "unauthorized" not in low:
+        return False
+    return any(code in low for code in ("400", "401", "403", "404"))
+
+def _second_search_skipped(items, max_rows: int = SECOND_SEARCH_MAX):
+    """One more search for the rows whose first attempt never got an answer.
+
+    Only a skip that says the wire failed is retried, and only with the row's own
+    first query: nothing about the song changed between the two attempts, so the
+    same question is asked again and the same evidence bar decides it.
+
+    Bounded three ways, because a soft retry must not become a storm: a hard cap on
+    rows, ONE request per row (`yt_search(..., tries=1)`, so the retry budget inside
+    the search cannot multiply it), and a stop at the first row that still fails on
+    the wire or is refused outright - a throttled API or a dead cookie answers every
+    remaining row the same way, and a run must not spend its budget finding that out.
+    Rows it never reaches keep the skip they already carry.
+
+    items: [{"i": row position, "title", "artist", "duration_ms", "album",
+             "skipped": the reason the first attempt left}]
+    -> ({"<position>": result}, attempted positions, stop reason)"""
+    out, attempted, stop = {}, [], ""
+    cap = max(1, int(max_rows or 1))
+    for it in items:
+        if len(attempted) >= cap:
+            stop = f"cap {cap}"
+            break
+        if not _retryable_skip(it.get("skipped")):
+            continue
+        pos = it.get("i")
+        variants = _query_variants(it.get("title", ""), it.get("artist", ""),
+                                   it.get("album", ""))
+        q = variants[0] if variants else ""
+        if not q:
+            continue
+        attempted.append(pos)
+        try:
+            r = yt_search(q, title=it.get("title", ""), artist=it.get("artist", ""),
+                          duration_ms=int(it.get("duration_ms") or 0),
+                          album=it.get("album", ""), tries=1)
+        except Exception as e:
+            msg = f"{type(e).__name__}: {e}"
+            blog("research", f"row {pos} unresolved on a second search: {msg[:120]}")
+            if _fatal_skip(msg) or _retryable_skip(msg):
+                stop = msg[:120]
+                break
+            continue
+        if r.get("videoId") and not r.get("best_guess"):
+            out[str(pos)] = r
+            blog("research", f"row {pos} resolved on a second search: {r.get('videoId')}")
+    if attempted:
+        blog("research", f"second search: {len(attempted)} skipped row(s) asked again, "
+                         f"{len(out)} resolved" + (f", stopped: {stop}" if stop else ""))
+    return out, attempted, stop
 
 def yt_search_safe(query: str):
     try:
@@ -1876,20 +1996,55 @@ def clear_created(spotify_id: str = "") -> None:
     except Exception:
         pass
 
+class RecordUnreadable(RuntimeError):
+    """created.json exists but cannot be read or parsed. Distinct from an empty record:
+    a run that mistook this for "no record" would create a second playlist over the
+    record it could not read, and then overwrite it."""
+
+
 def load_created() -> dict:
+    """The created-playlist record.
+
+    A missing file is a first run and returns {}. A file that is present but unreadable
+    raises `RecordUnreadable` - never an empty record - so every decision that could
+    create or overwrite a playlist fails closed instead of guessing."""
     try:
         with open(CREATEDF, encoding="utf-8") as f:
             d = json.load(f)
-            return d if isinstance(d, dict) else {}
-    except Exception:
+    except FileNotFoundError:
         return {}
+    except Exception as e:
+        raise RecordUnreadable(
+            f"the resume record {CREATEDF} exists but cannot be read "
+            f"({type(e).__name__}: {e}) — fix or delete it (Reset) before transferring "
+            f"again; this app will not create a playlist over a record it cannot read"
+        ) from e
+    if not isinstance(d, dict):
+        raise RecordUnreadable(
+            f"the resume record {CREATEDF} is not a playlist record — delete it (Reset) "
+            f"before transferring again")
+    return d
 
-def save_created(d: dict):
+def save_created(d: dict) -> bool:
+    """Write created.json atomically: a temp file in the same folder, then a replace.
+    Returns whether the record is durably on disk. A failed write must never look like
+    a successful one - this record is what keeps a restart from re-sending a write
+    nobody saw land - and it must never truncate the record it is replacing."""
+    tmp = CREATEDF + ".tmp"
     try:
-        with open(CREATEDF, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(d, f)
-    except Exception:
-        pass
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, CREATEDF)
+        return True
+    except Exception as e:
+        blog("created", f"save failed {type(e).__name__}: {e}")
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+        return False
 
 def vl_id(plid: str) -> str:
     plid = (plid or "").strip()
@@ -2102,31 +2257,24 @@ def _is_transport_text(s: str) -> bool:
     t = (s or "").lower()
     return any(h in t for h in _TRANSPORT_HINTS)
 
-_ALREADY_HINTS = ("already", "duplicate")
-
-def _is_already_text(s: str) -> bool:
-    """Retry came back saying the video is already on the playlist."""
-    low = (s or "").lower()
-    if "succeed" in low:
-        return True
-    if "fail" in low:
-        return False
-    if "already" in low or "duplicate" in low:
-        return True
-    return "exist" in low and "not " not in low and "no " not in low
-
 # Append outcomes. YTM itself answers "STATUS_SUCCEEDED" / "STATUS_FAILED"; the
 # other two are ours, and they exist so no caller has to parse exception text.
 STATUS_SUCCEEDED = "STATUS_SUCCEEDED"
 STATUS_DUPLICATE = "STATUS_DUPLICATE"   # a second copy of an id the playlist holds
-STATUS_TRANSPORT = "STATUS_TRANSPORT"   # transport failure: retryable, never success
+# Every append failure that is not a plain request verdict lands here: a timeout, a
+# closed connection, a 5xx, and a 429. The endpoint that carries the write is
+# unofficial, so none of those is proof the request was not applied - a 429 can be
+# answered after the write was taken - and an append whose application is unproven
+# is never sent again automatically.
+STATUS_UNSURE = "STATUS_UNSURE"
 _FATAL_HTTP = ("400", "401", "403", "404")  # a verdict, not a hiccup
 _DUPLICATE_TOAST = "already in the playlist"
 
-def is_transport_status(st: str) -> bool:
-    """True when an append failed on the wire (timeout, 429, 5xx), so nothing it
-    says about the playlist can be trusted and a retry may help."""
-    return str(st or "").startswith(STATUS_TRANSPORT)
+def is_unsure_status(st: str) -> bool:
+    """True when an append's outcome is unknown: it may have been applied, and no
+    read can prove it stayed out (a token-complete reply can be a stale snapshot
+    taken before the write). Such a copy is never re-sent automatically."""
+    return str(st or "").startswith(STATUS_UNSURE)
 
 def is_fatal_status(st: str) -> bool:
     """True when YTM refused the call itself: bad request, dead cookie, or the
@@ -2154,8 +2302,8 @@ def _is_duplicate_reply(body: str, status: str) -> bool:
 def yt_add_one(plid: str, vid: str, yt_cookie: str) -> str:
     """Append one entry. -> YTM's own status string ("STATUS_SUCCEEDED" /
     "STATUS_FAILED"), STATUS_DUPLICATE for a copy YTM already holds, or
-    "STATUS_TRANSPORT <why>" for a transport failure. Fresh SAPISIDHASH per call:
-    it goes stale within minutes.
+    "STATUS_UNSURE <why>" for a failure whose application is unproven. Fresh
+    SAPISIDHASH per call: it goes stale within minutes.
 
     Every add carries "dedupeOption": "DEDUPE_OPTION_SKIP", which is what asks
     YouTube Music to accept a second copy of a videoId the playlist already holds.
@@ -2163,48 +2311,51 @@ def yt_add_one(plid: str, vid: str, yt_cookie: str) -> str:
     and on its single is two source rows, so it is two entries, and no setting can
     turn that into one. Nothing else is attested, so no other dedupe option is sent.
 
-    A transport failure comes back as a transport failure: retryable, and never
-    success, so nothing downstream inherits a count that was never observed. The
-    one exception is YTM saying, after a retried transport failure, that the video
-    is already on the playlist — that copy really is there, and the read-back
-    confirms it before anything prints."""
+    A failure that is not a plain request verdict is STATUS_UNSURE: a timeout, a
+    closed connection, a 5xx, and a 429 as well. The write endpoint is unofficial, so
+    none of those proves the request was not applied - a 429 can be produced after
+    the write was taken - and nothing in here can tell. Such a copy is never success
+    and never re-sent automatically: a complete read cannot prove it stayed out
+    either, and a duplicate source row cannot be told from a repair. The run reports
+    it unverified for the user to check. A 400/401/403/404 is a verdict, returned
+    as-is so `is_fatal_status` ends the run instead of retrying."""
     act = {"action": "ACTION_ADD_VIDEO", "addedVideoId": vid,
            "dedupeOption": "DEDUPE_OPTION_SKIP"}
     b2 = json.dumps({"context": {"client": CLIENT}, "playlistId": plid,
                      "actions": [act]}).encode()
 
     def once():
-        """-> (status, body, transport). The body is kept: a refusal is an HTTP
-        200, and only the body says whether it was the duplicate refusal."""
+        """-> (status, body, unsure). `unsure` says the request may have been
+        applied: no reply arrived, or the reply was a failure we cannot read as "not
+        applied". The body is kept: a refusal is an HTTP 200, and only the body says
+        whether it was the duplicate refusal."""
         try:
             er = urllib.request.urlopen(urllib.request.Request(
                 f"https://music.youtube.com/youtubei/v1/browse/edit_playlist?key={YT_KEY}&prettyPrint=false",
                 data=b2, headers=yt_headers(yt_cookie)), timeout=25).read().decode("utf-8", "ignore")
         except Exception as e:
-            return f"{type(e).__name__} {getattr(e, 'code', '')}".strip(), "", _retryable_error(e)
+            code = getattr(e, "code", None)
+            st = f"{type(e).__name__} {getattr(e, 'code', '')}".strip()
+            if isinstance(code, int) and str(code) in _FATAL_HTTP:
+                return st, "", False   # a verdict: is_fatal_status reads the code
+            if _retryable_error(e) or _is_transport_text(st) or code is None:
+                # Everything else is unknown, including a 429: for this endpoint a
+                # rate-limit reply is not proof the write was refused unapplied.
+                return st, "", True
+            return st, "", True
         try:
             return str(json.loads(er).get("status", "")), er, False
         except Exception:
             return er[:120], er, False
 
-    st, body, transport = once()
-    if transport or _is_transport_text(st):
-        # A lost reply is not a lost add: the request may have been applied before
-        # the wire failed, and resending blind is how 1:1 mode ends up with two
-        # copies. Only a COMPLETE read of the playlist says what the playlist
-        # holds, so re-read first, and stand by when the read cannot prove it.
-        entries, complete = _read_back_retry(plid, yt_cookie, tries=1)
-        if entries is None or not complete:
-            blog("add", f"{vid} outcome unknown after {st[:60]} — read incomplete, not resending")
-            return f"{STATUS_TRANSPORT} {st}".strip()
-        _pause(1.5)
-        st2, body2, transport2 = once()
-        blog("add", f"retry {vid} first={st[:60]} second={st2[:60]}")
-        if not transport2 and _is_already_text(st2):
-            return STATUS_SUCCEEDED
-        if transport2 or _is_transport_text(st2):
-            return f"{STATUS_TRANSPORT} {st2}".strip()
-        st, body = st2, body2
+    st, body, unsure = once()
+    if unsure:
+        # A lost or unreadable reply is not a lost add: the request may have been
+        # applied, so re-sending is how a transfer ends up holding two copies of one
+        # source row. Nothing here can tell, and no single complete read can either,
+        # so the copy is reported unknown and never sent again by this run.
+        blog("add", f"{vid} outcome unknown after {st[:60]} — not resending")
+        return f"{STATUS_UNSURE} {st}".strip()
     if _is_duplicate_reply(body, st):
         return STATUS_DUPLICATE
     return st
@@ -2340,21 +2491,200 @@ def _ledger(video_ids: list, entries, attempts: dict) -> list:
                             "outcome": "missing", "status": ""})
     return out
 
-def _persist_fields(spotify_id, **fields):
+def _persist_fields(spotify_id, **fields) -> bool:
     """Additive write: created.json keeps every field it already holds, so the
-    state machine's progress never erases the resume record it rides on."""
+    state-machine's progress never erases the resume record it rides on. Returns
+    whether the record is durably on disk (True when there is no record to write).
+
+    Three fields can only move one way, and are clamped here so no caller can undo
+    what an earlier one proved: `expected_min` only rises, `unsure` and `unsure_ids`
+    only grow, and `inflight` is the one list a caller owns (a slice ends, so its
+    positions leave). That is what keeps a repair pass from writing an older floor over
+    a raised one, or a new write-ahead from erasing an unknown an earlier slice recorded.
+
+    `unsure_ids` is the durable half of that: a videoId whose write outcome is unknown,
+    kept by ID so it survives a plan the song has left - a later plan that names the song
+    again must still know its copy is unproven."""
     if not spotify_id:
-        return
+        return True
     try:
         created = load_created()
         rec = created.get(spotify_id)
         if not isinstance(rec, dict):
             rec = {}
+        if "expected_min" in fields:
+            try:
+                fields["expected_min"] = max(int(rec.get("expected_min") or 0),
+                                             int(fields["expected_min"] or 0))
+            except Exception:
+                fields.pop("expected_min", None)
+        if "unsure" in fields:
+            try:
+                merged = {int(p) for p in (rec.get("unsure") or [])}
+                merged |= {int(p) for p in (fields["unsure"] or [])}
+                fields["unsure"] = sorted(merged)
+            except Exception:
+                fields.pop("unsure", None)
+        if "unsure_ids" in fields:
+            try:
+                merged = {str(v) for v in (rec.get("unsure_ids") or []) if v}
+                merged |= {str(v) for v in (fields["unsure_ids"] or []) if v}
+                fields["unsure_ids"] = sorted(merged)
+            except Exception:
+                fields.pop("unsure_ids", None)
+        if "unsure_need" in fields:
+            try:
+                merged = {str(k): int(v or 0)
+                          for k, v in (rec.get("unsure_need") or {}).items()}
+                for k, v in (fields["unsure_need"] or {}).items():
+                    merged[str(k)] = max(int(merged.get(str(k), 0)), int(v or 0))
+                fields["unsure_need"] = merged
+            except Exception:
+                fields.pop("unsure_need", None)
+        if "inflight_need" in fields:
+            try:
+                merged = {str(k): int(v or 0)
+                          for k, v in (rec.get("inflight_need") or {}).items()}
+                for k, v in (fields["inflight_need"] or {}).items():
+                    merged[str(k)] = max(int(merged.get(str(k), 0)), int(v or 0))
+                fields["inflight_need"] = merged
+            except Exception:
+                fields.pop("inflight_need", None)
         rec.update(fields)
         created[spotify_id] = rec
-        save_created(created)
+        return save_created(created)
+    except Exception as e:
+        blog("created", f"record failed {type(e).__name__}: {e}")
+        return False
+
+def _record(spotify_id) -> dict:
+    """The persisted record for this playlist, or {}: only for read-modify-write of
+    the lists a caller owns."""
+    if not spotify_id:
+        return {}
+    rec = load_created().get(spotify_id)
+    return rec if isinstance(rec, dict) else {}
+
+def _write_ahead(spotify_id, positions, floor, plan=None) -> bool:
+    """Put a slice's positions on disk BEFORE its first add goes out, and mark the run
+    incomplete in the same write. A close after this point leaves those copies looking
+    unknown rather than unsent. Merges with whatever is already there, so a save that
+    failed earlier cannot be papered over by the next slice.
+
+    `plan` is the list those positions index. It is written in the same call, so the
+    indices and the plan they mean are never persisted apart: a top-up against a fresh
+    match would otherwise queue positions that point into an older record's plan, and a
+    restart would freeze the wrong copies. The MULTIPLICITY of each queued id comes with
+    it (`inflight_need`), because an unknown that reaches a later run with no recorded
+    multiplicity can never be resolved - a complete read showing every copy would still
+    leave the song frozen forever."""
+    if not spotify_id:
+        return True
+    try:
+        queued = {int(p) for p in (_record(spotify_id).get("inflight") or [])}
     except Exception:
-        pass
+        queued = set()
+    queued |= {int(p) for p in (positions or [])}
+    fields = dict(inflight=sorted(queued), expected_min=int(floor or 0), complete=False)
+    if plan is not None:
+        plan_ids = [v for v in plan if isinstance(v, str) and v]
+        fields["video_ids"] = plan_ids
+        queued_ids = [plan_ids[p] for p in sorted(queued) if 0 <= p < len(plan_ids)]
+        fields["inflight_need"] = {v: plan_ids.count(v) for v in queued_ids}
+    return _persist_fields(spotify_id, **fields)
+
+def _note_outcomes(spotify_id, sent, unclear, floor, plan=None) -> bool:
+    """Record what a slice established: the copies whose outcome is unknown join the
+    unknown set (by position and by videoId, when the plan is known), the floor can only
+    rise, and the positions this slice classified leave the write-ahead list. A position
+    whose save never landed stays queued."""
+    if not spotify_id:
+        return True
+    try:
+        queued = {int(p) for p in (_record(spotify_id).get("inflight") or [])}
+    except Exception:
+        queued = set()
+    queued -= {int(p) for p in (sent or [])}
+    fields = dict(inflight=sorted(queued), unsure=[int(p) for p in (unclear or [])],
+                  expected_min=int(floor or 0))
+    if plan is not None:
+        plan = list(plan)
+        fields["unsure_ids"] = [plan[int(p)] for p in (unclear or [])
+                                if 0 <= int(p) < len(plan)]
+        need = {}
+        for v in (fields["unsure_ids"] or []):
+            need[v] = plan.count(v)
+        fields["unsure_need"] = need
+    return _persist_fields(spotify_id, **fields)
+
+def _unknown_ids_in(rec) -> set:
+    """Every videoId whose write outcome the record says is unknown: the durable ID set,
+    plus the ids behind the saved positions.
+
+    A record that carries positions but not the plan they index cannot be read at all -
+    guessing which songs those positions name is how the wrong copy is frozen and the
+    right one is re-sent - so that record fails closed."""
+    out = {str(v) for v in ((rec or {}).get("unsure_ids") or []) if v}
+    saved = [v for v in ((rec or {}).get("video_ids") or []) if isinstance(v, str) and v]
+    positions = list((rec or {}).get("unsure") or []) + list((rec or {}).get("inflight") or [])
+    if not positions:
+        return out
+    if not saved:
+        raise RecordUnreadable(
+            "the resume record names copies whose outcome is unknown but not the plan "
+            "they belong to, so this app cannot tell which songs they are — check the "
+            "playlist, then Reset this run and start again")
+    for p in positions:
+        try:
+            i = int(p)
+        except Exception:
+            continue
+        if 0 <= i < len(saved):
+            out.add(saved[i])
+    return out
+
+def _unknown_need(rec) -> dict:
+    """The per-id multiplicity each unknown was recorded against. Resolution is measured
+    against this, never against a plan that has since shrunk: an unknown for the second
+    copy of a song is not answered by a read that shows the first.
+
+    Both halves count: `unsure_need` for a classified unknown, and `inflight_need` for a
+    copy a crashed run had queued but never classified."""
+    out = {}
+    for src in ("unsure_need", "inflight_need"):
+        for k, v in (((rec or {}).get(src) or {}) or {}).items():
+            try:
+                out[str(k)] = max(int(out.get(str(k), 0) or 0), max(0, int(v or 0)))
+            except Exception:
+                continue
+    return out
+
+def _unresolved_ids(unknown_ids, entries, need=None) -> set:
+    """The unknown ids a COMPLETE read does not account for.
+
+    A read proves MULTIPLICITY without attributing copies: when it holds at least as many
+    copies of an id as were RECORDED as unknown, the doubt is answered - whatever produced
+    those entries, the playlist has what the doubt was about. The bar is that recorded
+    multiplicity alone: a plan that has since shrunk must not lower it (one visible copy
+    would "resolve" the unknown second copy, and a later run would add a third), and a
+    plan that has grown adds no doubt to the copies already recorded.
+
+    An id with no recorded multiplicity is never resolved: the original evidence that
+    would answer it was not kept, and clearing a doubt nobody can prove is how a later
+    plan resends a copy that already landed."""
+    need = dict(need or {})
+    have = {}
+    for v in entries or []:
+        have[v] = have.get(v, 0) + 1
+    keep = set()
+    for i in unknown_ids or ():
+        try:
+            must = int(need.get(i, 0) or 0)
+        except Exception:
+            must = 0
+        if must <= 0 or have.get(i, 0) < must:
+            keep.add(i)
+    return keep
 
 _NO_PLAN_MESSAGE = ("interrupted run: {url} was left unfinished and its plan is not on record, so "
                     "it cannot be resumed without guessing which copies the playlist already holds "
@@ -2370,6 +2700,99 @@ def _incomplete_record(spotify_id: str):
     if isinstance(rec, dict) and rec.get("yt_id") and rec.get("complete") is not True:
         return rec
     return None
+
+def _persisted_unknown(rec, intended) -> tuple:
+    """(floor, frozen positions, unknown videoIds, recorded need) for a run picking up an
+    existing record.
+
+    The floor is what the earlier run's own evidence said the playlist must hold; the
+    frozen positions are every copy in `intended` whose id the record says was written
+    without seeing the answer - both the classified unknowns (`unsure`) and the
+    write-ahead list of a slice it never finished (`inflight`).
+
+    The saved positions index the plan the RECORD wrote; `intended` may be a different
+    plan (a top-up runs against a fresh match). Unknowns are therefore resolved to their
+    videoIds first (`_unknown_ids_in`) and frozen by ID in `intended`: the copy keeps its
+    song across a rematch, and an id the new plan does not contain is still returned -
+    with need 0, so it is never resolved and a later plan that names it again cannot
+    resend it. A record whose positions cannot be read against a plan fails closed."""
+    try:
+        floor = max(0, int((rec or {}).get("expected_min") or 0))
+    except Exception:
+        floor = 0
+    intended = list(intended or [])
+    unknown_ids = _unknown_ids_in(rec)
+    need = _unknown_need(rec)
+    for v in unknown_ids:
+        need.setdefault(v, 0)
+    if not unknown_ids:
+        return floor, set(), set(), need
+    return floor, {i for i, v in enumerate(intended) if v in unknown_ids}, unknown_ids, need
+
+def _set_unknown(spotify_id, plan, unknown_ids, floor, need=None) -> bool:
+    """Replace the record's unknown set with exactly these ids (and their positions in
+    `plan`). Used when a complete read has RESOLVED some of them: the durable set must be
+    able to shrink, or a resolved song stays blocked forever, and the write is one call so
+    positions, ids and need never disagree."""
+    if not spotify_id:
+        return True
+    plan = [v for v in (plan or []) if isinstance(v, str) and v]
+    keep = {str(v) for v in (unknown_ids or []) if v}
+    created = load_created()
+    rec = created.get(spotify_id)
+    rec = rec if isinstance(rec, dict) else {}
+    old_need = _unknown_need(rec)
+    merged = {v: max(int(old_need.get(v, 0) or 0),
+                     int((need or {}).get(v, 0) or 0)) for v in keep}
+    created[spotify_id] = {
+        **rec,
+        "unsure": sorted({i for i, v in enumerate(plan) if v in keep}),
+        "unsure_ids": sorted(keep),
+        "unsure_need": {k: int(v) for k, v in merged.items() if int(v) > 0},
+        "inflight": [],
+        "expected_min": max(int(rec.get("expected_min") or 0), int(floor or 0)),
+    }
+    return save_created(created)
+
+def _adopt_plan(spotify_id, plan, slots, guesses, floor, unknown, unknown_ids,
+                need=None) -> bool:
+    """Adopt the plan this run writes against, with the unknown copies re-expressed in
+    its own positions and kept by videoId.
+
+    A top-up may run against a fresh match, so the record's plan, its unknown positions
+    and the durable unknown IDs move TOGETHER: a saved position read against another plan
+    names another song, and an id the plan no longer contains must survive as an id. One
+    write, so no restart can ever see one without the other."""
+    if not spotify_id:
+        return True
+    created = load_created()
+    rec = created.get(spotify_id)
+    rec = rec if isinstance(rec, dict) else {}
+    plan = [v for v in plan if isinstance(v, str) and v]
+    slots = [v if isinstance(v, str) else "" for v in (slots or [])]
+    if not slots or [v for v in slots if v] != plan:
+        slots = list(plan)
+    kept = {str(v) for v in (unknown_ids or []) if v}
+    need = dict(need or {})
+    merged_need = {str(k): int(v or 0)
+                   for k, v in (rec.get("unsure_need") or {}).items()}
+    for k, v in need.items():
+        if int(v or 0) > 0:
+            merged_need[str(k)] = max(int(merged_need.get(str(k), 0)), int(v))
+    created[spotify_id] = {
+        **rec,
+        "video_ids": plan,
+        "plan_slots": slots,
+        "plan_guesses": {str(k): str(v)[:80] for k, v in (guesses or {}).items()},
+        "unsure": sorted({int(p) for p in (unknown or [])}),
+        "unsure_ids": sorted(kept),
+        # Only a POSITIVE recorded multiplicity can resolve a doubt; an id with no entry
+        # is never resolved (see `_unresolved_ids`), so a zero is never written here.
+        "unsure_need": {str(k): int(v) for k, v in merged_need.items() if int(v) > 0},
+        "inflight": [],
+        "expected_min": max(int(rec.get("expected_min") or 0), int(floor or 0)),
+    }
+    return save_created(created)
 
 def _resume_plan(rec, n_rows: int):
     """(slots, guesses) for an interrupted run, or None when its record cannot say
@@ -2404,8 +2827,11 @@ def _resume_plan(rec, n_rows: int):
     return slots, guesses
 
 def _persist_incomplete(spotify_id, plid, url, title, expected, plan=None, plan_slots=None,
-                        plan_guesses=None):
-    fields = dict(yt_id=plid, url=url, title=title, expected=expected, complete=False)
+                        plan_guesses=None, expected_min=0, unsure=None,
+                        unsure_ids=None, unsure_need=None) -> bool:
+    fields = dict(yt_id=plid, url=url, title=title, expected=expected, complete=False,
+                  create_pending=False, unsure=[], inflight=[],
+                  expected_min=int(expected_min or 0))
     if plan is not None:
         # From the moment the playlist exists, the plan it was sent is on disk:
         # a resume replays it and never matches the source again.
@@ -2413,24 +2839,56 @@ def _persist_incomplete(spotify_id, plid, url, title, expected, plan=None, plan_
         fields["plan_slots"] = [v if isinstance(v, str) else "" for v in (plan_slots or [])]
         fields["plan_guesses"] = {str(k): str(v)[:80]
                                   for k, v in (plan_guesses or {}).items()}
-    _persist_fields(spotify_id, **fields)
+    if not spotify_id:
+        return True
+    # A new playlist starts a new evidence set, so this is the one write that REPLACES
+    # the old one: a stale floor or a stale unknown from a record whose playlist is
+    # gone would otherwise make the new playlist look short from its first read. The
+    # inline duplicates the create carried are the new set's own unknowns.
+    fields["unsure"] = sorted({int(p) for p in (unsure or [])})
+    fields["unsure_ids"] = sorted({str(v) for v in (unsure_ids or []) if v})
+    fields["unsure_need"] = {str(k): int(v or 0)
+                             for k, v in (unsure_need or {}).items()}
+    fields["inflight"] = []
+    fields["expected_min"] = int(expected_min or 0)
+    created = load_created()
+    prev = created.get(spotify_id)
+    created[spotify_id] = {**(prev if isinstance(prev, dict) else {}), **fields}
+    return save_created(created)
 
 def _persist_final(spotify_id, plid, url, title, expected, complete):
     _persist_fields(spotify_id, yt_id=plid, url=url, title=title,
-                    expected=expected, complete=bool(complete))
+                    expected=expected, complete=bool(complete), create_pending=False)
 
 def _persist_progress(spotify_id, plid, url, title, expected, state, attempt,
-                      next_run_at=0.0, pending=None, plan=None):
+                      next_run_at=0.0, pending=None, plan=None, expected_min=None,
+                      unsure=None):
     """Where the run stands, so a close and a reopen resume the same state
     instead of starting a second playlist.
 
     The plan it was sent is part of that state: a resume replays it instead of
-    rematching into a different plan."""
+    rematching into a different plan. So is the least the playlist must hold
+    (`expected_min`) and which copies were written with an unknown outcome
+    (`unsure`): a resume that forgot either would treat a stale read as complete and
+    re-send a copy nobody saw land."""
     fields = dict(yt_id=plid, url=url or "", title=title,
                   expected=expected, state=state, attempt=int(attempt or 0),
                   next_run_at=float(next_run_at or 0), pending=list(pending or []))
     if plan is not None:
         fields["video_ids"] = [v for v in plan if isinstance(v, str) and v]
+    if expected_min is not None:
+        fields["expected_min"] = int(expected_min or 0)
+    if unsure is not None:
+        positions = sorted({int(p) for p in unsure})
+        fields["unsure"] = positions
+        if plan is not None:
+            slots = [v for v in plan if isinstance(v, str) and v]
+            ids = [slots[p] for p in positions if 0 <= p < len(slots)]
+            # The durable half: an unknown outlives the plan it was recorded in, and the
+            # multiplicity it was recorded against is what a later read must match before
+            # the doubt can be cleared.
+            fields["unsure_ids"] = ids
+            fields["unsure_need"] = {v: slots.count(v) for v in ids}
     _persist_fields(spotify_id, **fields)
 
 def _honour_retry_clock(rec, reason="waiting out the paused retry time") -> float:
@@ -2513,7 +2971,12 @@ def _reconcile(video_ids, entries, attempts: dict, complete: bool = True) -> lis
     playlist toast is the whole proof, and `yt_add_one` reduces that signature to
     STATUS_DUPLICATE. The copy count only corroborates it. A plain STATUS_FAILED
     on a repeated id stays `refused`, and an absent copy nobody sent a verdict for
-    stays `missing`: multiplicity is never a substitute for the server's answer."""
+    stays `missing`: multiplicity is never a substitute for the server's answer.
+
+    A copy whose write may have landed (STATUS_UNSURE) and that this read does not
+    show is `unverified`, never `missing` and never blamed on a short read: the read
+    cannot prove absence of a write it may not have seen, so the copy is unknown and
+    says how to recover it."""
     left = {}
     for v in entries or []:
         left[v] = left.get(v, 0) + 1
@@ -2524,6 +2987,16 @@ def _reconcile(video_ids, entries, attempts: dict, complete: bool = True) -> lis
             out.append({"i": i + 1, "videoId": v, "outcome": "landed", "status": ""})
             continue
         st = (attempts.get(i, "") or "")
+        if is_unsure_status(st):
+            # The write may have been applied and its reply was lost. No read can
+            # prove it stayed out, so the copy is unknown: unverified and named for
+            # recovery, never missing, refused or re-sent - and never blamed on a
+            # short read, which is a different uncertainty.
+            out.append({"i": i + 1, "videoId": v, "outcome": "missing", "unverified": True,
+                        "unsure": True,
+                        "status": ("outcome unknown — reply lost, not re-sent; check the "
+                                   "playlist, then add by hand")[:80]})
+            continue
         if not complete:
             out.append({"i": i + 1, "videoId": v, "outcome": "missing", "unverified": True,
                         "status": (f"unverified — read-back stopped after {len(entries or [])} "
@@ -2630,7 +3103,7 @@ def _append_todo(plid, video_ids, todo, yt_cookie, hooks=None):
                 on_one(idx, st)
             except Exception:
                 pass
-        if is_transport_status(st) or is_fatal_status(st):
+        if is_unsure_status(st) or is_fatal_status(st):
             blog("add", f"stopped after {idx + 1}/{len(video_ids)}: {st[:60]}")
             break
     return attempts
@@ -2643,25 +3116,45 @@ def _chunks(seq, size):
         yield seq[i:i + size]
 
 
+def _frozen_positions(intended, frozen) -> set:
+    """Every position a run must not send: the frozen ones, and every other position
+    that carries one of their videoIds.
+
+    Copies of one videoId are indistinguishable in a playlist read: an entry for that id
+    may be the unknown write or the copy a run is about to send, so attribution is not
+    available. Rather than guess which copy is which, no further copy of that id is sent
+    by this run - the read count is what the run reports, and the shortfall is named."""
+    base = set()
+    for p in frozen or ():
+        try:
+            base.add(int(p))
+        except Exception:
+            continue
+    ids = {intended[p] for p in base if 0 <= p < len(intended or [])}
+    return {i for i, v in enumerate(intended or []) if i in base or v in ids}
+
+
 def _copies_that_should_land(statuses) -> int:
     """How many of the statuses this slice received promise a new playlist entry.
 
     A copy the server refused (STATUS_FAILED), one it said was already there
-    (STATUS_DUPLICATE), and one whose reply never arrived (transport/fatal) promise
-    nothing: the playlist is not expected to grow by them. Every other copy was
-    accepted and must show up in the next read."""
+    (STATUS_DUPLICATE), and one whose outcome is unknown promise nothing: the
+    playlist is not expected to grow by them. Every other copy was accepted and
+    must show up in the next read."""
     n = 0
     for st in (statuses or {}).values():
         s = str(st or "").upper()
         if not s or "FAILED" in s or "DUPLICATE" in s:
             continue
-        if is_transport_status(s) or is_fatal_status(s):
+        if is_unsure_status(s) or is_fatal_status(s):
             continue
         n += 1
     return n
 
 
-def _append_verify(plid, video_ids, todo, yt_cookie, hooks, entries, complete, floor=None):
+
+def _append_verify(plid, video_ids, todo, yt_cookie, hooks, entries, complete, floor=None,
+                   spotify_id=""):
     """Send the outstanding copies in slices of TRANSFER_SLICE, and prove each
     slice with its own read-back before the next one is sent.
 
@@ -2698,13 +3191,25 @@ def _append_verify(plid, video_ids, todo, yt_cookie, hooks, entries, complete, f
     least number of entries the playlist must hold now: every copy the server
     accepted, on top of what the authorising read proved. A caller that repairs
     the playlist later must start from that floor, or a stale read can authorise
-    it to re-send the plan."""
+    it to re-send the plan.
+
+    With `spotify_id`, each slice is written ahead: its positions go on disk before
+    the first add goes out, and the floor and any unknown outcome replace them after
+    it. A close mid-slice therefore resumes knowing that those copies may already be
+    on the playlist, instead of treating them as never sent. A write-ahead that cannot
+    be saved stops the run BEFORE it writes: a run whose record is not durable cannot
+    tell a restart what it sent, so it is not allowed to send."""
     attempts = {}
     on_verified = (hooks or {}).get("on_verified")
     on_phase = (hooks or {}).get("on_phase")
     todo = [int(i) for i in (todo or [])]
-    if floor is None:
-        floor = len(entries) if entries is not None else 0
+    # The floor is what the run's own evidence says the playlist must hold: whatever a
+    # previous run persisted, and never less than the read that authorised this call
+    # actually showed. A stored floor lower than that read would let a later, shorter
+    # read pass as complete.
+    floor = max(0, int(floor or 0))
+    if entries is not None:
+        floor = max(floor, len(entries))
     expected_min = floor
     for chunk in _chunks(todo, TRANSFER_SLICE):
         if entries is not None and not complete:
@@ -2714,12 +3219,23 @@ def _append_verify(plid, video_ids, todo, yt_cookie, hooks, entries, complete, f
                 on_phase("append")
             except Exception:
                 pass
+        # Write ahead: these positions are about to be sent, and a close before
+        # their outcomes are on disk must leave them looking unknown, not unsent.
+        # A record that cannot be saved is a run that may not write: without it a
+        # restart cannot tell what was sent, and guessing is how a copy lands twice.
+        if not _write_ahead(spotify_id, chunk, expected_min, plan=video_ids):
+            raise RuntimeError(
+                "the resume record could not be written to disk, so the transfer stopped "
+                "before sending anything further — check that the app data folder is "
+                "writable, then start the transfer again")
         sent = _append_todo(plid, video_ids, chunk, yt_cookie, hooks)
         attempts.update(sent)
-        stopped = any(is_transport_status(st) or is_fatal_status(st)
+        stopped = any(is_unsure_status(st) or is_fatal_status(st)
                       for st in sent.values())
         expected = floor + _copies_that_should_land(sent)
         expected_min = max(expected_min, expected)
+        unclear = sorted({int(p) for p, st in sent.items() if is_unsure_status(st)})
+        _note_outcomes(spotify_id, sent.keys(), unclear, expected_min, plan=video_ids)
         if on_phase:
             try:
                 on_phase("verify")
@@ -2919,20 +3435,73 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
         except Exception:
             pass
     inline = video_ids[:CREATE_INLINE_MAX]
+    # A create is a write with no id until it answers. Its intent goes on disk first, so
+    # a lost reply or a crash leaves a record that says "a create was attempted" instead
+    # of nothing at all - and a later run refuses to make a second playlist over it.
+    if spotify_id and not _persist_fields(
+            spotify_id, create_pending=True, state="creating",
+            expected=len(video_ids), complete=False, expected_min=0,
+            unsure=[], inflight=[], title=title,
+            video_ids=[v for v in video_ids if isinstance(v, str) and v],
+            plan_slots=[v if isinstance(v, str) else "" for v in (plan_slots or [])],
+            plan_guesses={str(k): str(v)[:80] for k, v in (plan_guesses or {}).items()}):
+        raise RuntimeError(
+            "the resume record could not be written to disk, so no playlist was created "
+            "— check that the app data folder is writable, then start the transfer again")
     body = json.dumps({"context": {"client": CLIENT}, "title": title,
                        "description": description or "", "privacyStatus": privacy,
                        "videoIds": inline}).encode()
     req = urllib.request.Request(
         f"https://music.youtube.com/youtubei/v1/playlist/create?key={YT_KEY}&prettyPrint=false",
         data=body, headers=yt_headers(yt_cookie))
-    r = urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "ignore")
-    j = json.loads(r)
-    plid = j.get("playlistId") or j.get("playlistID")
+    try:
+        r = urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "ignore")
+    except Exception as e:
+        # The reply was lost: the playlist may exist. Never advise a retry - a retry is
+        # how a second playlist gets made - and never guess an id.
+        raise RuntimeError(
+            f"the playlist create's reply was lost ({type(e).__name__}), so the app "
+            f"cannot tell whether a playlist with this title was made — check your "
+            f"YouTube Music library, delete it if it is there, then Reset this run and "
+            f"start again") from e
+    try:
+        reply = json.loads(r) or {}
+    except Exception:
+        reply = {}
+    plid = reply.get("playlistId") or reply.get("playlistID")
     if not plid:
-        raise RuntimeError("playlist create returned no id — YTM did not accept the create; retry once, then re-export the cookie if it repeats")
+        raise RuntimeError(
+            "the playlist create's reply carried no id, so the app cannot tell whether a "
+            "playlist with this title was made — check your YouTube Music library, delete "
+            "it if it is there, then Reset this run and start again")
     url = f"https://music.youtube.com/playlist?list={plid}"
-    _persist_incomplete(spotify_id, plid, url, title, len(video_ids),
-                        plan=video_ids, plan_slots=plan_slots, plan_guesses=plan_guesses)
+    # The create's own write is the inline batch, and a repeat inside it cannot be
+    # ATTRIBUTED: the create carried a second copy of that id and a read cannot say which
+    # copy it kept. A complete read can still prove MULTIPLICITY, though - if it holds as
+    # many copies of the id as the plan asks for, the doubt is answered - so nothing is
+    # frozen until the first read has been seen (below).
+    seen, dup_pos = set(), []
+    for pos, v in enumerate(inline):
+        if v in seen:
+            dup_pos.append(pos)
+        seen.add(v)
+    dup_ids = {video_ids[p] for p in dup_pos}
+    # The create's own write is the inline batch: the playlist was accepted holding
+    # those distinct ids, so the floor from this moment is their count. It is on disk
+    # before the read-back, or this run may not go on: a restart that forgot the
+    # inline floor would read a short playlist as an empty plan and append the lot.
+    if not _persist_incomplete(spotify_id, plid, url, title, len(video_ids),
+                               plan=video_ids, plan_slots=plan_slots,
+                               plan_guesses=plan_guesses,
+                               expected_min=len(set(inline)),
+                               unsure=sorted(_frozen_positions(video_ids, dup_pos)),
+                               unsure_ids=sorted(dup_ids),
+                               unsure_need={v: video_ids.count(v) for v in dup_ids}):
+        raise RuntimeError(
+            "the playlist was created but the resume record could not be written to "
+            f"disk, so the transfer stopped before appending — the playlist exists at "
+            f"{url}; check it in YouTube Music and add what is missing by hand, or "
+            f"delete it and start again deliberately")
     if on_created:
         try:
             on_created(plid, url, False)
@@ -2948,12 +3517,41 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
         blog("verify", "read-back after create returned nothing — no appends attempted")
         raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (read-back failed)")
     seed_ledger = _seed_ledger(video_ids, first)
-    if hooks and hooks.get("on_seed"):
-        try:
-            hooks["on_seed"](seed_ledger)
-        except Exception:
-            pass
+    if first_complete:
+        if hooks and hooks.get("on_seed"):
+            # A read that stopped before the end of the playlist proves its own pages
+            # and nothing about the tail, so it publishes no verified row: mid-run,
+            # `added` only moves on a read that reached the end, and a partial read's
+            # presence is accounted for once, by the final ledger, in the open.
+            try:
+                hooks["on_seed"](seed_ledger)
+            except Exception:
+                pass
+    else:
+        blog("create", f"id={plid} seed read stopped short — no row published as landed")
     todo = [int(e["i"]) - 1 for e in seed_ledger if e["outcome"] != "landed"]
+    # The read settles as much as it can: an id whose multiplicity the read already
+    # accounts for is answered, and only the ids it does not account for stay unknown.
+    # "Accounts for" is measured against the multiplicity the unknown was recorded with,
+    # so a plan that later shrinks cannot answer it with a single visible copy.
+    inline_need = {v: video_ids.count(v) for v in dup_ids}
+    inline_ids = _unresolved_ids(dup_ids, first if first_complete else None,
+                                 need=inline_need)
+    inline_unknown = sorted(p for p, v in enumerate(video_ids) if v in inline_ids)
+    if not _set_unknown(spotify_id, video_ids, inline_ids, len(set(inline)),
+                        need=inline_need):
+        raise RuntimeError(
+            "the resume record could not be written to disk, so the transfer stopped "
+            "before appending — check that the app data folder is writable, then start "
+            "the transfer again")
+    withheld = [p for p in todo if p in inline_unknown]
+    if withheld:
+        # The create carried these copies and a read cannot say which of them it kept:
+        # they are unknown, not absent, and this run may not send them again.
+        blog("create", f"id={plid} {len(withheld)} inline copy(ies) not attributable "
+                       f"(repeated id) — never re-sent: "
+                       + ",".join(str(p + 1) for p in withheld[:8]))
+        todo = [p for p in todo if p not in inline_unknown]
     if not first_complete:
         # A read that never reached the end proves nothing about its tail:
         # appending off it is how a playlist ends up holding a track twice.
@@ -2968,7 +3566,8 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
     # its own COMPLETE read-back before the next slice is sent: progress is what
     # the playlist shows, not what a queue claims.
     attempts, entries, entries_complete, expected_min = _append_verify(
-        plid, video_ids, todo, yt_cookie, hooks, first, first_complete)
+        plid, video_ids, todo, yt_cookie, hooks, first, first_complete,
+        spotify_id=spotify_id)
     if on_phase:
         try:
             on_phase("verify")
@@ -2976,6 +3575,12 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
             pass
     if entries is None:
         raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (final read-back failed)")
+    # The inline copies a repeat made unattributable are carried as unknown outcomes,
+    # so a read that does not show one files it unverified (with the manual recovery)
+    # rather than as a proven absence this run would send again.
+    for p in inline_unknown:
+        attempts.setdefault(p, f"{STATUS_UNSURE} inline create: the create carried this "
+                               f"copy and a read cannot say which one it kept")
     ledger = _reconcile(video_ids, entries, attempts, entries_complete)
     added, rejected, missing, duplicates = _ledger_counts(ledger)
     repeats = _repeat_count(video_ids, version_sigs)
@@ -2985,10 +3590,11 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
     if rejected or missing:
         bad = [f"{e['videoId']}={e['outcome']}" for e in ledger if e["outcome"] != "landed"][:8]
         blog("ledger", f"not-landed sample: {','.join(bad)}")
-    # A duplicate is exactly as complete as it can be: YTM will never accept a
-    # second copy of that id, so the source is fully represented on the playlist.
+    # complete is a claim about the playlist, so it may only be made by a read that
+    # reached the end and found every intended copy: a copy YTM refused is a source
+    # row the playlist does not hold, and a partial read proves nothing about its tail.
     _persist_final(spotify_id, plid, url, title, len(video_ids),
-                   added + duplicates == len(video_ids))
+                   added == len(video_ids) and entries_complete and not inline_ids)
     if not added:
         if _proven_empty(plid, yt_cookie, entries, entries_complete):
             cleaned = yt_delete_playlist(plid, yt_cookie)
@@ -3001,6 +3607,7 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
             "added": added, "sent": len(video_ids), "rejected": rejected,
             "missing": missing, "duplicates": duplicates, "repeats": repeats, "ledger": ledger,
             "attempts": dict(attempts),
+            "unsure": inline_unknown,
             "playlist_count": len(entries) if isinstance(entries, list) else 0,
             "expected_min": expected_min}
 
@@ -3027,24 +3634,54 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
             on_phase("append")
         except Exception:
             pass
-    # A resume knows nothing yet: the record's plan may predate anything the
-    # playlist now holds, so no floor is invented for the first read.
-    entries, entries_complete = _read_back_retry(plid, yt_cookie)
+    # A resume knows what the interrupted run proved: the least the playlist must
+    # hold, and which copies it wrote with an unknown outcome. Both come off disk,
+    # because neither can be re-derived from a read - a read that does not show an
+    # unknown write is exactly the stale page that would re-send it.
+    floor, frozen, unknown_ids, unknown_need = _persisted_unknown(rec, video_ids)
+    entries, entries_complete = _read_back_retry(plid, yt_cookie, minimum=floor)
     if entries is None:
         raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (read-back failed)")
+    if unknown_ids and entries_complete:
+        # A complete read that holds as many copies of an id as the unknown was recorded
+        # against has answered the doubt for that song; only the rest stay unknown.
+        keep = _unresolved_ids(unknown_ids, entries, need=unknown_need)
+        if keep != unknown_ids:
+            frozen = {i for i, v in enumerate(video_ids) if v in keep}
+            unknown_ids = keep
+            if not _set_unknown(spotify_id, video_ids, keep, floor, need=unknown_need):
+                raise RuntimeError(
+                    "the resume record could not be written to disk, so the transfer "
+                    "stopped before appending — check that the app data folder is "
+                    "writable, then start the transfer again")
     seed_ledger = _seed_ledger(video_ids, entries)
-    if hooks and hooks.get("on_seed"):
-        try:
-            hooks["on_seed"](seed_ledger)
-        except Exception:
-            pass
+    if entries_complete:
+        if hooks and hooks.get("on_seed"):
+            # Same rule as a create's seed: a read that stopped before the end proves
+            # no row landed mid-run - the final ledger accounts for what it holds.
+            try:
+                hooks["on_seed"](seed_ledger)
+            except Exception:
+                pass
+    else:
+        blog("resume", f"id={plid} seed read stopped short — no row published as landed")
     todo = [int(e["i"]) - 1 for e in seed_ledger if e["outcome"] != "landed"]
-    blog("resume", f"id={plid} have={len(entries)} todo={len(todo)} complete={entries_complete}")
+    withheld = [p for p in todo if p in frozen]
+    if withheld:
+        # The previous run wrote these and never saw the answer (or died mid-slice):
+        # they are unknown, not absent, and a resume may not send them again.
+        blog("resume", f"id={plid} {len(withheld)} unknown write(s) frozen: "
+                       + ",".join(str(p + 1) for p in withheld[:8]))
+    if frozen:
+        todo = [p for p in todo if p not in frozen]
+    blog("resume", f"id={plid} have={len(entries)} todo={len(todo)} "
+                   f"floor={floor} frozen={len(frozen)} complete={entries_complete}")
     if not entries_complete:
         blog("resume", f"id={plid} read incomplete — {len(todo)} append(s) withheld")
         todo = []
     attempts, entries2, entries2_complete, expected_min = _append_verify(
-        plid, video_ids, todo, yt_cookie, hooks, entries, entries_complete)
+        plid, video_ids, todo, yt_cookie, hooks, entries, entries_complete, floor=floor,
+        spotify_id=spotify_id)
     if on_phase:
         try:
             on_phase("verify")
@@ -3058,7 +3695,7 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
     blog("parity", f"resume {added}/{len(video_ids)} landed, {rejected} refused, "
                    f"{missing} missing, {duplicates} duplicate")
     _persist_final(spotify_id, plid, url, title, len(video_ids),
-                   added + duplicates == len(video_ids))
+                   added == len(video_ids) and entries2_complete and not unknown_ids)
     if not added:
         if _proven_empty(plid, yt_cookie, entries2, entries2_complete):
             cleaned = yt_delete_playlist(plid, yt_cookie)
@@ -3072,8 +3709,10 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
             "missing": missing, "duplicates": duplicates, "repeats": repeats,
             "ledger": ledger, "resumed": True,
             "attempts": dict(attempts),
+            "unsure": sorted(frozen | {int(p) for p, st in attempts.items()
+                                       if is_unsure_status(st)}),
             "playlist_count": len(entries2) if isinstance(entries2, list) else 0,
-            "expected_min": expected_min}
+            "expected_min": max(int(expected_min or 0), floor)}
 
 def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PRIVATE",
                            spotify_id="", hooks=None, version_sigs=None,
@@ -3091,27 +3730,85 @@ def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PR
         raise ValueError("no videoIds to send")
     if spotify_id:
         rec = load_created().get(spotify_id)
+        if rec and not rec.get("yt_id") and rec.get("create_pending"):
+            # A create was attempted and its reply never named a playlist. It may exist.
+            # Creating again would make a second one, so this stops for a person.
+            raise RuntimeError(
+                "an earlier create for this playlist may have made a YouTube Music "
+                "playlist and its record has no playlist id — check your library for a "
+                "playlist with this title, delete it if it is there, then Reset this run "
+                "before starting again (this app will not create a second one)")
         if rec and rec.get("yt_id"):
             if rec.get("complete") is True:
-                entries, entries_complete = _read_back_retry(rec["yt_id"], yt_cookie,
-                                                             minimum=len(set(ids)))
+                # A record that says complete is still not a licence to append blindly:
+                # a run interrupted while topping up leaves it complete until the end, so
+                # the unknown copies it persisted must be honoured here too.
+                top_floor, top_frozen, top_ids, top_need = _persisted_unknown(rec, ids)
+                # The record's plan and its unknown positions move together: the unknown
+                # copies are re-expressed in THIS plan's positions and kept by id, in one
+                # write, before the first send and before the early "nothing to do"
+                # return, so no later read can see a saved position against another plan
+                # and an id the new plan dropped is never forgotten.
+                if spotify_id and not _adopt_plan(spotify_id, ids, plan_slots, plan_guesses,
+                                                  top_floor, top_frozen, top_ids,
+                                                  need=top_need):
+                    raise RuntimeError(
+                        "the resume record could not be written to disk, so the top-up "
+                        "stopped before appending — check that the app data folder is "
+                        "writable, then start the transfer again")
+                # The read must reach what the LAST run's evidence proved, not what this
+                # run intends: a plan that has grown (a track added to the source) can
+                # never be held yet, and demanding it would refuse every new track.
+                entries, entries_complete = _read_back_retry(
+                    rec["yt_id"], yt_cookie, minimum=top_floor)
                 if entries is None:
                     entries = []
                 if entries is not None:
                     seed = _reconcile(ids, entries, {}, entries_complete)
                     todo = [int(e["i"]) - 1 for e in seed if e["outcome"] != "landed"]
+                    # A complete read that holds as many copies of an id as the unknown
+                    # was recorded against has answered that doubt; only the rest stay
+                    # unknown. The bar is the RECORDED multiplicity, not the current plan
+                    # count, so a plan that shrank cannot resolve a second copy with one
+                    # visible entry.
+                    if top_ids and entries_complete:
+                        keep = _unresolved_ids(top_ids, entries, need=top_need)
+                        if keep != top_ids:
+                            top_ids = keep
+                            top_frozen = {i for i, v in enumerate(ids) if v in keep}
+                            if spotify_id and not _set_unknown(
+                                    spotify_id, ids, keep, top_floor, need=top_need):
+                                raise RuntimeError(
+                                    "the resume record could not be written to disk, so "
+                                    "the top-up stopped before appending — check that the "
+                                    "app data folder is writable, then start the transfer "
+                                    "again")
+                    withheld = [p for p in todo if p in top_frozen]
+                    if withheld:
+                        blog("topup", f"id={rec['yt_id']} {len(withheld)} unknown write(s) "
+                                      f"frozen: " + ",".join(str(p + 1) for p in withheld[:8]))
+                        todo = [p for p in todo if p not in top_frozen]
                     if not todo:
                         added = sum(1 for e in seed if e["outcome"] == "landed")
                         missing = sum(1 for e in seed if e["outcome"] != "landed")
                         for e in seed:
                             if e["outcome"] != "landed":
                                 e["status"] = "exists — not on playlist"
+                        # Nothing to send, but an unknown copy is not proof of a whole
+                        # playlist, and neither is a partial or below-floor read: the
+                        # record may only say complete when the read itself is complete,
+                        # every copy was read back, and none is unknown.
+                        _persist_final(spotify_id, rec["yt_id"], rec.get("url", ""), title,
+                                       len(ids), (missing == 0 and entries_complete
+                                                  and not top_frozen and not top_ids))
                         blog("create", f"exists title={title} url={rec.get('url')} tracks={added}")
                         return {"playlistId": rec["yt_id"], "url": rec.get("url", ""),
                                 "added": added, "sent": len(ids), "rejected": 0, "missing": missing,
                                 "repeats": _repeat_count(ids, version_sigs), "existing": True, "ledger": seed,
+                                "unsure": sorted(top_frozen),
                                 "playlist_count": len(entries) if isinstance(entries, list) else 0,
-                                "expected_min": len(entries) if isinstance(entries, list) else 0}
+                                "expected_min": max(top_floor,
+                                                    len(entries) if isinstance(entries, list) else 0)}
                     on_phase = (hooks or {}).get("on_phase")
                     if on_phase:
                         try:
@@ -3120,12 +3817,16 @@ def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PR
                             pass
                     plid = rec["yt_id"]
                     blog("topup", f"id={plid} have={len(entries)} missing={len(todo)} "
+                                  f"floor={top_floor} frozen={len(top_frozen)} "
                                   f"complete={entries_complete}")
                     if not entries_complete:
                         blog("topup", f"id={plid} read incomplete — {len(todo)} append(s) withheld")
                         todo = []
+                    # The plan and its re-expressed unknown set were adopted above, before
+                    # the read; the sender writes ahead against that same plan.
                     attempts, entries2, entries2_complete, expected_min = _append_verify(
-                        plid, ids, todo, yt_cookie, hooks, entries, entries_complete)
+                        plid, ids, todo, yt_cookie, hooks, entries, entries_complete,
+                        floor=max(top_floor, 0), spotify_id=spotify_id)
                     if on_phase:
                         try:
                             on_phase("verify")
@@ -3142,13 +3843,15 @@ def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PR
                     blog("parity", f"topup {added}/{len(ids)} landed, {rejected} refused, "
                                    f"{missing} missing, {duplicates} duplicate")
                     _persist_final(spotify_id, plid, rec.get("url", ""), title, len(ids),
-                                   added + duplicates == len(ids))
+                                   added == len(ids) and entries2_complete and not top_ids)
                     return {"playlistId": plid, "url": rec.get("url", ""),
                             "added": added, "sent": len(ids), "rejected": rejected, "missing": missing,
                             "duplicates": duplicates, "repeats": repeats, "existing": True, "ledger": ledger,
                             "attempts": dict(attempts),
+                            "unsure": sorted(top_frozen | {int(p) for p, st in attempts.items()
+                                                           if is_unsure_status(st)}),
                             "playlist_count": len(entries2) if isinstance(entries2, list) else 0,
-                            "expected_min": expected_min,
+                            "expected_min": max(int(expected_min or 0), top_floor),
                             "topped_up": newly}
             else:
                 # The interrupted run's plan and toggle are part of its state: replay
@@ -3202,19 +3905,6 @@ def _standby_wait(seconds: float):
     RUN_WAKE.wait(timeout=max(0.0, seconds))
     RUN_WAKE.clear()
 
-def _append_missing(plid, yt_cookie, need):
-    """One send per verified-absent videoId, in intended order. Stops at the first
-    transport or fatal answer: a throttled API is not helped by the rest of the
-    queue, and a dead cookie cannot add anything."""
-    statuses = {}
-    for v in need:
-        st = yt_add_one(plid, v, yt_cookie)
-        statuses[v] = st
-        blog("repair", f"{plid} {v} -> {st[:70]}")
-        if is_transport_status(st) or is_fatal_status(st):
-            break
-    return statuses
-
 def _unproven(video_ids, ledger) -> list:
     """The copies a first pass could not prove, in plan order: what a repair pass
     must carry as its residual even before it can complete a read of its own."""
@@ -3226,10 +3916,14 @@ def _unproven(video_ids, ledger) -> list:
     return out
 
 
-def _refused_ids(video_ids, attempts, ledger) -> list:
-    """Ids whose copy the server refused in the first pass (duplicate toast or a
-    plain refusal) and that is still absent: a repair pass must not re-send them,
-    because the verdict is already in."""
+def _refused_positions(attempts, ledger) -> list:
+    """Positions whose copy the server refused in the first pass (duplicate toast or a
+    plain refusal) and that is still absent: a repair pass must not re-send THOSE
+    copies, because the verdict is already in.
+
+    Keyed by position, never by videoId: a plan may hold the same id twice, and a
+    verdict on one occurrence says nothing about another occurrence that was never
+    sent. Blocking the id would deny a write the server might accept."""
     out = []
     for k, st in (attempts or {}).items():
         try:
@@ -3239,17 +3933,15 @@ def _refused_ids(video_ids, attempts, ledger) -> list:
         s = str(st or "").upper()
         if "DUPLICATE" not in s and "FAILED" not in s:
             continue
-        if i >= len(video_ids or []):
-            continue
         e = ledger[i] if i < len(ledger or []) else None
         if isinstance(e, dict) and e.get("outcome") == "landed":
             continue
-        out.append(video_ids[i])
+        out.append(i)
     return out
 
 
-def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stalled=False,
-              floor=0, residual=None, unaddable=None):
+def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="",
+              floor=0, residual=None, refused=None, unsure=None, hooks=None):
     """Realign the playlist to the intended copies: verify, repair, verify again,
     bounded and quiet.
 
@@ -3265,14 +3957,37 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
     missing a row. The repair follows the plan's own order, so the missing earlier
     copy is sent before a later one.
 
+    The repair is the same sender as the first pass: `_append_verify`, which sends
+    at most TRANSFER_SLICE copies and proves them with their own complete read
+    before the next slice goes out. One unbounded batch would lose that proof - a
+    stale read is caught per slice, and the floor rises by the copies each slice
+    promised - and it would also lose the per-copy accounting: two copies of one
+    videoId are two sends with two verdicts, so the statuses this pass returns are
+    keyed by the copy's position in the plan, never by its videoId.
+
     A repaired copy can only be appended, so it can land after a later copy: the
     converged playlist may hold every copy in a different order. That is not
     fixable in place and is not hidden - `_order_preserved` reports it, and the run
     says so instead of claiming a faithful transfer.
 
-    `stalled` says the pass just before this one died on the wire (an append that
-    answered 429/5xx or timed out), so the run stands by before it looks again
-    instead of hammering a throttled API.
+    `refused` and `unsure` name copies by POSITION in the plan, because a plan may
+    hold one videoId several times and each occurrence is its own write: a verdict on
+    one copy never blocks another.
+
+    `refused` copies were refused by the server (duplicate toast or plain refusal):
+    re-sending them is the spin this pass exists to avoid, so they stay named as a
+    residual.
+
+    `unsure` copies may have been written and their outcome is unknown, and so is any
+    such copy this pass sends itself. Such a copy is frozen for the rest of the run: a
+    complete read that does not show it is not proof it stayed out - the reply can be
+    a snapshot taken before the write - and a second copy of a source row cannot be
+    told from a repair. No append failure is retried here, not even a 429: for this
+    endpoint a throttling reply is not proof the write was refused unapplied. The run
+    ends `gaveup` naming them, so they land as `unverified` rows with a manual
+    recovery rather than a guessed resend. The frozen positions and the accepted floor
+    are written to the resume record, so a close and a reopen cannot turn an unknown
+    write into a fresh one.
 
     Bounded twice, because the append's reply is never the truth. `prev_present` is
     the copy count a COMPLETE read has already proved: a pass whose repair added
@@ -3284,7 +3999,12 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
 
     -> {"state": "done"|"gaveup", "attempt": n, "reason": str,
         "residual": [videoId...], "entries": [...]|None, "complete": bool,
-        "statuses": {videoId: status}}"""
+        "statuses": {position in the plan: status}}
+
+    `hooks` is the caller's live-progress set, the same one the first pass takes:
+    the repair publishes its phase, the copies it sends and the rows the read after
+    it proves. A repair is the longest thing a large run does, and a page that
+    cannot see it reads as a stall."""
     intended = [v for v in (video_ids or []) if isinstance(v, str) and v]
     # An unfinished run resumes at the attempt it stopped at; a finished one starts
     # with a fresh budget (it still never creates a second playlist).
@@ -3300,23 +4020,66 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
     statuses, entries, complete = {}, None, False
     last_need = [v for v in (residual or []) if isinstance(v, str) and v]
     blocked = [v for v in (residual or []) if isinstance(v, str) and v]
-    no_more = {v for v in (unaddable or []) if isinstance(v, str) and v}
+    # Positions whose copy the server refused, and positions whose write may have
+    # landed. Both are keyed by position: two copies of one videoId are two different
+    # writes, and a verdict or an unknown reply on one says nothing about the other.
+    refused_pos = {int(p) for p in (refused or []) if str(p).lstrip("-").isdigit()}
+    frozen = set(_frozen_positions(intended, [int(p) for p in (unsure or [])
+                                              if str(p).lstrip("-").isdigit()]))
+    unresolved = set()   # unknown ids no COMPLETE read has accounted for
+    unsure_ids = []   # copies this run cannot resolve, in plan order, for the residual
     short = 0   # reads that came back short while nothing was proven absent
     passes = 0  # loop iterations, whatever they did: the outer bound
     floor = max(0, int(floor or 0))  # entries this run's own evidence says must be there
     prev_present = None  # the copy count the previous complete read held
     applied = False  # the last repair was accepted in full, and landed nowhere
     stuck = 0   # passes whose complete read proved nothing new
+    fresh = False  # the repair's own complete read is the newest state of the playlist
+
+    def resolve_unknowns(got):
+        """Clear only the doubts this COMPLETE read actually answers.
+
+        A doubt is answered when the read holds at least as many copies of the id as the
+        doubt was recorded against - never fewer. An id the record cannot measure (no
+        recorded multiplicity and not in this plan) stays unresolved. `frozen` and
+        `unresolved` then describe exactly the same copies, so the run cannot claim
+        `done` while its own record says a copy is unknown."""
+        nonlocal frozen, unresolved
+        if spotify_id:
+            rec_now = _record(spotify_id)
+            known = _unknown_ids_in(rec_now) | {intended[p] for p in frozen
+                                                if 0 <= p < len(intended)}
+            need_map = _unknown_need(rec_now)
+        else:
+            known = {intended[p] for p in frozen if 0 <= p < len(intended)}
+            need_map = {}
+        for v in known:
+            need_map[v] = max(int(need_map.get(v, 0) or 0), intended.count(v))
+        keep = _unresolved_ids(known, got, need=need_map)
+        unresolved = set(keep)
+        if keep == known:
+            return
+        frozen = {p for p in frozen
+                  if 0 <= p < len(intended) and intended[p] in keep}
+        if spotify_id and not _set_unknown(spotify_id, intended, keep, floor,
+                                           need=need_map):
+            raise RuntimeError(
+                "the resume record could not be written to disk, so the verification "
+                "stopped — check that the app data folder is writable, then start the "
+                "transfer again")
 
     def stand_by(reason, residual):
-        """One wait, or the end of the run. Never both."""
+        """One wait, or the end of the run. Never both.
+
+        This is a READ budget. No append is ever waited out, because waiting does
+        not make a read fresh and a stale read is what re-adds."""
         nonlocal attempt
         if attempt >= RUN_RETRY_MAX:
             run_set(state="gaveup", attempt=attempt, next_attempt_at=0.0,
                     reason=reason, residual=residual)
             _persist_progress(spotify_id, plid, url, title, len(intended),
                               state="gaveup", attempt=attempt, pending=residual,
-                              plan=intended)
+                              plan=intended, expected_min=floor, unsure=sorted(frozen))
             blog("gaveup", f"{plid} after {attempt} attempt(s): {reason}; still absent: "
                            + ",".join(residual[:8]))
             return True
@@ -3327,7 +4090,7 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
                 reason=reason, residual=residual)
         _persist_progress(spotify_id, plid, url, title, len(intended), state="standby",
                           attempt=attempt, next_run_at=nxt, pending=residual,
-                          plan=intended)
+                          plan=intended, expected_min=floor, unsure=sorted(frozen))
         blog("standby", f"{plid} attempt {attempt}/{RUN_RETRY_MAX} in {delay:.0f}s: {reason}")
         _standby_wait(delay)
         return False
@@ -3337,10 +4100,13 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
                 residual=list(residual or []))
         _persist_progress(spotify_id, plid, url, title, len(intended), state=state,
                           attempt=attempt, pending=residual,
-                          plan=intended)
+                          plan=intended, expected_min=floor, unsure=sorted(frozen))
         # complete is what a later run starts from: only a run whose read reached
-        # the end of the playlist and found nothing absent may claim it.
-        _persist_final(spotify_id, plid, url, title, len(intended), final_complete)
+        # the end of the playlist and found nothing absent may claim it, and an
+        # unknown write is never "nothing absent".
+        _persist_final(spotify_id, plid, url, title, len(intended),
+                       bool(final_complete and not frozen and not refused_pos
+                            and not unresolved and complete))
         return {"state": state, "attempt": attempt, "reason": reason,
                 "residual": list(residual or []), "entries": entries,
                 "complete": complete, "statuses": statuses}
@@ -3351,18 +4117,19 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
             reason = f"no progress after {CONVERGE_MAX_PASSES} passes"
             blog("gaveup", f"{plid} {reason}; still absent: " + ",".join(last_need[:8]))
             return finish("gaveup", reason, last_need)
-        if stalled:
-            stalled = False
-            if stand_by("append failed on the wire", last_need):
-                return finish("gaveup", "append failed on the wire", last_need)
-            continue
         run_set(state="verifying", attempt=attempt, next_attempt_at=0.0, reason="", residual=[])
         # A playlist never shrinks while a run is repairing it, so the entries an
         # earlier complete read proved are the floor this read must still reach.
         # Below it the reply is a stale page, and a stale page is what re-adds.
-        got, got_complete = _read_back_retry(plid, yt_cookie, minimum=floor)
-        if got is not None:
-            entries, complete = got, got_complete
+        if fresh:
+            # The repair's own read-back already is a complete read at or above the
+            # floor: reading the same playlist again would buy nothing.
+            fresh = False
+            got, got_complete = entries, complete
+        else:
+            got, got_complete = _read_back_retry(plid, yt_cookie, minimum=floor)
+            if got is not None:
+                entries, complete = got, got_complete
         if got is None or not got_complete:
             reason = "read failed" if got is None else "read incomplete"
             # Nothing is appended off this read, so nothing is proven absent. An
@@ -3372,6 +4139,9 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
             if stand_by(reason, last_need):
                 return finish("gaveup", reason, last_need)
             continue
+        # This read reached the end of the playlist: it is the only evidence that can
+        # answer an unknown, and it answers only what it can count.
+        resolve_unknowns(got)
         present = {}
         for v in got:
             present[v] = present.get(v, 0) + 1
@@ -3379,20 +4149,38 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
         # One entry per missing COPY, in the plan's order: a repeated videoId the
         # playlist holds once is one copy short, and that copy is the repair.
         held = dict(present)
-        need = []
+        need_pos = []
         blocked = []
-        for v in intended:
+        unsure_ids = []
+        for pos, v in enumerate(intended):
             if held.get(v, 0) > 0:
                 held[v] -= 1
-            elif v in no_more:
-                # The server has already answered about this copy: it will not
-                # hold another one. Re-sending it is the spin this pass exists to
-                # avoid; it stays named as a residual instead.
+            elif pos in refused_pos:
+                # The server has already answered about THIS copy: re-sending it is
+                # the spin this pass exists to avoid. Another occurrence of the same
+                # videoId was never answered and is still free to be sent.
                 blocked.append(v)
+            elif pos in frozen:
+                # This copy's write may have landed and its reply was lost, or it is
+                # another occurrence of a videoId whose write is unknown. No read can
+                # prove it stayed out - a token-complete reply can be a stale snapshot
+                # taken before the write - and copies of one id cannot be told apart in
+                # a read, so nothing more of that id is sent by this run. It is carried
+                # as an unverified residual with a manual recovery.
+                unsure_ids.append(v)
             else:
-                need.append(v)
-        last_need = need or blocked
+                need_pos.append(pos)
+        need = [intended[p] for p in need_pos]
+        last_need = (need or unsure_ids
+                     or [v for v in intended if v in unresolved] or blocked)
         if not need:
+            if unsure_ids or unresolved:
+                reason = ("an add whose outcome is unknown was not re-sent — check the "
+                          "playlist, then add it by hand or run the transfer again")
+                names = unsure_ids + [v for v in intended
+                                      if v in unresolved and v not in unsure_ids]
+                blog("gaveup", f"{plid} {reason}; unknown: " + ",".join(names[:8]))
+                return finish("gaveup", reason, names + blocked)
             if blocked:
                 blog("converge", f"{plid} {len(blocked)} copy(ies) the plan needs were "
                                  f"refused by YouTube Music: " + ",".join(blocked[:8]))
@@ -3425,38 +4213,58 @@ def _converge(plid, yt_cookie, video_ids, spotify_id="", title="", url="", stall
         stuck = 0   # the read changed: the stall counter starts over
         run_set(state="repairing", attempt=attempt, reason=f"repairing {len(need)} tracks")
         blog("converge", f"{plid} entry={len(got)} absent={len(need)}")
-        sent = _append_missing(plid, yt_cookie, need)
+        # The repair goes out through the same sender the first pass uses: at most
+        # TRANSFER_SLICE copies, each batch proved by the complete read that follows
+        # it before the next one is sent, and the floor raised by the copies the
+        # server accepted. A repair off one unbounded batch has no such proof.
+        sent, sent_entries, sent_complete, sent_min = _append_verify(
+            plid, intended, need_pos, yt_cookie, hooks, entries, complete, floor=floor,
+            spotify_id=spotify_id)
         statuses.update(sent)
-        for v, st in sent.items():
+        for pos, st in sent.items():
             s = str(st or "").upper()
             if "DUPLICATE" in s or "FAILED" in s:
-                # The server gave its verdict on this copy: do not ask again in
-                # this run. It is carried as a residual the run names.
-                no_more.add(v)
+                # The server gave its verdict on THIS copy: do not ask again in this
+                # run. It is carried as a residual the run names.
+                refused_pos.add(int(pos))
+            elif is_unsure_status(st):
+                # The write may have landed and its reply was lost (or unreadable, a
+                # 429 included). Freeze this copy and every other occurrence of the
+                # same videoId for the rest of the run - absence in a read is not proof
+                # it stayed out, and copies of one id cannot be told apart.
+                frozen.update(_frozen_positions(intended, [int(pos)]))
+                blog("converge", f"{plid} copy {int(pos) + 1} ({intended[pos]}) outcome "
+                                 f"unknown — never re-sent by this run")
         # The playlist must now hold every copy this repair was promised: a read
         # that does not show them is a stale snapshot, and a stale snapshot is
-        # what makes a repair pass re-send the plan.
-        floor = max(floor, len(got) + _copies_that_should_land(sent))
-        # Only a repair the wire and the server both accepted is evidence that
-        # nothing changed; a 429 or a timeout has its own budget below.
-        applied = bool(sent) and not any(is_transport_status(s) or is_fatal_status(s)
+        # what makes a repair pass re-send the plan. The floor only rises: written
+        # here AFTER it is raised, and the record clamps it, so a mixed slice cannot
+        # put an older floor back over a higher one another writer proved.
+        floor = max(floor, int(sent_min or 0))
+        if spotify_id and sent:
+            _persist_fields(spotify_id, unsure=sorted(frozen), expected_min=floor)
+        if bool(sent) and sent_entries is not None and sent_complete:
+            # That last read is a complete read at or above the floor, so the next
+            # pass starts from it instead of spending another read burst on it.
+            entries, complete, fresh = sent_entries, sent_complete, True
+        # Only a repair the wire and the server both answered is evidence that
+        # nothing changed; an unknown one is frozen and verified instead.
+        applied = bool(sent) and not any(is_unsure_status(s) or is_fatal_status(s)
                                          for s in sent.values())
         if any(is_fatal_status(s) for s in sent.values()):
             run_set(state="gaveup", attempt=attempt, next_attempt_at=0.0,
                     reason="append refused by YouTube Music", residual=need)
             _persist_progress(spotify_id, plid, url, title, len(intended),
                               state="gaveup", attempt=attempt, pending=need,
-                              plan=intended)
+                              plan=intended, expected_min=floor, unsure=sorted(frozen))
             blog("gaveup", f"{plid} refused by YTM — reconnect the cookie; still absent: "
                            + ",".join(need[:8]))
             return {"state": "gaveup", "attempt": attempt,
                     "reason": "append refused by YouTube Music", "residual": need,
                     "entries": entries, "complete": complete, "statuses": statuses}
-        if any(is_transport_status(s) for s in sent.values()):
-            if stand_by("append failed on the wire", need):
-                return finish("gaveup", "append failed on the wire", need)
-            continue
-        # The append's own reply is never the truth: read the playlist again.
+        # A repair whose outcome is unknown, or that the server accepted, is verified
+        # below and never re-sent: the read is the only way to know what landed. No
+        # append is re-sent on a timer, because no timer makes a stale read fresh.
 
 def _transfer_thread(url, yt_cookie, title, privacy, run_id):
     try:
@@ -3619,6 +4427,56 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                 RUN["skipped"] = sum(1 for v in matched_ids if not v)
                 RUN["sent"] = RUN["matched"]
                 RUN["updated_at"] = time.time()
+        # A soft second search for the rows whose search never answered: one query
+        # each, capped, and never on a row the matcher answered. Matched rows and
+        # their progress are untouched, and a row this cannot resolve keeps its own
+        # skip - a skip is honest, a second-chance guess is not.
+        if plan is None:   # a resume replays its plan and matches nothing
+            with _RUN_LOCK:
+                if RUN.get("id") != run_id:
+                    return
+                retry = [{"i": k, "title": (tracks[k] or {}).get("title", ""),
+                          "artist": (tracks[k] or {}).get("artist", ""),
+                          "duration_ms": (tracks[k] or {}).get("duration_ms", 0),
+                          "album": (tracks[k] or {}).get("album", ""),
+                          "skipped": RUN["rows"][k].get("status", "")}
+                         for k in range(min(len(tracks), len(RUN["rows"])))
+                         if RUN["rows"][k].get("state") == "skipped"
+                         and RUN["rows"][k].get("status")]
+            if retry:
+                with _RUN_LOCK:
+                    if RUN.get("id") != run_id:
+                        return
+                    RUN["phase"] = "search"
+                resolved, tried, stop = _second_search_skipped(retry)
+                with _RUN_LOCK:
+                    if RUN.get("id") != run_id:
+                        return
+                    for pos, r in resolved.items():
+                        try:
+                            k = int(pos)
+                        except Exception:
+                            continue
+                        if k >= len(RUN["rows"]):
+                            continue
+                        RUN["rows"][k]["videoId"] = r.get("videoId", "")
+                        RUN["rows"][k]["state"] = "matched"
+                        # Truthful provenance for the page: this row is in the plan
+                        # because a second search answered, not on the first pass. The
+                        # flag outlives the terminal ledger, which clears a landed
+                        # row's transient text.
+                        RUN["rows"][k]["via_second"] = True
+                        RUN["rows"][k]["status"] = "found on a second search"
+                        RUN["seq"] += 1
+                        RUN["rows"][k]["row_seq"] = RUN["seq"]
+                        matched_ids[k] = r.get("videoId", "")
+                    RUN["matched"] = sum(1 for v in matched_ids if v)
+                    RUN["skipped"] = sum(1 for v in matched_ids if not v)
+                    RUN["sent"] = RUN["matched"]
+                    RUN["updated_at"] = time.time()
+                blog("research", f"run={run_id} second search: {len(resolved)} of "
+                                 f"{len(tried)} row(s) resolved"
+                                 + (f", stopped: {stop}" if stop else ""))
         with _RUN_LOCK:
             if RUN.get("id") != run_id:
                 return
@@ -3660,6 +4518,9 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                     RUN["error"] = "zero matches, nothing to create."
                     RUN["kind"] = "parse"
                     RUN["hint"] = "No YTM match for any track — nothing to create."
+                # The rows are the truth even here: a failed run that read 4 rows and
+                # matched none reports source 4 / skipped 4, never four zeros.
+                _run_counts_locked()
                 RUN["seq"] += 1
                 RUN["updated_at"] = time.time()
             return
@@ -3789,23 +4650,39 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                 pass
         # Phase 2: whatever the first pass could not prove, the playlist now
         # decides. Bounded, verified, and never a second playlist.
-        stalled = any(is_transport_status(str((e or {}).get("status", "")))
-                      for e in (res.get("ledger") or []))
+        first_attempts = {int(k): str(v or "") for k, v in (res.get("attempts") or {}).items()}
+        # No append failure is retried: a 429 on this endpoint is not proof the write
+        # was refused unapplied, so every unknown outcome is frozen for the whole run
+        # and reported unverified. The positions a resume inherited from the record
+        # are frozen the same way - that is the whole point of persisting them.
+        unsure_positions = {p for p, st in first_attempts.items() if is_unsure_status(st)}
+        for p in res.get("unsure") or []:
+            try:
+                unsure_positions.add(int(p))
+            except Exception:
+                continue
         conv = _converge(res.get("playlistId", ""), yt_cookie, vids, sid, pname,
-                         res.get("url", ""), stalled=stalled,
+                         res.get("url", ""),
                          floor=int(res.get("expected_min") or 0),
                          residual=_unproven(vids, res.get("ledger") or []),
-                         unaddable=_refused_ids(vids, res.get("attempts") or {},
-                                                res.get("ledger") or []))
+                         refused=_refused_positions(res.get("attempts") or {},
+                                                    res.get("ledger") or []),
+                         unsure=sorted(unsure_positions),
+                         hooks=hooks)
         entries_final = conv.get("entries")
         # The first pass's verdicts are evidence too: a copy YTM refused stays
         # refused, so its status is carried into the final ledger instead of being
         # re-derived from the plan's id multiplicity. The convergence pass only
-        # overwrites a position it sent again itself.
-        attempts = {int(k): v for k, v in (res.get("attempts") or {}).items()}
-        for i, v in enumerate(vids):
-            st = (conv.get("statuses") or {}).get(v, "")
-            if st:
+        # overwrites a position it sent again itself, and its statuses are keyed by
+        # the copy's position in the plan: joining them on videoId gave one copy's
+        # verdict to every copy of that id.
+        attempts = dict(first_attempts)
+        for pos, st in (conv.get("statuses") or {}).items():
+            try:
+                i = int(pos)
+            except Exception:
+                continue
+            if st and 0 <= i < len(vids):
                 attempts[i] = st
         ledger = _reconcile(vids, entries_final or [], attempts, bool(conv.get("complete")))
         with _RUN_LOCK:
@@ -3819,7 +4696,8 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                 out = e.get("outcome")
                 if out == "landed":
                     RUN["rows"][k]["state"] = "landed"
-                    RUN["rows"][k]["status"] = ""
+                    RUN["rows"][k]["status"] = ("found on a second search"
+                                                if RUN["rows"][k].get("via_second") else "")
                 elif out == "duplicate":
                     RUN["rows"][k]["state"] = "duplicate"
                     RUN["rows"][k]["status"] = str(e.get("status", ""))[:80]
@@ -3830,8 +4708,13 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                     RUN["rows"][k]["state"] = "missing"
                     RUN["rows"][k]["status"] = str(e.get("status", ""))[:80]
                     if e.get("unverified"):
-                        # present but unproven: the read stopped before its page
+                        # Present in no completed read: either the read stopped before
+                        # its page, or the write's outcome is unknown. The second is
+                        # flagged apart so the done line never says the read was short
+                        # when it reached the end.
                         RUN["rows"][k]["unverified"] = True
+                        if e.get("unsure"):
+                            RUN["rows"][k]["unsure"] = True
                 RUN["seq"] += 1
                 RUN["rows"][k]["row_seq"] = RUN["seq"]
             RUN["playlist_id"] = res.get("playlistId", RUN.get("playlist_id", ""))
@@ -3879,12 +4762,15 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
             # later one landed sits at the end, and the line must say so instead of
             # calling the transfer faithful.
             RUN["order_ok"] = _order_preserved(vids, entries_final or [])
+            RUN["unsure"] = sum(1 for row in RUN["rows"] if row.get("unsure"))
+            RUN["tail_unverified"] = sum(1 for row in RUN["rows"]
+                                         if row.get("unverified") and not row.get("unsure"))
             RUN["counts"] = _counts_from_rows(len(tracks), RUN["rows"])
             RUN["summary"] = _done_summary(
                 RUN["counts"], n_pl,
                 topped_up=(int(res.get("topped_up", 0)) if res.get("topped_up") is not None else None),
                 sent=int(res.get("sent", 0) or 0), guessed=RUN["guessed"],
-                tail_unverified=RUN.get("unverified", 0),
+                tail_unverified=RUN["tail_unverified"],
                 order_differs=not RUN["order_ok"])
             RUN["phase"] = "done"
             RUN["error"] = ""
