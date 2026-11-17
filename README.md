@@ -12,28 +12,26 @@
 
 Download `sp2yt.exe` from the [latest release](https://github.com/nathwn12/spotify-playlist-to-youtube/releases/latest) and run it. One portable executable — no installer, no Python, no console window.
 
-Windows 10/11 x64, with the Microsoft Edge WebView2 runtime (it ships with Edge). The exe is not code-signed, so the first launch trips SmartScreen ("Windows protected your PC"): choose More info, then Run anyway.
+### Offline or pinned
 
-### From source or pinned
-
-`sp2yt-start.cmd`, or `python3 backend.py`, then open http://127.0.0.1:8787. Python 3.12+ with the standard library only — nothing to install.
+Run the source instead of the exe: `sp2yt-start.cmd`, or `python3 backend.py`, then open http://127.0.0.1:8787. Python 3.12+ with the standard library only — nothing to install.
 
 Pin an exact version:
 
 ```bat
 git clone https://github.com/nathwn12/spotify-playlist-to-youtube
 cd spotify-playlist-to-youtube
-git checkout v0.5.1
+git checkout v0.5.2
 ```
 
 ## Use it
 
 Two steps: the first runs once, the second runs every transfer.
 
-1. Connect YouTube Music. The card finds `music.youtube.com_cookies.txt` on your Desktop or in Downloads and offers it; choose the file, or paste its header instead. Once it is connected, `Replace` and `Remove` sit on the card — `Remove` clears the saved cookie, and it stays removed until you choose a file again. ([First-run screen](assets/app-setup.png))
+1. Connect YouTube Music. The card finds `music.youtube.com_cookies.txt` on your Desktop or in Downloads and offers it; choose the file, or paste its header instead. If it finds nothing, choose the file by hand — an export from a cookie extension works the same way. Once it is connected, `Replace` and `Remove` sit on the card: `Remove` clears the saved cookie, and it stays removed until you choose a file again. ([First-run screen](assets/app-setup.png))
 2. Paste a public Spotify link, choose the privacy (Private is the default), then press Start transfer (or `Ctrl+Enter`). The counter moves against Spotify's declared track count, and the new playlist appears as a chip in the top bar, linked to its `music.youtube.com/playlist?list=` page.
 
-If the card does not find a file by itself, choose it by hand — an export from a cookie extension works the same way.
+Each track gets a ledger row carrying its outcome and its reason, and the landed count is read back from YouTube Music rather than assumed. Repeats stay separate: an add asks YouTube Music to keep a second copy, and two source rows are never merged into one. Running the same playlist again resumes instead of adding everything twice.
 
 `More options` holds two controls:
 
@@ -44,33 +42,11 @@ If the card does not find a file by itself, choose it by hand — an export from
 
 - `Ctrl+K` — command palette.
 - `Ctrl+Enter` — start a transfer, or re-attach to a detached one.
-- `Esc` — detach, which leaves the transfer running on the server.
+- `Esc` — detach, which leaves the transfer running on the server; reloading the page re-attaches.
 - `Alt+1…6` — outcome filter.
 - `/` — focus the link field.
 - `j` / `k` — scroll the ledger.
 - `Ctrl+Shift+N` — new transfer.
-
-Reloading the page re-attaches to a detached run.
-
-## What you get
-
-- A ledger row per track, each with its reason.
-- A landed count read back from YouTube Music and reconciled against the playlist's entries.
-- Repeats kept separate: an add asks YouTube Music to keep a second copy, and two source rows are never merged into one. A repeat the server refuses anyway is listed as `duplicate`, not silently dropped.
-- Resume instead of duplicates when the same playlist runs again.
-- No API keys, and nothing of yours between you and the sites: the page and the transfer service run on 127.0.0.1, and the tracks, searches and writes go straight to Spotify and YouTube Music over HTTPS.
-
-## When a write is uncertain
-
-A write whose outcome is unknown — a timeout, a dropped connection, a 5xx, a 429 — is never re-sent automatically. The run stops and says so, and the doubt is written to disk so that a resume cannot resend it either.
-
-Check the playlist by hand, and leave these alone:
-
-- Do not Reset.
-- Do not delete the playlist.
-- Do not delete `created.json` — the only copy of the plan and the playlist link.
-
-[PROTOCOL.md](PROTOCOL.md#6-when-a-write-is-uncertain) states the rule in full.
 
 ## Configure it
 
@@ -83,52 +59,33 @@ Check the playlist by hand, and leave these alone:
 
 The cookie is never logged — audit lines record lengths and flags only.
 
-## How it works
+## Requirements
 
-- The Spotify read is keyless: the public embed for metadata, then the web player's own token against the api-partner playlist query, 100 tracks per page. A read short of the declared track count fails before YouTube Music is touched.
-- YouTube Music search runs through InnerTube `WEB_REMIX` with the public web client key. Titles match across scripts, and a row with no identified match is skipped with its reason rather than guessed.
-- The write goes out in slices of 100, each proved by the playlist read that shows it. `added` counts a copy a read proved present; a copy sent but not yet proved is `pending`.
-- A newly created playlist inherits the Spotify cover when YouTube Music accepts it — best effort, and never a failed run.
-
-[PROTOCOL.md](PROTOCOL.md) carries the full protocol, the recovery rules, the local API and the measured costs.
-
-## Limits
-
+- Windows 10 or 11, x64.
+- The Microsoft Edge WebView2 runtime, which ships with Edge.
 - Public Spotify playlists only — no Spotify login.
-- YouTube Music caps playlists at 5,000 tracks.
-- Auto-match ran at about 90 % on the playlist this was built against; every miss is listed with its reason.
-- The cookie expires. The connect card's own check reports it and asks for a fresh export.
-- A 401 on a write stops the run and says why.
-- A 401 that only reaches the search skips those rows like any other unanswered search.
-- An interrupted or unattributed write can require a manual playlist check.
-- Both surfaces are unofficial. A failure that is fatal to the run stops it with a diagnosis and a hint, and one the app does not recognize is reported as `unknown` with the raw error line, so nothing is written on a guess.
-- A failure confined to one row stops nothing: an unanswered search skips that row with its error as the reason, and a row still unresolved after one soft re-search keeps its skip while the rest continues.
-- A change that raises nothing is not detected at all, so the ledger's reasons are the evidence.
+- YouTube Music caps a playlist at 5,000 tracks.
+- The YouTube Music cookie expires; the connect card's own check reports it and asks for a fresh export.
+- Python 3.12+ for the source route, standard library only.
+- The exe is not code-signed, so the first launch trips SmartScreen ("Windows protected your PC"): choose More info, then Run anyway.
 
 ## Development
 
-Four files do the work, and two documents hold the rules:
-
-- `backend.py` — server and transfer logic.
-- `index.html` — the page.
-- `app.py` — the WebView2 shell.
-- `watchdog.py` — diagnosis from the audit trail.
-- `AGENTS.md` — the invariants a change must preserve.
-- `PROTOCOL.md` — the protocol in full.
-
-How to run and check it:
+Four files do the work — `backend.py` (server and transfer logic), `index.html` (the page), `app.py` (the WebView2 shell), `watchdog.py` (diagnosis from the audit trail). Two documents hold the rules: `AGENTS.md` for the invariants a change must preserve, `PROTOCOL.md` for the protocol, the recovery rules, the local API and the measured costs.
 
 - Dev lane: `sp2yt-start.cmd` serves the source at http://127.0.0.1:8787.
-- Build lane: `build.cmd` (needs `pyinstaller` and `pywebview`) backs up the exe, compiles one portable exe, smoke-tests `/health`, keeps green and restores on red.
-- Gate: `acceptance.cmd` must print `36/36 fixtures` and pass the language, counts, editions, order, cover, page-parse, UI, cookie, connect-card and release-asset checks.
+- Build lane: `build.cmd` runs the gate, backs up the exe, compiles one portable exe, smoke-tests `/health`, keeps green and restores on red. It needs `pyinstaller` and `pywebview`.
+- Gate: `acceptance.cmd` replays the recorded fixtures plus every offline check, and ends `acceptance: all gates green`.
 - Lint: `python3 -m ruff check .`
 
 ## Status
 
-**Unverified** — as-is, use at your own risk. The cover upload and cross-script matching are best-effort, and a 1,100-song transfer has not been verified end to end. Verify a transfer before relying on it.
+**Unverified** — as-is, use at your own risk.
 
 ## Links
 
-- [Releases](https://github.com/nathwn12/spotify-playlist-to-youtube/releases) — the portable `sp2yt.exe`.
 - [Issues](https://github.com/nathwn12/spotify-playlist-to-youtube/issues) — report a break with the command you ran and what you saw.
+- [Releases](https://github.com/nathwn12/spotify-playlist-to-youtube/releases) — the portable `sp2yt.exe`.
+- [Protocol](PROTOCOL.md) — what the app sends, what it refuses, and what it cannot prove.
+- [Change invariants](AGENTS.md) — what a code change must preserve.
 - [MIT licence](LICENSE)
