@@ -32,7 +32,7 @@ def _isolate_state():
     backend builds STATE from APPDATA at import time and hangs LOGF, created.json,
     settings.json and the three cookie files off it, so importing it before this
     runs is what appended to the live app's %APPDATA%\\sp2yt server.log. The root
-    is created under the caller's temp dir (acceptance.cmd points TEMP into its
+    is created under the caller's temp dir (scripts\acceptance.cmd points TEMP into its
     own scratch first, so a wrapped run nests inside it) and removed on exit.
     """
     root = tempfile.mkdtemp(prefix="sp2yt-acceptance-")

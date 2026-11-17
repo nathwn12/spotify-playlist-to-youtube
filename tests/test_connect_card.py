@@ -2,7 +2,7 @@
 """Structure gate for the always-visible YouTube Music connect card in index.html.
 
 Static assertions only. The page script's parse gate is tests/check_page.py,
-which acceptance.cmd runs before this file; runtime behaviour against
+which scripts\acceptance.cmd runs before this file; runtime behaviour against
 /api/cookies needs the live server and is not covered here.
 """
 import os

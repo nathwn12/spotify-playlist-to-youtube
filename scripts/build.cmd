@@ -1,11 +1,11 @@
 @echo off
 rem sp2yt PROD build: compile app+backend+UI to single portable sp2yt.exe (WebView2 window).
-rem DEV stays source-only: sp2yt-start.cmd / sp2yt-dev shortcut (localhost server, no build).
-rem Usage: build.cmd  (run from repo root, needs python3 3.12+ + pyinstaller + pywebview)
+rem DEV stays source-only: scripts\sp2yt-start.cmd / sp2yt-dev shortcut (localhost server, no build).
+rem Usage: scripts\build.cmd  (cds to the repo root itself; needs python3 3.12+ + pyinstaller + pywebview)
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 echo [1/6] acceptance gate...
-call acceptance.cmd
+call "%~dp0acceptance.cmd"
 if errorlevel 1 (
   echo ACCEPTANCE RED — not building
   exit /b 1
@@ -15,7 +15,7 @@ if exist sp2yt.exe (
   copy /y sp2yt.exe sp2yt.prev.exe >nul
 )
 echo [3/6] killing running instances...
-rem dev never runs as an exe (sp2yt-start.cmd runs backend.py), so only the prod exe is killed
+rem dev never runs as an exe (scripts\sp2yt-start.cmd runs backend.py), so only the prod exe is killed
 taskkill /f /im sp2yt.exe >nul 2>&1
 ping -n 2 127.0.0.1 >nul
 echo [4/6] compiling...
