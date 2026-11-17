@@ -41,9 +41,9 @@ If the card does not find a file by itself, choose it by hand — an export from
 
 - A ledger row per track, each with its reason.
 - A landed count read back from YouTube Music and reconciled against the playlist's entries.
-- Repeats preserved: three copies in, three entries out.
+- Repeats kept separate: an add asks YouTube Music to keep a second copy, and two source rows are never merged into one. A repeat the server refuses anyway is listed as `duplicate`, not silently dropped.
 - Resume instead of duplicates when the same playlist runs again.
-- No keys and no cloud: everything on 127.0.0.1.
+- No API keys, and nothing of yours between you and the sites: the page and the transfer service run on 127.0.0.1, and the tracks, searches and writes go straight to Spotify and YouTube Music over HTTPS.
 
 ## When a write is uncertain
 
@@ -78,7 +78,7 @@ The cookie is never logged — audit lines record lengths and flags only.
 - Auto-match ran at about 90 % on the playlist this was built against; every miss is listed with its reason.
 - The cookie expires: a 401 stops the run and asks for a fresh export.
 - An interrupted or unattributed write can require a manual playlist check.
-- Both surfaces are unofficial: a shape change stops the run with a parse or auth diagnosis and a hint, instead of writing a wrong playlist.
+- Both surfaces are unofficial. A failure the app recognizes stops the run with a diagnosis and a hint (`parse`, `auth`, `source`, `throttle`, `transient`, `write`), and one it does not recognize is reported as `unknown` with the raw error line, so a run stops rather than writing on a guess. A change that raises nothing is not detected: matching is best-effort, so the ledger's reasons are the evidence.
 
 ## Status
 

@@ -4,8 +4,14 @@
 sends, what it refuses, and what it cannot prove. `AGENTS.md` holds the invariants any
 change must preserve.
 
-Both surfaces are unofficial. A shape change upstream stops the run with a diagnosis
-instead of writing a wrong playlist.
+Both surfaces are unofficial, so failures are diagnosed from the error text, not from a
+contract. `classify()` returns `auth`, `throttle`, `transient`, `parse`, `source`, `user`,
+`write`, or `unknown`, and an unrecognized failure is served as `unknown` with the raw error
+line for a person to read. The run stops rather than writing on a guess — a run that matched
+nothing raises before a playlist is created. What this cannot do is prove an upstream change
+raised at all: the embed metadata read is best-effort and matching is best-effort, so a
+change that returns plausible but different data is not detected. The per-row reasons in the
+ledger are the evidence, not the promise.
 
 ## 1. Spotify read — keyless
 
@@ -72,12 +78,19 @@ No Spotify login, no client id, no secret.
 A duplicate-create check runs first: the same Spotify id with a live YouTube Music copy
 returns the existing playlist and creates nothing.
 
-## 5. Repeats are significant
+## 5. Repeats are requested per copy, and granted per copy
 
-N copies in, N entries out. There is no setting that merges them, and no dedupe of
-`video_ids` — a transfer is one-to-one with the source, always. Every add carries
-`"dedupeOption": "DEDUPE_OPTION_SKIP"` for that reason. `duplicate` exists only for a
-server that refuses anyway, and only from its own duplicate toast.
+The request is one add per source row: there is no setting that merges two source rows into
+one, no dedupe of `video_ids`, and every add carries `"dedupeOption": "DEDUPE_OPTION_SKIP"`
+for that reason. N copies in is N copies asked for.
+
+N entries out is the outcome only when each of those copies is accepted and read back. The
+server may refuse a repeat anyway: that reply comes as HTTP 200 with `STATUS_FAILED` and the
+toast "This song is already in the playlist". It is filed as `duplicate` — "already on the
+playlist - a second copy cannot be added" — which is its own outcome, distinct from
+`refused`, and it does not count toward `complete`. A row that never matched is `skipped`.
+So a transfer can end with repeats preserved *and* named rows that are not entries, and the
+done line prints those counts rather than the count that was requested.
 
 ## 6. When a write is uncertain
 
@@ -137,7 +150,10 @@ Recorded on this machine; treat them as scale indicators, not promises.
 
 ## 10. Local HTTP surface
 
-Loopback only, `127.0.0.1:8787`, same origin, no CDN and no third party.
+The local server is loopback only, `127.0.0.1:8787`, and the page is same-origin: it loads
+no CDN and no third-party script. That is about the app's own surface, not about the
+transfer — every Spotify read, search and write leaves this machine as an HTTPS request to
+`open.spotify.com`, `api-partner.spotify.com` or `music.youtube.com`.
 
 | Route | What it does |
 |---|---|
