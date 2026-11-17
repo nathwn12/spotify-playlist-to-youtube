@@ -94,11 +94,18 @@ returns the existing playlist and creates nothing.
 
 ## 5. Repeats are requested per copy, and granted per copy
 
-The request is one add per **matched** source row. A row with no identified match is never
-added at all: it stays `skipped` with its reason, so a 100-row playlist can ask for fewer
-than 100 copies. Between the rows that did match, there is no setting that merges two of
-them into one and no dedupe of `video_ids`, and every add carries
-`"dedupeOption": "DEDUPE_OPTION_SKIP"` for that reason.
+Every matched source row is represented once in the plan: one slot per copy, repeats kept,
+and a row with no identified match gets no slot at all - it stays `skipped` with its reason,
+so a 100-row playlist can carry fewer than 100 copies. Between the copies that did match
+there is no setting that merges two into one and no dedupe of `video_ids`, and every add
+carries `"dedupeOption": "DEDUPE_OPTION_SKIP"` for that reason.
+
+Being in the plan is not the same as being sent. The first 50 copies travel inline on the
+create (`CREATE_INLINE_MAX`); the rest go out in proved slices of 100. A resume sends only
+what its own read says is outstanding, so a copy already landed is never added again. And a
+read that stopped short, a verdict on the call, or a write whose outcome is unproven stops
+the sending where it is: those copies stay named rather than implied - `not_sent` when
+nothing asked the playlist for them, `unverified` when a write may have landed.
 
 N entries out is the outcome only when each of those copies is accepted and read back. The
 server may refuse a repeat anyway: that reply comes as HTTP 200 with `STATUS_FAILED` and the
