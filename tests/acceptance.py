@@ -5,12 +5,19 @@ Each fixture row is the real Spotify source row and the real InnerTube search
 responses seen for it. Nothing here reaches the network: urlopen is replaced
 with a lookup keyed by the search query.
 
+Nothing here touches the owner's state either: every path backend derives from
+APPDATA, and the Desktop/Downloads cookie scan behind home_dir(), is redirected
+into a scratch root created before backend is imported (see _isolate_state).
+
 Exit 0 only when every row resolves exactly as recorded and the four versions
 of one title resolve to four distinct videoIds with zero repeats.
 """
+import atexit
 import json
 import os
+import shutil
 import sys
+import tempfile
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -18,9 +25,79 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
 
+
+def _isolate_state():
+    """Confine every owner-visible state path to one scratch root.
+
+    backend builds STATE from APPDATA at import time and hangs LOGF, created.json,
+    settings.json and the three cookie files off it, so importing it before this
+    runs is what appended to the live app's %APPDATA%\\sp2yt server.log. The root
+    is created under the caller's temp dir (acceptance.cmd points TEMP into its
+    own scratch first, so a wrapped run nests inside it) and removed on exit.
+    """
+    root = tempfile.mkdtemp(prefix="sp2yt-acceptance-")
+    dirs = {name: os.path.join(root, name)
+            for name in ("appdata", "localappdata", "userprofile", "temp")}
+    try:
+        for p in dirs.values():
+            os.makedirs(p, exist_ok=True)
+    except OSError:
+        # atexit is registered after this returns, so a root left behind here
+        # would never be removed. Drop it before the failure propagates.
+        shutil.rmtree(root, ignore_errors=True)
+        raise
+    os.environ["APPDATA"] = dirs["appdata"]
+    os.environ["LOCALAPPDATA"] = dirs["localappdata"]
+    os.environ["USERPROFILE"] = dirs["userprofile"]
+    os.environ["HOME"] = dirs["userprofile"]
+    os.environ["TEMP"] = os.environ["TMP"] = dirs["temp"]
+    # gettempdir() caches on first use and the mkdtemp above already used it, so the
+    # scratch root would otherwise keep handing out the real %TEMP% and every
+    # per-test dir would leak there instead of being removed with the root.
+    tempfile.tempdir = dirs["temp"]
+    return root
+
+
+STATE_ROOT = _isolate_state()
+
+
+def _drop_scratch():
+    """Remove this run's scratch root; False when it survived (a handle is open)."""
+    shutil.rmtree(STATE_ROOT, ignore_errors=True)
+    if os.path.exists(STATE_ROOT):
+        print(f"FAIL cleanup: acceptance scratch survived at {STATE_ROOT}")
+        return False
+    return True
+
+
+atexit.register(_drop_scratch)
+
 import fixture_lib  # noqa: E402
 
 import backend  # noqa: E402
+
+
+def _state_escapes():
+    """State paths backend would write outside the scratch root.
+
+    This is the isolation assertion, not a comment about it: a regression that
+    leaves STATE on the owner's APPDATA - or one that lets backend fall back to
+    the repository when it cannot create STATE - fails this run instead of being
+    found later in a polluted server.log or a server.log inside the tree.
+    """
+    root = os.path.normcase(os.path.abspath(STATE_ROOT)) + os.sep
+    paths = {"STATE": backend.STATE, "LOGF": backend.LOGF,
+             "CREATEDF": backend.CREATEDF, "SETTINGF": backend.SETTINGF,
+             "COOKIEF": backend.COOKIEF, "VAULTF": backend.VAULTF,
+             "WATCHF": backend.WATCHF, "home_dir": backend.home_dir()}
+    escaped = {k: v for k, v in paths.items()
+               if not os.path.normcase(os.path.abspath(v)).startswith(root)}
+    want = os.path.join(os.environ["APPDATA"], "sp2yt")
+    if os.path.normcase(os.path.abspath(backend.STATE)) != os.path.normcase(want):
+        escaped["STATE"] = f"{backend.STATE} (this run's state dir is {want})"
+    elif not os.path.isdir(backend.STATE):
+        escaped["STATE"] = f"{backend.STATE} (missing)"
+    return escaped
 
 
 class MissingResponse(BaseException):
@@ -486,6 +563,10 @@ def test_running_motion():
 
 
 def main():
+    escaped = _state_escapes()
+    if escaped:
+        print("FAIL isolation: state path outside the scratch root: %r" % (escaped,))
+        return 1
     try:
         data = fixture_lib.load()
     except Exception as e:
@@ -663,4 +744,7 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    code = main()
+    if not _drop_scratch():
+        code = 1
+    sys.exit(code)

@@ -3,6 +3,7 @@ settings.json
 created.json
 cookie_vault.json
 cookie_watch.json
+cookie_state.json
 __pycache__/
 *.pyc
 *.pyo

@@ -23,7 +23,7 @@ import webbrowser
 from ctypes import wintypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "0.5.1"
+APP_VERSION = "0.5.2"
 
 # Test seams: every wait and every clock read the retry machinery reasons with
 # goes through these two, so a test can exercise the backoff without spending it.
@@ -755,20 +755,30 @@ def _write_verdict(status: str) -> dict:
     if code in ("401", "403"):
         named = "Unauthorized" if code == "401" else "Forbidden"
         return {"kind": "auth",
-                "hint": (f"YouTube Music refused the write with HTTP {code} {named} — the "
-                         f"session may have expired, or this account may not be allowed to "
-                         f"edit that playlist. Re-export a fresh cookie and start again; "
-                         f"if it repeats with a fresh cookie it is a permission answer, "
-                         f"not an expired one.")}
+                "hint": (f"YouTube Music answered the write with HTTP {code} {named}, which "
+                         f"is an auth-class refusal and nothing more: the session may have "
+                         f"expired, this account may not be allowed to edit that playlist (a "
+                         f"permission answer), or the playlist may no longer be reachable "
+                         f"from this account. Nothing here can tell those apart, and sending "
+                         f"again does not prove which one it was. If a safe recovery record "
+                         f"exists for this source, follow its own guidance — it knows which "
+                         f"copies were proved; otherwise preserve the playlist as it stands "
+                         f"and check it before adding anything by hand. Do not start a new "
+                         f"transfer over this source: with no record it cannot know which "
+                         f"copies already landed.")}
     if code == "404":
         return {"kind": "write",
                 "hint": ("YouTube Music answered HTTP 404 for that playlist id — it was "
-                         "deleted, or the id is stale. Reset this run before starting "
-                         "again.")}
+                         "deleted, or the id is stale, and nothing here can tell which. "
+                         "Check the playlist and the record that names it before anything "
+                         "else: keep both as they are, do not reset the run or delete a "
+                         "record to clear this error, because the record is the only account "
+                         "of what was already sent.")}
     if code == "400":
         return {"kind": "write",
                 "hint": ("YouTube Music rejected the write with HTTP 400 — the request "
-                         "was refused as sent. Copy this error line to the agent.")}
+                         "was refused as sent. Keep the record and the playlist as they "
+                         "are, then copy this error line to the agent.")}
     return {"kind": "unknown",
             "hint": ("YouTube Music refused the write and the status carries no code this "
                      "app reads — copy this error line to the agent.")}
@@ -2036,33 +2046,77 @@ def _settings_payload(cur: dict) -> dict:
             out[k] = cur.get(k) or ""
     return out
 
-def clear_created(spotify_id: str = "") -> None:
-    """Forget the local created-playlist record(s) (created.json).
+def clear_created(spotify_id: str = "") -> bool:
+    """Forget the local created-playlist record(s) (created.json). -> True only when the
+    record that was asked for is gone from disk (a missing file counts as gone).
 
     LOCAL ONLY: this forgets which YTM playlist ids belong to which
     Spotify ids. It never calls any YTM endpoint, so the remote
     playlists are untouched — a later transfer of the same Spotify
     link simply creates fresh instead of resuming/topping up.
     When spotify_id is given, only that key is dropped; other
-    playlists keep their resume record. Missing file is success
-    (already clear)."""
+    playlists keep their resume record.
+
+    A rewrite that fails returns False and leaves the record as it was: the file is the
+    only copy of the plan and the playlist link, so a caller that reports "reset" must be
+    able to tell a record it removed from one still sitting there."""
     if spotify_id:
-        created = load_created()
+        created = load_created()          # RecordUnreadable propagates: nothing is removed
         if created.pop(spotify_id, None) is None:
-            return
-        save_created(created)
-        return
+            return True
+        if not save_created(created):
+            blog("reset", f"{spotify_id[:40]} record not rewritten - it is unchanged")
+            return False
+        return True
     try:
         os.remove(CREATEDF)
+        return True
     except FileNotFoundError:
-        pass
-    except Exception:
-        pass
+        return True
+    except Exception as e:
+        blog("reset", f"created record not removed: {type(e).__name__}")
+        return False
 
 class RecordUnreadable(RuntimeError):
     """created.json exists but cannot be read or parsed. Distinct from an empty record:
     a run that mistook this for "no record" would create a second playlist over the
     record it could not read, and then overwrite it."""
+
+
+class FatalAppend(RuntimeError):
+    """YouTube Music answered the CALL with a verdict (400/401/403/404) and the run could
+    not prove the playlist afterwards, so no result dict carries the status out.
+
+    The status travels on the exception because the sentence that says "the rest could
+    not be verified" is true of a dead cookie, a dead connection and a short read alike -
+    reporting only that sentence hides the one thing the server actually said. kind/hint
+    come from `_write_verdict`, which reads the status alone and picks no cause.
+
+    `outcomes` is the sender's own {plan position: status}. It rides along so the rows can
+    be settled by what the server said per copy instead of being flattened into one
+    "unverified" sentence: a copy that came back refused is refused, a copy that may have
+    been applied stays unknown, and a copy never sent stays unsent."""
+
+    def __init__(self, status: str, message: str, outcomes=None):
+        super().__init__(message)
+        self.status = str(status or "")
+        self.outcomes = {}
+        for k, v in (outcomes or {}).items():
+            try:
+                self.outcomes[int(k)] = str(v or "")
+            except (TypeError, ValueError):
+                continue
+
+
+def _raise_outcome(msg: str, attempts) -> None:
+    """Stop a run that cannot prove its playlist: raise the fatal verdict when the appends
+    carried one, else the plain reason. Nothing is written here - the record already holds
+    the write-ahead, and a stopped run must leave it exactly as it is."""
+    fatal = sorted({str(s) for s in (attempts or {}).values() if is_fatal_status(s)})
+    if fatal:
+        raise FatalAppend(fatal[0], f"YouTube Music refused the append with {fatal[0]} — {msg}",
+                          outcomes=attempts)
+    raise RuntimeError(msg)
 
 
 # The record's own version. A record written by this app always carries it (save_created
@@ -2377,11 +2431,6 @@ def yt_playlist_entries(plid: str, yt_cookie: str):
     Reads playlist rows only — not recommendations or headers — so this is the real
     playlist length, unlike a bare videoId regex over the whole reply."""
     return yt_playlist_read(plid, yt_cookie)["entries"]
-
-def yt_playlist_count(plid: str, yt_cookie: str) -> int:
-    """Entries on the playlist. 0 on any failure."""
-    entries = yt_playlist_entries(plid, yt_cookie)
-    return len(entries) if entries is not None else 0
 
 def _is_transport_text(s: str) -> bool:
     t = (s or "").lower()
@@ -3141,6 +3190,13 @@ def _reconcile(video_ids, entries, attempts: dict, complete: bool = True) -> lis
                         "status": ("outcome unknown — check the playlist, then add by "
                                    "hand; not re-sent")[:80]})
             continue
+        if is_fatal_status(st):
+            # A verdict on the CALL is a refusal, and it does not depend on how much of
+            # the playlist was read: the server answered and the copy was not added.
+            # Filing it under "the read stopped short" instead hid the refusal - the
+            # counts said "0 refused", which is the opposite of what arrived.
+            out.append({"i": i + 1, "videoId": v, "outcome": "rejected", "status": st[:80]})
+            continue
         if not complete:
             out.append({"i": i + 1, "videoId": v, "outcome": "missing", "unverified": True,
                         "status": (f"unverified — read-back stopped after {len(entries or [])} "
@@ -3341,12 +3397,17 @@ def _append_verify(plid, video_ids, todo, yt_cookie, hooks, entries, complete, f
     read is evidence about its own pages, and the final ledger accounts for that
     once, in the open - it never moves the live "added" counter mid-run.
 
-    -> (attempts, entries|None, complete: bool, expected_min: int), where attempts
+    -> (attempts, entries, complete: bool, expected_min: int), where attempts
     is {position: status} for every copy this call sent, and `expected_min` is the
     least number of entries the playlist must hold now: every copy the server
     accepted, on top of what the authorising read proved. A caller that repairs
     the playlist later must start from that floor, or a stale read can authorise
     it to re-send the plan.
+
+    `entries` is the read it was GIVEN, or the last good read-back, and is never None:
+    a failed read-back clears `complete` and leaves the previous read in place, because
+    "the read died" and "the playlist is empty" are different facts. Callers guard the
+    first read themselves; there is no third state to report here.
 
     With `spotify_id`, each slice is written ahead: its positions go on disk before
     the first add goes out, and the floor and any unknown outcome replace them after
@@ -3602,6 +3663,41 @@ def _stop_rows_locked(msg: str) -> None:
         row["row_seq"] = RUN["seq"]
     _run_counts_locked()
 
+def _settle_verdict_rows_locked(outcomes, row_of_pos) -> int:
+    """Give every row whose append came back with a VERDICT its own terminal state, before
+    `_stop_rows_locked` flattens whatever is still open into "unverified".
+
+    A 400/401/403/404, a plain FAILED, or a duplicate toast is the server saying it did not
+    add that copy: the row is `refused` (or `duplicate`), and calling it unverified while
+    the status beside it says 401 is a contradiction inside one row. Anything else - an
+    accepted add no complete read proved, or an unknown reply - is left open on purpose, so
+    `_stop_rows_locked` keeps it unknown rather than inventing a refusal.
+
+    Returns how many rows were settled. The caller holds _RUN_LOCK."""
+    n = 0
+    for pos, st in (outcomes or {}).items():
+        s = str(st or "")
+        dup = "DUPLICATE" in s.upper()
+        if not dup and not is_fatal_status(s) and "FAILED" not in s.upper():
+            continue
+        try:
+            k = row_of_pos(int(pos))
+        except (TypeError, ValueError):
+            continue
+        if k is None:
+            continue
+        row = RUN["rows"][k]
+        if row.get("state") in ("landed", "refused", "duplicate", "missing", "skipped"):
+            continue
+        row["state"] = "duplicate" if dup else "refused"
+        row["status"] = s[:80]
+        row.pop("unverified", None)
+        row.pop("unsure", None)
+        RUN["seq"] += 1
+        row["row_seq"] = RUN["seq"]
+        n += 1
+    return n
+
 def yt_delete_playlist(plid: str, yt_cookie: str) -> bool:
     try:
         body = json.dumps({"context": {"client": CLIENT}, "playlistId": plid}).encode()
@@ -3753,9 +3849,6 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
     # accounts for is answered, and only the ids it does not account for stay unknown.
     # "Accounts for" is measured against the multiplicity the unknown was recorded with,
     # so a plan that later shrinks cannot answer it with a single visible copy.
-    inline_need = {v: video_ids.count(v) for v in dup_ids}
-    inline_ids = _unresolved_ids(dup_ids, first if first_complete else None,
-                                 need=inline_need)
     # Which inline copies a COMPLETE read does NOT account for. An inline copy the read
     # does not show is not a copy the create failed to write - the create's reply named
     # the playlist, so the batch was taken - and it is not a copy that was never sent.
@@ -3816,8 +3909,10 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
             on_phase("verify")
         except Exception:
             pass
-    if entries is None:
-        raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (final read-back failed)")
+    # `_append_verify` returns the read it was given, never None: a failed read-back only
+    # clears `complete`. The guard that used to sit here could not fire, and its sentence
+    # ("final read-back failed") was a second way to lose the reason the run stopped.
+    # `first is None` above is the real gate, and it stays.
     # The inline copies a repeat made unattributable are carried as unknown outcomes,
     # so a read that does not show one files it unverified (with the manual recovery)
     # rather than as a proven absence this run would send again.
@@ -3841,11 +3936,18 @@ def _create_new(yt_cookie, title, description, video_ids, privacy, spotify_id, h
     if not added:
         if _proven_empty(plid, yt_cookie, entries, entries_complete):
             cleaned = yt_delete_playlist(plid, yt_cookie)
-            raise RuntimeError("nothing landed (playlist reads back empty"
-                               + (", husk deleted" if cleaned else ", husk cleanup failed — delete it manually")
-                               + f"). {rejected} refused by YTM, {missing} missing — see server.log add lines")
-        raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified "
-                           f"({rejected} refused by YTM, {missing} missing — see server.log add lines)")
+            _raise_outcome("nothing landed (playlist reads back empty"
+                           + (", husk deleted" if cleaned else ", husk cleanup failed — delete it manually")
+                           + f"). {rejected} refused by YTM, {missing} missing — see server.log add lines",
+                           attempts)
+        # A dead cookie makes the read-back fail too, so the sentence about an
+        # unverified rest is all this path could say - and it used to say exactly that
+        # while the 401 that caused it went unreported, under a hint that guessed the
+        # cookie had the wrong scope. The verdict travels now.
+        _raise_outcome(f"the playlist is at {url} and the rest of what was sent could not be "
+                       f"verified ({rejected} refused by YTM, {missing} unverified because the "
+                       f"read-back that follows used the same auth — see server.log add lines)",
+                       attempts)
     return {"playlistId": plid, "url": url,
             "added": added, "sent": len(video_ids), "rejected": rejected,
             "missing": missing, "duplicates": duplicates, "repeats": repeats, "ledger": ledger,
@@ -3934,8 +4036,8 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
             on_phase("verify")
         except Exception:
             pass
-    if entries2 is None:
-        raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified (final read-back failed)")
+    # As in `_create_new`: the sender returns the read it was given, so this guard could
+    # not fire; `entries is None` above is the real gate.
     ledger = _reconcile(video_ids, entries2, attempts, entries2_complete)
     added, rejected, missing, duplicates = _ledger_counts(ledger)
     repeats = _repeat_count(video_ids, version_sigs)
@@ -3946,11 +4048,14 @@ def _resume_incomplete(rec, yt_cookie, title, video_ids, spotify_id, hooks=None,
     if not added:
         if _proven_empty(plid, yt_cookie, entries2, entries2_complete):
             cleaned = yt_delete_playlist(plid, yt_cookie)
-            raise RuntimeError("nothing landed (playlist reads back empty"
-                               + (", husk deleted" if cleaned else ", husk cleanup failed — delete it manually")
-                               + f"). {rejected} refused by YTM, {missing} missing — see server.log add lines")
-        raise RuntimeError(f"playlist created at {url} — inline copy landed but the rest could not be verified "
-                           f"({rejected} refused by YTM, {missing} missing — see server.log add lines)")
+            _raise_outcome("nothing landed (playlist reads back empty"
+                           + (", husk deleted" if cleaned else ", husk cleanup failed — delete it manually")
+                           + f"). {rejected} refused by YTM, {missing} missing — see server.log add lines",
+                           attempts)
+        _raise_outcome(f"the playlist is at {url} and the rest of what was sent could not be "
+                       f"verified ({rejected} refused by YTM, {missing} unverified because the "
+                       f"read-back that follows used the same auth — see server.log add lines)",
+                       attempts)
     return {"playlistId": plid, "url": url,
             "added": added, "sent": len(video_ids), "rejected": rejected,
             "missing": missing, "duplicates": duplicates, "repeats": repeats,
@@ -4104,8 +4209,8 @@ def transfer_create_append(yt_cookie, title, description, video_ids, privacy="PR
                             on_phase("verify")
                         except Exception:
                             pass
-                    if entries2 is None:
-                        raise RuntimeError(f"playlist topped up at {rec.get('url')} — appends sent but the rest could not be verified (final read-back failed)")
+                    # Same invariant as above: the sender returns the read it was given,
+                    # and `entries` was already normalised to a list before the call.
                     ledger = _reconcile(ids, entries2, attempts, entries2_complete)
                     added, rejected, missing, duplicates = _ledger_counts(ledger)
                     todo_set = set(todo)
@@ -4980,6 +5085,12 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
         except Exception as e:
             msg = f"{type(e).__name__}: {e}"
             c = classify(msg)
+            if isinstance(e, FatalAppend):
+                # The run stopped on a verdict YouTube Music gave: report that verdict,
+                # not a sentence about a failed read. kind/hint come from the status
+                # alone, through the same mapping a completed run uses, so a dead cookie
+                # cannot arrive as a guess about the cookie's scope.
+                c = _write_verdict(e.status)
             with _RUN_LOCK:
                 if RUN.get("id") != run_id:
                     return
@@ -4990,6 +5101,12 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
                 RUN["error"] = msg[:300]
                 RUN["hint"] = c.get("hint", "")
                 RUN["kind"] = c.get("kind", "unknown")
+                if isinstance(e, FatalAppend) and e.outcomes:
+                    # The copies this run actually sent are settled by their own verdict:
+                    # a refused append is a refused row, not an unverified one. Everything
+                    # else stays as the sender left it - unknown where a write may have
+                    # landed, unsent where nothing was ever asked for.
+                    _settle_verdict_rows_locked(e.outcomes, _row_of_pos)
                 # A row whose add may already be applied is unverified, never
                 # skipped, and the counters are recounted from those rows.
                 _stop_rows_locked(msg)
@@ -5207,6 +5324,12 @@ def _transfer_thread(url, yt_cookie, title, privacy, run_id):
     except Exception as e:
         msg = f"{type(e).__name__}: {e}"
         c = classify(msg)
+        if isinstance(e, FatalAppend):
+            # The run stopped on a verdict YouTube Music gave: report that verdict, not a
+            # sentence about a failed read. kind/hint come from the status alone, through
+            # the same mapping the completed run uses, so a dead cookie cannot arrive as
+            # a guess about the cookie's scope.
+            c = _write_verdict(e.status)
         with _RUN_LOCK:
             try:
                 if RUN.get("id") == run_id:
@@ -5251,8 +5374,68 @@ def _latest_incomplete():
             continue
     return None
 
+# Binding to 127.0.0.1 is not access control. Every page in the user's own browser can
+# address http://127.0.0.1:8787, and a name that resolves to loopback (DNS rebinding)
+# reaches this server under its own Host while the browser still treats it as that
+# site's origin - so a Host/Origin check is what separates this app's own page from a
+# page that decided to talk to it. Neither check can tell two processes of the same
+# Windows user apart: a local program that speaks HTTP is not distinguishable here.
+_LOOPBACK_NAMES = ("127.0.0.1", "localhost", "::1")
+_BLOCKED = set()   # (method, reason) already written to the log
+
+def _host_name(value: str) -> str:
+    """Host part of a Host header or URL authority: lowercased, brackets and port removed."""
+    h = (value or "").strip().lower()
+    if not h:
+        return ""
+    if h.startswith("["):                    # [::1]:8787
+        end = h.find("]")
+        h = h[1:end] if end != -1 else h[1:]
+    elif h.count(":") == 1:                  # 127.0.0.1:8787
+        h = h.split(":", 1)[0]
+    return h.rstrip(".")
+
+def _origin_is_local(origin: str, port: int) -> bool:
+    """True only for this server's own page: a loopback host on this server's port."""
+    try:
+        parts = urllib.parse.urlsplit(origin)
+        got = parts.port
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https"):
+        return False                         # "null", file:, chrome-extension:, ...
+    if _host_name(parts.netloc) not in _LOOPBACK_NAMES:
+        return False
+    return (got or (443 if parts.scheme == "https" else 80)) == int(port)
+
+def request_is_local(headers, port: int) -> tuple:
+    """(allowed, reason) for one request. Both halves are needed: Host refuses a page whose
+    own name was pointed at loopback (it must name loopback, and a DNS name never can), and
+    Origin refuses a browser write sent from another site to this one. A request with no
+    Origin is not a browser cross-site write - the native shell, the build smoke test and
+    a command-line client send none - so it is allowed, which is a deliberate limit rather
+    than isolation from local software."""
+    if _host_name(headers.get("Host", "")) not in _LOOPBACK_NAMES:
+        return False, "host"
+    origin = (headers.get("Origin") or "").strip()
+    if origin and not _origin_is_local(origin, port):
+        return False, "origin"
+    return True, ""
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
+    def local_only(self) -> bool:
+        """Refuse anything that is not this app's own page, before the route runs."""
+        allowed, why = request_is_local(self.headers, self.server.server_address[1])
+        if not allowed:
+            # One line per (method, reason): a page that keeps knocking must not be able
+            # to grow the audit log by making this server write to it.
+            key = (self.command, why)
+            if key not in _BLOCKED:
+                _BLOCKED.add(key)
+                blog("block", f"{self.command} {self.path.split('?')[0][:60]} rejected: {why}")
+            self.send_json({"ok": False, "error": "not a local request"}, 403)
+        return allowed
     def send_json(self, obj, code=200):
         b = json.dumps(obj).encode()
         self.send_response(code)
@@ -5261,6 +5444,8 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b)
     def do_GET(self):
+        if not self.local_only():
+            return
         if self.path in ("/", "/index.html"):
             p = os.path.join(HERE, "index.html")
             with open(p, "rb") as f:
@@ -5347,6 +5532,8 @@ class H(BaseHTTPRequestHandler):
         else:
             self.send_json({"error": "not found"}, 404)
     def do_POST(self):
+        if not self.local_only():
+            return
         n = int(self.headers.get("Content-Length", 0))
         if n > 2_000_000:
             return self.send_json({"ok": False, "error": "body too large"}, 413)
@@ -5490,14 +5677,41 @@ class H(BaseHTTPRequestHandler):
                 if run_is_live():
                     return self.send_json({"ok": False, "error": "a transfer is already running"}, 409)
                 run_reset()
-                clear_created(str(payload.get("spotify_id", "") or "").strip())
+                if not clear_created(str(payload.get("spotify_id", "") or "").strip()):
+                    # The run state is cleared, the record is not. Say only that: a record
+                    # can be blocked or non-resumable, and an empty spotify_id concerns
+                    # every record, so no sentence here may promise what a later transfer
+                    # will do with it.
+                    # reset_partial is the contract the page keys on: the sentence below can
+                    # be reworded without changing behaviour, and a caller that does not
+                    # understand the field falls back to reading the 500 as unexplained.
+                    return self.send_json(
+                        {"ok": False,
+                         "reset_partial": True,
+                         "error": "the run was cleared, but the playlist record could not "
+                                  "be cleared - it is unchanged and may still be used on a "
+                                  "later transfer"}, 500)
                 blog("reset", "run + created link cleared; settings/vault/watch kept")
                 return self.send_json({"ok": True})
             if self.path == "/api/vault":
+                # Flags, lengths and timestamps only. This route used to spread the vault
+                # dict into its body, which published both cookie values in plaintext.
+                # Nothing reads a value from here: the page uses /api/cookies, which
+                # never carried one.
                 v = vault_load()
-                return self.send_json({"ok": True, "has_sp": bool(v["sp_cookie"]),
-                                       "has_yt": bool(v["yt_cookie"]),
-                                       "yt_state": (v.get("state") or {}).get("yt", "none"), **v})
+                meta = v.get("meta") if isinstance(v.get("meta"), dict) else {}
+                state = v.get("state") if isinstance(v.get("state"), dict) else {}
+                return self.send_json({
+                    "ok": True,
+                    "has_sp": bool(v.get("sp_cookie")),
+                    "has_yt": bool(v.get("yt_cookie")),
+                    "sp_len": len(v.get("sp_cookie") or ""),
+                    "yt_len": len(v.get("yt_cookie") or ""),
+                    "sp_state": state.get("sp", "none"),
+                    "yt_state": state.get("yt", "none"),
+                    "state": {k: state.get(k) for k in ("sp", "yt")},
+                    "meta": {k: dict(meta.get(k) or {}) for k in ("sp", "yt")},
+                    "refreshed": list(v.get("refreshed") or [])})
             if self.path == "/api/latch":
                 if "yt_cookie" in payload and not normalize_cookie(str(payload.get("yt_cookie") or "")):
                     blog("latch", "yt empty rejected")

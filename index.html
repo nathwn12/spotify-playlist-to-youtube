@@ -27,6 +27,15 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
 .brand{width:26px;height:26px;border-radius:7px;background:#060706;border:1px solid var(--line2);
   display:grid;place-items:center;flex:0 0 26px;font:800 14px/1 var(--sans);color:var(--tx);position:relative}
 .brand::after{content:"\25B6";font-size:8px;color:var(--grn);position:absolute;right:2px;top:1px}
+/* The running version: chrome, one small dim token beside the brand. It is never a
+   second status - the pill owns that. It is fixed in the row (no grow, no shrink), so
+   a longer version clips at 16ch instead of squeezing the pill or the buttons, and it
+   adds no height: it sits on the bar's own line and moves nothing below it. The pill
+   starts one token later than it used to, which is where this label now lives. Empty
+   until /health answers, so the bar never claims a number the page was not told. */
+#appver{font:600 11px var(--mono);color:var(--dim);letter-spacing:.02em;flex:0 0 auto;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:16ch}
+#appver[hidden]{display:none}
 #ytchip{display:flex;align-items:center;gap:8px;border:1px solid var(--grn);border-radius:99px;
   padding:6px 12px;font:600 12px var(--sans);color:var(--grn);text-decoration:none;
   white-space:nowrap;max-width:min(46vw,100%);min-width:0;overflow:hidden;text-overflow:ellipsis;flex:0 1 auto}
@@ -214,6 +223,17 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
 /* sticky footer: phase + elapsed/rate/remaining, key hints, Detach/Start pair */
 .actionbar{display:flex;align-items:center;gap:8px;padding:12px 16px;
   border-top:1px solid var(--line);background:var(--panel);flex-wrap:wrap;min-width:0}
+/* The unresolved-reset warning gets its own full-width row above the status line, and it is
+   never truncated: #phaseline is deliberately one line with an ellipsis, so a warning living
+   there is clipped at narrow widths, and a title tooltip is neither reachable by keyboard nor
+   read by most screen readers. This region wraps to as many lines as it needs at any width, is
+   focusable and is announced when it appears. It is painted from S.lock alone, so a poll that
+   repaints the status line - pollOnce clears S.pin on a done or failed payload - cannot hide
+   it. */
+#lockwarn{flex:1 1 100%;align-self:stretch;background:var(--panel2);border:1px solid var(--amb);
+  border-left-width:3px;border-radius:6px;padding:8px 10px;color:var(--tx);
+  font:500 12.5px/1.45 var(--sans);white-space:normal;overflow-wrap:anywhere}
+#lockwarn[hidden]{display:none}
 #phaseline{font:600 12px var(--mono);color:var(--mut);font-variant-numeric:tabular-nums;
   flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .keys{font:500 10.5px var(--sans);line-height:16px;color:var(--dim);flex:1 1 auto;min-width:0;
@@ -272,6 +292,7 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
 <body>
 <header class="topbar">
   <span class="brand" aria-hidden="true">Y</span>
+  <span id="appver" hidden></span>
   <a id="ytchip" hidden href="" target="_blank" rel="noopener"></a>
   <span id="statepill" class="on" role="status"><span class="pdot" aria-hidden="true"></span><span class="ptxt">Idle</span></span>
   <button id="retrybtn" type="button" hidden title="End the wait and verify the playlist now">Retry now</button>
@@ -312,7 +333,7 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
     </div>
     <button id="morebtn" class="morebtn" type="button">More options</button>
   </aside>
-  <section class="work" aria-label="Transfer ledger">
+  <main class="work" aria-label="Transfer ledger">
     <div class="totals">
       <div id="bignum" data-den="?" aria-live="polite" title="0 added — total not read yet">0</div>
       <div id="breakdown">paste a link to begin</div>
@@ -325,9 +346,10 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
       <button class="fbtn" type="button" data-f="all" aria-pressed="true">all 0</button><button class="fbtn" type="button" data-f="added" aria-pressed="false">added 0</button><button class="fbtn" type="button" data-f="skipped" aria-pressed="false">skipped 0</button><button class="fbtn" type="button" data-f="duplicate" aria-pressed="false" hidden>duplicate 0</button><button class="fbtn" type="button" data-f="refused" aria-pressed="false">refused 0</button><button class="fbtn" type="button" data-f="notverified" aria-pressed="false">unverified 0</button><button class="fbtn" type="button" data-f="pending" aria-pressed="false">pending 0</button>
     </div>
     <div id="ledger" tabindex="0" role="log" aria-label="Track ledger"><div id="pad"></div><div id="zerostate"><strong>Paste a Spotify playlist link, then press Ctrl+Enter.</strong><br>Tracks land here as they resolve; anything that fails says why.</div></div>
-  </section>
+  </main>
 </div>
 <footer class="actionbar">
+  <div id="lockwarn" role="alert" tabindex="0" hidden></div>
   <span id="phaseline">paste a Spotify link, then Ctrl+Enter</span>
   <span class="keys"><kbd>Ctrl K</kbd> palette · <kbd>Ctrl Enter</kbd> start · <kbd>Esc</kbd> detach · <kbd>Alt 1–6</kbd> filter · <kbd>/</kbd> link</span>
   <span class="pair"><button class="go ghost" id="stopbtn" type="button" disabled>Detach</button><button class="go ghost" id="clearbtn" type="button">Clear</button><button class="go" id="startbtn" type="button">Start transfer</button></span>
@@ -375,6 +397,7 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:14px
 const $=id=>document.getElementById(id);
 const chip=$("ytchip"),pill=$("statepill"),newbtn=$("newbtn"),retryBtn=$("retrybtn"),big=$("bignum"),brk=$("breakdown"),rule=$("rule");
 const ledger=$("ledger"),pad=$("pad"),zero=$("zerostate"),phaseEl=$("phaseline");
+const lockEl=$("lockwarn");
 const startB=$("startbtn"),stopB=$("stopbtn"),clearB=$("clearbtn"),pname=$("pname");
 /* One lookup for the outcome chips: they are rewritten often enough that a
    document-wide query per paint is pure churn. */
@@ -403,6 +426,21 @@ const S={runId:"",since:0,phase:"idle",total:0,declared:0,matched:0,landed:0,ref
   missing:0,attempted:0,created:false,existing:false,url:"",title:"",summary:"",playlist_count:0,
   rows:new Map(),filter:"all",timer:null,tick:null,fails:0,lastOk:Date.now(),ceil:0,
   localT0:0,aborted:false,privacy:"PRIVATE",deadNoted:false,hist:[],interrupted:null,
+  /* Set when a reset ends unresolved: a session-wide lock on reset and start. In memory
+     only - a reload starts with none (see setLock for why that is not a recovery). */
+  lock:null,
+  /* True from the moment a reset is sent until its terminal decision: the reset is a
+     two-step write on the server, so nothing else may ride alongside it. */
+  resetBusy:false,
+  /* A transfer request that is out and unanswered, and the record of one whose reply was lost:
+     {sid, why}. No /api/run snapshot can clear it - a delayed POST can arrive after any read,
+     and a run for the same playlist may predate the request - so it is a session lock on reset
+     AND start, cleared only by evidence tied to this request (an idempotency key the backend
+     would have to echo; the API carries none). A read may still be shown, run and all. */
+  startBusy:false,startUnknown:null,
+  /* Which screen a /api/run response belongs to. See pollOnce: unpoll clears the interval, not
+     a request already in flight. */
+  pollGen:0,
   follow:true,_prog:0,yt:{},ytState:"none",ytHelp:"",detected:null,
   counts:null,rev:0,
   /* the run's own state machine, straight off /api/run: phase is a label now,
@@ -481,6 +519,41 @@ function pvIdleLine(){
   if(PVP.has(u))return"Ctrl+Enter starts now — previewing the playlist, a long list answers in tens of seconds";
   if(PV.err)return`Ctrl+Enter still starts — the playlist preview could not be read (${PV.err})`;
   return"link loaded — Ctrl+Enter to start";}
+/* The running version, from the running server. GET /health answers {ok, version}
+   with backend.py's APP_VERSION, so this is the version actually serving the page -
+   never a copy of that number in the markup, which would keep reporting what the
+   page was written against after an upgrade and turn a silent version mismatch into
+   a feature that looks right. The label is chrome, not status: one small dim token
+   beside the brand, the whole sentence in its title. A read that cannot answer, or
+   that answers without a version, says so instead of leaving a plausible number on
+   screen; the page does not retry, because a server that is up answers this route in
+   milliseconds and a reload is the honest way to ask again. */
+const verEl=$("appver");
+const VER_UNREAD="version unread";
+function verText(v){
+  const s=String(v==null?"":v).trim().replace(/\s+/g," ").slice(0,24);
+  return s?`v${s.replace(/^v/i,"")}`:"";}
+function verPaint(text,why){
+  if(!verEl)return;
+  if(verEl.textContent!==text)verEl.textContent=text;
+  if(verEl.title!==why)verEl.title=why;
+  verEl.hidden=!text;}
+async function readVersion(){
+  const c=new AbortController(),t=setTimeout(()=>c.abort(),10000);
+  let r=null;
+  try{
+    const res=await fetch("/health",{signal:c.signal});
+    if(!res||!res.ok)throw new Error("HTTP "+((res&&res.status)||"?"));
+    r=await res.json();
+  }catch(e){
+    verPaint(VER_UNREAD,`the version could not be read: /health did not answer (${pvReason(null,e)}), so the version running now is unknown`);
+    return;
+  }finally{clearTimeout(t);}
+  const txt=verText(r&&r.version);
+  if(!txt){
+    verPaint(VER_UNREAD,"the version could not be read: /health answered without a version, so the version running now is unknown");
+    return;}
+  verPaint(txt,`sp2yt ${txt} — the version this server reports on /health`);}
 const bumpRows=()=>{S.rev++;};
 const mmss=ms=>{const s=Math.max(0,Math.round(ms/1000));
   return String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");};
@@ -600,17 +673,20 @@ function seenPhrase(){const n=seenNow();
   const uncredited=n-landedNow();
   return uncredited>0?`${n} entries seen in the playlist — ${uncredited} not credited to this run`
     :`${n} entries seen in the playlist`;}
-/* A refusal is the cookie's fault only when the payload says so. `reason` is a fixed
-   sentence ("append refused by YouTube Music") with no status in it, so the page may
-   not add a 401 to it: `kind`, `error` and `hint` are the fields that carry a status,
-   and their absence means the cause is unknown, not auth. Nor does the page promise
-   that starting again resumes the same playlist - only the backend can know that. */
+/* A 401 is a fact about one reply, never a diagnosis. The endpoint is unofficial, so the
+   status can mean an expired session, a wrong account, or a refusal this page cannot tell
+   apart, and no field here settles which. So the line repeats the one thing the payload
+   establishes - YouTube Music answered 401 - and only when that code is actually in the
+   server's own words: prose that merely sounds like a login problem is not a 401 and must
+   not become one. It names no cause and offers no reconnect-and-retry, because a write may
+   already have landed and the record is what proves where the run stopped: keep the
+   existing playlist and the record, and check that playlist before another transfer. */
 function authSay(){
-  const w=[S.kind,S.error,S.hint,S.reason].filter(Boolean).join(" ");
-  if(!/401|unauthori[sz]ed|sapisid|login rejected|cookie expired|session expired/i.test(w))
-    return"";
-  return` · the cookie was rejected${/\b401\b/.test(w)?" (HTTP 401)":""}`
-    +" — reconnect YouTube Music above, then start the transfer again";}
+  const w=[S.error,S.hint].filter(Boolean).join(" ");
+  if(!/\b401\b/.test(w))return"";
+  return" · YouTube Music returned HTTP 401"
+    +" — keep the existing playlist and this run's record: check that playlist in YouTube Music "
+    +"before another transfer writes to it, so nothing is written twice";}
 function noStatusSay(){
   if(S.kind||S.error||S.hint)return"";
   return" · no status was reported, so a refused cookie cannot be told from a refused track here";}
@@ -916,7 +992,7 @@ function render(){
         if(nt!==cur){S._prog++;ledger.scrollTop=nt;}}
     }
   }
-  paintCounter();paintFacts();paintPill();
+  paintCounter();paintFacts();paintPill();paintLock();
   /* The counts row is the widest churn in the page; it is rebuilt only when the
      server's numbers actually changed, which spares innerHTML on every scroll. */
   const ch=countsLine();
@@ -1043,13 +1119,24 @@ function showInterrupted(inc){
   render();
 }
 async function pollOnce(){
+  /* The generation this response belongs to. unpoll() stops the interval but not a request
+     already in flight, and an earlier run's payload would otherwise paint over a newer screen:
+     overwrite its rows and counts, or (on a done payload) halt the new run's polling. The
+     generation moves only when the screen is replaced - start, detach, reset - never on an
+     ordinary poll or a re-attach, so overlapping polls inside one run still apply. */
+  const gen=S.pollGen;
   let t=null;
   try{
     const c=new AbortController();t=setTimeout(()=>c.abort(),10000);
     const r=await fetch("/api/run?since="+S.since,{signal:c.signal});
     const d=await r.json();clearTimeout(t);t=null;
+    if(gen!==S.pollGen)return;
     S.fails=0;S.lastOk=Date.now();S.deadNoted=false;
     if(!d.ok)return;
+    /* Nothing here clears S.startUnknown. A run this read shows may be the one a lost request
+       created, or one that predates it, and a request can still arrive after this read: no
+       snapshot in /api/run is tied to that request, so it can display a run but must not
+       re-open reset or start. */
     if(d.interrupted&&!d.run_id&&S.phase==="idle"){showInterrupted(d.interrupted);return;}
     mergeRun(d,false);if(S.state==="standby")tickStart();render();
     if(LIVE.has(d.phase)){setRunning(true);setPhase(d.phase);S.pin=null;S.pinTitle="";S.interrupted=null;paintChip();render();}
@@ -1060,6 +1147,9 @@ async function pollOnce(){
         :d.hint?`stopped — ${d.hint}`:`stopped — copy the error from the title`;
       S.pinTitle=d.error||"";render();}
   }catch(e){
+    /* A failure from a screen that no longer exists is not this screen's failure: it may not
+       count toward "server stopped answering" or set that pin. */
+    if(gen!==S.pollGen)return;
     S.fails++;
     if(S.fails>=3&&!S.deadNoted){S.deadNoted=true;halt();setRunning(false);
       const s=Math.round((Date.now()-S.lastOk)/1000);
@@ -1074,9 +1164,84 @@ async function postJSON(p,b,ms=25000){const c=new AbortController();
   try{const r=await fetch(p,{method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify(b),signal:c.signal});return r.json();}
   finally{clearTimeout(t);}}
+/* The unresolved-reset lock. A reset the page could not confirm leaves a record nothing here
+   can see: /api/run serves only an INCOMPLETE record, so "no run and no record" is not proof
+   the record is gone, and a complete one still names the playlist a new transfer would top up.
+   A reset that ends unresolved - a lost reply, an answered error that proves neither half, or a
+   read that names no record - therefore locks this session: no start and no reset is sent at
+   all, for any source. That is deliberately blunt. A per-source guard was wrong twice over: a
+   reset with an empty id clears EVERY record, so after one unresolved reset no source can be
+   shown safe, and one lock could replace another and quietly unguard the first. Nothing here
+   unlocks on a timer or a flag, and nothing claims the record is gone - only a person checking
+   the playlist settles it. The lock is in memory and lasts this session ONLY: a reload has
+   none, and a reload settles nothing either. A complete record is never served and a cleared
+   one is simply absent, so after a reload this page can neither show the record nor prove it
+   gone - reloading removes the protection without restoring anything. */
+function locked(){return !!S.lock;}
+function setLock(kept,why){
+  S.lock={url:(kept&&kept.url)||"",title:(kept&&kept.title)||"",why:why||""};}
+function holdSay(){
+  const h=S.lock||{};
+  const who=h.title?`“${h.title}”`:"that playlist";
+  S.pin="reset unresolved — this session will not reset or transfer anything again: a playlist "
+    +"record may still be on disk. This guard lasts this session, and a reload clears this guard "
+    +"without settling the record. Check the playlist in YouTube Music by hand.";
+  S.pinTitle="the reset for this source ended unresolved"+(h.why?` (${h.why})`:"")
+    +" — a complete playlist record is not served by /api/run, so a read that names no record is "
+    +"not proof that the record is gone. The guard is in memory for this session only: reloading "
+    +"the page clears it, and the reload neither restores nor clears the record - it may show "
+    +"nothing at all. Keep the link and the evidence, and check "+who+" in YouTube Music before "
+    +"another write.";
+  paintLock();
+  render();}
+/* The warning band the lock earns, painted from S.lock alone - never from S.pin, which the poll
+   owns. The status line is one ellipsised line, so it stays a short pointer; this region carries
+   the whole sentence, wraps at any width, and is reachable by keyboard (tabindex=0) and announced
+   when it appears (role=alert). */
+function paintLock(){
+  if(!lockEl)return;
+  let t="";
+  if(S.lock){
+    const h=S.lock, who=h.title?`“${h.title}”`:"its playlist";
+    t="Reset unresolved — this session will not reset or transfer anything again"
+      +(h.why?` (${h.why})`:"")
+      +". A playlist record from this run may still be on disk, and nothing on this page can prove "
+      +"it gone. The guard lasts this session only: reloading the page clears it without restoring "
+      +"or clearing the record, which may then show nothing at all. Keep the link and the evidence, "
+      +"and check "+who+" in YouTube Music before another write.";
+  }else if(S.startUnknown){
+    t="Transfer unanswered — the request to start this transfer was never answered"
+      +(S.startUnknown.why?` (${S.startUnknown.why})`:"")
+      +". Nothing on this page can prove the server did not accept it: the request can arrive late, "
+      +"and a run for the same playlist may predate it, so no read settles this. Nothing is reset "
+      +"or started again in this session. The guard lasts this session only: reloading the page "
+      +"clears it without resolving anything, and the run may exist and may already be writing. "
+      +"Check that playlist in YouTube Music before another write.";
+  }
+  if(!t){
+    if(lockEl.textContent!=="")lockEl.textContent="";
+    if(!lockEl.hidden)lockEl.hidden=true;
+    return;}
+  if(lockEl.textContent!==t)lockEl.textContent=t;
+  if(lockEl.hidden)lockEl.hidden=false;}
 async function startTransfer(){
   const url=$("srcurl").value.trim();
+  /* First, the one in-flight case that outranks everything: a transfer request that has been
+     sent and not answered. Its reply is what says whether a run exists, so nothing else may
+     step in front of it - not a second start, not a detach, not a reset. */
+  if(S.startBusy){
+    S.pin="a transfer request is already in flight — nothing is sent until it answers.";
+    S.pinTitle="";render();return;}
+  /* A lost reply is a session lock, not a question a read can answer: see the S.startUnknown
+     comment. Start is refused here too - a second request would answer only for itself. */
+  if(S.startUnknown){
+    S.pin="the transfer request was never answered — the server may still accept it, so this "
+      +"session starts and resets nothing; the run it may create is shown when it appears.";
+    S.pinTitle="";paintLock();render();return;}
   if(LIVE.has(S.phase)){poll();pollOnce();return;}
+  if(S.resetBusy){
+    S.pin="a reset is in progress — nothing is sent until it answers.";S.pinTitle="";render();return;}
+  if(locked()){holdSay();return;}
   if(!url){S.pin="paste a Spotify playlist URL first.";render();return;}
   /* The card owns the cookie. Without a usable file, start sends the user to
      the one control that fixes it instead of failing after the fetch. */
@@ -1086,13 +1251,29 @@ async function startTransfer(){
     card.classList.remove("needs");void card.offsetWidth;card.classList.add("needs");
     setTimeout(()=>card.classList.remove("needs"),2200);
     $("pickcookie").focus();return;}
+  /* A new screen: any poll still in flight from the previous run is retired here. */
+  S.pollGen++;
   setRunning(true);setPhase("spotify");S.pin=null;S.pinTitle="";
+  S.startBusy=true;S.startUnknown=null;
   let t;
   try{t=await postJSON("/api/transfer",{url,
     title:pname.dataset.custom||"",privacy:S.privacy});}
-  catch(e){setRunning(false);
-    S.pin="server did not answer — the playlist link shown stays valid; press Ctrl+Enter to re-attach.";
+  catch(e){
+    /* The reply was lost, so the server may still accept the request - even after a read that
+       shows no run - and a run for this playlist could also predate it. Nothing in /api/run
+       correlates a read with this request, so no snapshot can settle the doubt: this becomes a
+       session lock on reset and start, while the poll keeps showing whatever the server holds.
+       Only evidence tied to the request itself could clear it, and the API carries none. */
+    S.startUnknown={sid:spotifyIdOf(url),why:pvReason(null,e)};
+    setRunning(false);
+    /* The page has no evidence of a run, so it may not keep claiming one: the doubt lives in
+       startUnknown, and the poll below reports whatever the server actually holds. */
+    setPhase("idle");
+    S.pin="the transfer request was never answered — it may still be accepted; re-attaching to "
+      +"whatever the server reports, and nothing is reset or started again in this session.";
+    S.pinTitle=pvReason(null,e);
     render();poll();pollOnce();return;}
+  finally{S.startBusy=false;}
   if(!t.ok){
     if(t.run_id){S.pin="still running on the server — re-attached; the playlist link shown stays valid.";
       S.runId=t.run_id;render();poll();pollOnce();}
@@ -1116,8 +1297,19 @@ async function startTransfer(){
    Pressing Start re-attaches via the 409 run_id path. Real fix: POST
    /api/abort setting RUN["abort"], checked in _transfer_thread before each
    append; only then may this be called "Stop" again. */
-function abortRun(){if(!LIVE.has(S.phase))return;
-  unpoll();S.aborted=true;S.pin=null;S.pinTitle="";setRunning(false);setPhase("aborted");render();}
+function abortRun(){
+  /* Detach means "stop looking at this run", and neither of these lets the page say that:
+     a request in flight has no run yet, and a lost reply may have one the page has not
+     seen. Both keep polling instead of pretending. */
+  if(S.startBusy){
+    S.pin="a transfer request is still in flight — it cannot be detached until it answers.";
+    S.pinTitle="";render();return;}
+  if(S.startUnknown){
+    S.pin="the transfer request was never answered — re-attaching to whatever the server "
+      +"reports instead of detaching.";
+    S.pinTitle="";render();poll();pollOnce();return;}
+  if(!LIVE.has(S.phase))return;
+  S.pollGen++;unpoll();S.aborted=true;S.pin=null;S.pinTitle="";setRunning(false);setPhase("aborted");render();}
 /* Cover: real art when the backend has it, gradient only as fallback/pre-resolve.
    A failed load repaints this transparent pixel: WebView2 keeps painting the
    broken-image glyph when the src attribute is only removed. */
@@ -1151,34 +1343,164 @@ function clearLocal(){
   pname.textContent="no playlist yet — paste a link";pname.dataset.custom="";
   setRunning(false);setPhase("idle");paintChip();S._prog++;ledger.scrollTop=0;S.follow=true;S._prog--;render();
 }
+/* /api/reset is the one route whose HTTP status and structured fields the page must tell
+   apart, so it keeps the whole answer instead of reusing postJSON, which hands back the
+   body only. */
+async function postReset(body){
+  const c=new AbortController(),t=setTimeout(()=>c.abort(),15000);
+  try{
+    const res=await fetch("/api/reset",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(body),signal:c.signal});
+    let d=null;
+    try{d=await res.json();}catch(e){d=null;}
+    return {status:res.status,ok:!!(d&&d.ok),error:String((d&&d.error)||""),
+      data:d&&typeof d==="object"?d:null};
+  }finally{clearTimeout(t);}}
+/* The server's own word on what a reset left behind: the same read a reload makes.
+   null when it cannot answer, because a read that fails proves nothing. */
+async function readRun(){
+  const c=new AbortController(),t=setTimeout(()=>c.abort(),10000);
+  try{
+    const r=await fetch("/api/run?since=0",{signal:c.signal});
+    if(!r||!r.ok)return null;
+    return await r.json();
+  }catch(e){return null;}
+  finally{clearTimeout(t);}}
+/* Clear and New transfer. /api/reset drops the run and the created-playlist record in
+   two steps, and its answer says how far it got: 200 both are gone, 409 nothing was
+   cleared (a transfer owns the run), 500 the run WAS cleared and the record was not.
+   So the screen is cleared from the answer, never before it: clearing first made every
+   failure look like a fresh start, and a 500 hid a record that still resumes its
+   playlist behind an idle page. A reply that never arrives proves nothing about either
+   step, so the page asks the server what it holds now and claims only that - a run it
+   still reports, a record it names, or no run at all. The record is never called gone
+   from that read: a complete record is invisible to /api/run, only an incomplete one is
+   served, so absence there is not evidence of absence on disk. */
 async function doClear(){
+  /* An unanswered transfer outranks the reset: the server may still accept the request, so a
+     reset on top of it would race an outcome no read can settle. */
+  if(S.startBusy){
+    S.pin="a transfer request is still in flight — nothing is reset until it answers.";
+    S.pinTitle="";render();return;}
+  if(S.startUnknown){
+    S.pin="the transfer request was never answered, and no read can settle that — nothing is "
+      +"reset in this session.";S.pinTitle="";paintLock();render();return;}
   if(LIVE.has(S.phase))return;
+  if(locked()){holdSay();return;}
+  /* Serialized from initiation to terminal decision. /api/reset clears the run and then the
+     record, so a second reset or a start riding alongside it could clear a record whose
+     outcome the first one has not reported yet - and a success arriving on top of a failure
+     would then wipe the lock that failure had just earned. The flag is set before the first
+     await, so a click, a shortcut or a palette command in the same turn sees it. */
+  if(S.resetBusy){
+    S.pin="a reset is already in progress — nothing else is sent until it answers.";
+    S.pinTitle="";render();return;}
+  S.resetBusy=true;
+  try{
+  /* A reset replaces the screen too: a poll still in flight from the run it clears may not
+     repaint that run over the idle page. */
+  S.pollGen++;
   const sid=spotifyIdOf($("srcurl").value.trim())||(S.interrupted&&S.interrupted.spotify_id)||"";
+  /* The playlist the run was writing to, kept before the screen is cleared: it is a
+     fact about YouTube Music, and a reset never removes it. */
+  const kept={url:S.url,title:S.title};
   unpoll();
+  S.pin="clearing the run and its playlist record…";S.pinTitle="";render();
+  let res=null,fail="";
+  try{res=await postReset({spotify_id:sid});}catch(e){fail=pvReason(null,e);}
+  if(res&&res.ok){
+    /* Proven gone, so nothing is left to guard. This cannot erase a lock someone else set:
+       the checkout above admits one reset at a time, so no other reset can have run beside
+       this one, and a locked session never reaches this line at all. */
+    S.lock=null;
+    clearLocal();$("srcurl").focus();return;}
+  const said=res?(res.error||`the reset was answered with HTTP ${res.status}`):"";
+  if(res&&res.status===409){
+    /* Nothing was cleared and a run owns the server: show it again rather than an
+       empty page the server does not have. Its live line replaces this pin once the
+       run answers, which is the same fact in the run's own words. */
+    S.pin="nothing was cleared — a transfer is already running on the server; re-attached to it.";
+    S.pinTitle=said;render();poll();pollOnce();return;}
+  const d=await readRun();
+  if(d&&d.ok&&d.run_id){
+    /* The run survived the reset, and that is the whole of what this answer proves: the
+       record's fate was not established, so it is not claimed in either direction. */
+    S.pin="the reset did not go through — the server still reports this run, so the run was "
+      +"not cleared. This guard lasts this session; a reload clears this guard without "
+      +"settling its playlist record.";
+    S.pinTitle=(said||fail)+" — re-attached to the run the server still serves.";
+    setLock(kept,said||fail);
+    render();poll();pollOnce();return;}
+  if(!d||!d.ok){
+    /* Neither answer arrived. A reset is LOCAL: it clears this PC's run and its
+       created-playlist record, and it never calls YouTube Music, so the playlist is not
+       one of the things whose fate is in doubt here - a transfer still running is a
+       separate matter and may have been writing to it. Only the local half is unknown,
+       and the pin says exactly that, and says it is a session guard: a reload clears the
+       guard without settling anything, which is why the record itself must not be retried
+       or written over. */
+    S.pin="reset not confirmed — the server did not answer, so whether its local run and "
+      +"playlist record were cleared is unknown; the reset never touches the playlist. This "
+      +"guard lasts this session, and a reload clears this guard without settling anything — "
+      +"check the playlist in YouTube Music by hand, and do not retry the reset or start "
+      +"another transfer of this link.";
+    S.pinTitle=(said||fail||"no answer from /api/reset")
+      +" — the reset's outcome is unknown, and it only ever touches this PC's run and record: "
+      +"the playlist is unchanged by it, so check it in YouTube Music by hand. Retrying the "
+      +"reset or starting another transfer could remove or duplicate what the run left.";
+    setLock(kept,said||fail);
+    render();return;}
+  /* The server now reports no run. What an answered error proves here is narrower than it
+     looks: ONLY the backend's own two-step verdict - the 500 carrying reset_partial:true -
+     establishes both halves. That is a field, not a sentence, so backend.py can reword its
+     message without breaking this page. Any other answer (a 4xx, a 500 without the field,
+     an older backend that does not send it) establishes neither, so the page reports the
+     run it can no longer see and says that the rest was not established. */
+  const partial=!!(res&&res.data&&res.data.reset_partial);
+  /* The run is gone from the server, so the ledger clears - but the LINK stays: it is the
+     way back to the record this page cannot see, and the lock set below refuses the two
+     actions that would write over it. */
+  const srcText=$("srcurl").value;
   clearLocal();
-  try{await postJSON("/api/reset",{spotify_id:sid},15000);}catch(e){}
-  $("srcurl").focus();
-}
-async function doNewTransfer(){
-  if(LIVE.has(S.phase))return;
-  const sid=spotifyIdOf($("srcurl").value.trim())||(S.interrupted&&S.interrupted.spotify_id)||"";
-  unpoll();
-  clearLocal();
-  try{await postJSON("/api/reset",{spotify_id:sid},15000);}catch(e){}
-  clearLocal();
-  $("srcurl").focus();
-}
+  if(srcText){$("srcurl").value=srcText;paintSrcX();}
+  const inc=d.interrupted&&d.interrupted.spotify_id?d.interrupted:null;
+  if(inc)showInterrupted(inc);
+  else if(kept.url){S.created=true;S.url=kept.url;S.title=kept.title;paintChip();}
+  else if(srcText)autoTitle();
+  setLock(kept,said||fail);
+  S.pin=partial
+    ?"reset incomplete — the reset cleared the run, but not its playlist record: the record "
+      +"is still on disk. This guard lasts this session; a reload clears this guard without "
+      +"settling the record, so check the playlist in YouTube Music by hand."
+    :"reset not confirmed — the server reports no run now, but this answer does not establish "
+      +"which part of the reset completed. This guard lasts this session; a reload clears this "
+      +"guard without settling the record. A reset never touches the playlist, so check the "
+      +"playlist in YouTube Music by hand.";
+  S.pinTitle=partial
+    ?said+" — the record is still on disk and was not cleared; check the playlist in YouTube Music by hand."
+    :(said||fail||"no answer from /api/reset")+" — only the backend's own two-step verdict says "
+      +"the run was cleared and the record kept, and this answer was not that; nothing on "
+      +"YouTube Music was changed by the reset. The guard is in memory for this session only: "
+      +"reloading clears it and neither restores nor clears the record.";
+  render();
+  }finally{S.resetBusy=false;}}
+async function doNewTransfer(){await doClear();}
 clearB.addEventListener("click",doClear);
 $("srcx").addEventListener("click",wipeSrcField);
 newbtn.addEventListener("click",doNewTransfer);
 startB.addEventListener("click",startTransfer);
 stopB.addEventListener("click",abortRun);
 /* Retry now: the wait belongs to the server, so the control only asks it to end
-   the wait early, then re-reads the run. The countdown itself never asks. */
+   the wait early, then re-reads the run. The countdown itself never asks. The read is part of
+   the request's continuation, so it belongs to the generation that sent it: a detach during
+   the request retires the read, and a pollOnce called afterwards would otherwise capture the
+   NEW generation and re-attach the run the user just left. */
 retryBtn.addEventListener("click",async()=>{
+  const gen=S.pollGen;
   retryBtn.disabled=true;
   try{await postJSON("/api/retry",{},15000);}catch(e){}
   retryBtn.disabled=false;
+  if(gen!==S.pollGen)return;
   pollOnce();});
 /* command palette: 12 commands, options rendered only while open */
 const CMDS=[["Start transfer","Ctrl+Enter","start"],["Detach from run","Esc","stop"],
@@ -1190,9 +1512,12 @@ const CMDS=[["Start transfer","Ctrl+Enter","start"],["Detach from run","Esc","st
   ["Jump to top","","top"],["Jump to bottom","","bottom"]];
 const pal=$("cmdpal"),palbox=$("palcard"),palin=$("palinput");
 let sel=0,items=CMDS.slice(),lastFocus=null;
-function openPal(){lastFocus=document.activeElement;pal.classList.add("show");palin.value="";items=CMDS.slice();sel=0;drawPal();palin.focus();}
+function openPal(){lastFocus=document.activeElement;pal.classList.add("show");syncInert();palin.value="";items=CMDS.slice();sel=0;drawPal();palin.focus();}
 function closePal(){pal.classList.remove("show");
   palbox.querySelectorAll(".cmdopt").forEach(o=>o.remove());
+  /* inert is cleared before focus returns: an inert element refuses focus, so a
+     restore attempted first would silently land on the body. */
+  syncInert();
   if(lastFocus&&lastFocus.isConnected)lastFocus.focus();else startB.focus();}
 function drawPal(){palbox.querySelectorAll(".cmdopt").forEach(o=>o.remove());
   items.forEach((c,i)=>{const b=document.createElement("button");b.type="button";
@@ -1342,8 +1667,62 @@ async function refreshAcct(){
   applyCookies(d);renderAcct();
   if(S.yt.has&&S.yt.state==="unverified")await checkAcct();
 }
-function openSheet(el){el.classList.add("show");}
-function closeSheets(){pasteSheet.classList.remove("show");moreSheet.classList.remove("show");}
+/* Sheets are modals. role="dialog" + aria-modal="true" is a promise that the page
+   behind the overlay is inert, and a backdrop image cannot keep it: the page under
+   it stays reachable by pointer, Tab and assistive tech. So the rest of the body is
+   marked `inert` while a sheet or the palette is open, and the Tab cycle below keeps
+   the ring inside the card. `inert` is derived from the `show` classes rather than
+   toggled call by call, so no close path can leave the page stuck inert and a new
+   overlay is one entry in the list. The engine floor is already met: this page uses
+   100dvh (Chromium 108) and `inert` shipped in Chromium 102, which covers the
+   WebView2 shell and every supported browser. */
+function syncInert(){
+  const shown=[pal,pasteSheet,moreSheet].filter(el=>el.classList.contains("show"));
+  for(const el of document.body.children)el.inert=shown.length>0&&!shown.includes(el);}
+let sheetBack=null;
+function focusables(root){
+  const out=[];
+  const walk=node=>{
+    for(const kid of node.children||[]){
+      const tag=String(kid.tagName||"").toUpperCase();
+      const tabi=kid.getAttribute&&kid.getAttribute("tabindex");
+      if(!kid.disabled&&!kid.hidden&&(tag==="BUTTON"||tag==="INPUT"||tag==="TEXTAREA"
+        ||tag==="SELECT"||(tag==="A"&&kid.getAttribute("href"))
+        ||(tabi!=null&&+tabi>=0)))out.push(kid);
+      walk(kid);}
+  };
+  walk(root);
+  return out;}
+function trapTab(e,card){
+  const f=focusables(card);
+  if(!f.length)return;
+  const first=f[0],last=f[f.length-1],at=document.activeElement;
+  if(e.shiftKey&&at===first){e.preventDefault();last.focus();}
+  else if(!e.shiftKey&&at===last){e.preventDefault();first.focus();}
+  /* Focus outside the open dialog - a restore, a script, or a click that landed
+     behind a covered control - is pulled in rather than left to wander. */
+  else if(!card.contains(at)){e.preventDefault();first.focus();}}
+function openSheet(el){
+  if(!el)return;
+  sheetBack=document.activeElement||null;
+  el.classList.add("show");
+  syncInert();
+  const f=focusables(el.querySelector(".sheetcard")||el);
+  if(f.length)f[0].focus();}
+function closeSheets(){
+  const open=[pasteSheet,moreSheet].filter(el=>el.classList.contains("show"));
+  if(!open.length)return;
+  for(const el of open)el.classList.remove("show");
+  syncInert();
+  const back=sheetBack;sheetBack=null;
+  /* The control that opened it, unless the action hid it - a saved cookie replaces
+     Paste with Replace - and then the card's own primary control, which is there in
+     every state, instead of leaving focus to fall to the body. */
+  const to=(back&&back.isConnected&&!back.hidden&&!back.disabled)?back:pickB;
+  if(to&&to.focus)to.focus();}
+for(const el of[pasteSheet,moreSheet])
+  el.addEventListener("keydown",e=>{
+    if(e.key==="Tab")trapTab(e,el.querySelector(".sheetcard")||el);});
 /* One latch path for both entry points. The file input is cleared on every
    outcome so choosing the same file twice still fires change; a bad file lands
    in `junk` with the backend's reason and never with the text we were handed.
@@ -1404,6 +1783,10 @@ $("watchbtn").addEventListener("click",async()=>{
   $("filelist").textContent=w&&w.ok?"watching: "+w.dirs.join(" · "):"watch failed: folder not found.";});
 showWatch();
 refreshAcct();
+/* The version is asked for once, after the cookie record: the label is chrome, so it
+   must never delay or block the setup card, and a failed read is reported in the
+   label itself. */
+readVersion();
 $("copybtn").addEventListener("click",async()=>{
   const txt=[...S.rows.values()].sort((a,b)=>a.i-b.i)
     .map(r=>`${r.i}. ${r.title||"—"} — ${r.artist||"?"} [${r.videoId||"-"}] ${r.state}`).join("\n");
@@ -1438,10 +1821,13 @@ async function autoTitle(){
   if(got)pvPaint(u,got);else render();}
 /* reload re-attach: full rows once, then live deltas; never reset a live run.
    After a process restart an idle server reports {interrupted} — show it, link it. */
-(async()=>{try{
+(async()=>{const gen=S.pollGen;try{
     const c=new AbortController();const t=setTimeout(()=>c.abort(),10000);
     const r=await fetch("/api/run?since=0",{signal:c.signal});clearTimeout(t);
     const d=await r.json();if(!d.ok)return;
+    /* The reload's own read is a continuation too: a detach while it was in flight owns the
+       screen, and this answer may not re-attach a run over it. */
+    if(gen!==S.pollGen)return;
     if(!d.run_id&&d.interrupted){showInterrupted(d.interrupted);return;}
     if(!d.run_id)return;
     mergeRun(d,true);
