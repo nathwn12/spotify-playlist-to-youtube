@@ -1,6 +1,7 @@
 # nathwn12 house CI - stack: python.
 # Drift from the house ci-python template: this repo has no pytest; its gate is
 # scripts/acceptance.cmd, so the job runs every check that gate runs.
+# Docs-only change (*.md, docs/, LICEN[CS]E) keeps the required check green in seconds and runs no build.
 name: ci
 on:
   push:
@@ -14,10 +15,35 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Detect a docs-only change
+        id: scope
+        shell: bash
+        run: |
+          docs='^(.*\.md|docs/.*|LICEN[CS]E(\.md)?)$'
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+            changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          elif [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ]; then
+            changed=$(git diff --name-only "${{ github.event.before }}" HEAD || true)
+          else
+            changed=$(git ls-files)
+          fi
+          if [ -n "$changed" ] && ! printf '%s\n' "$changed" | grep -qvE "$docs"; then
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-python@v5
+        if: steps.scope.outputs.code == 'true'
         with:
           python-version: "3.12"
       - uses: actions/setup-node@v4
+        if: steps.scope.outputs.code == 'true'
         with:
           node-version: "20"
       - run: .\scripts\acceptance.cmd
+        if: steps.scope.outputs.code == 'true'
+      - name: Scope
+        if: always()
+        run: |
+          echo "scope: ${{ steps.scope.outputs.code == 'true' && 'code changed - the full gate ran' || 'docs-only - build skipped, the check stays green' }}"
