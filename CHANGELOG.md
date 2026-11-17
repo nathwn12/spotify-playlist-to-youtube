@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-11-17
+
+A run that stops on a verdict now says what YouTube Music said, a reset reports what it can establish, and the page names the version actually serving it. The local server rejects foreign browser origins and non-loopback host names, and the offline gate no longer writes into the live app's state folder.
+
+### Added
+
+- The page shows the version it is running, read once from `GET /health` and never copied into the markup: the label ships empty, paints `v0.5.2` from the reply, and reads `version unread` — with the failure in its title — when `/health` does not answer or answers without a version. `/health` already served `{ok, version}` from `APP_VERSION`, so the number on screen is the one the running server reports. Tests pin the empty markup, a 503, a reply with no version, and the text never being markup.
+- Every request is checked against the request it claims to be: `Host` must name loopback, and a browser `Origin` must be this server's own scheme, host and port. A refusal is `403 not a local request`, with one audit line per method and reason so a page that keeps knocking cannot grow the log. That is what separates this app's page from any other page in the same browser: binding to `127.0.0.1` never did, and a name that resolves to loopback (DNS rebinding) reaches the server under its own Host while the browser still treats it as that site's origin.
+- `tests/test_http_guard.py` runs the real handler on an ephemeral loopback port and pins both what the guard claims and what it does not: a non-loopback Host and a foreign Origin are refused, a request with no Origin is allowed, and nothing here separates this app from another process of the same Windows user.
+- `tests/test_fatal_mask.py` and `tests/test_watchdog.py`: the verdict a stopped run reports, and the advice `watchdog.py` is allowed to print.
+
+### Changed
+
+- A reset reports its two steps separately. `clear_created` returns whether the record asked for is gone (a missing file counts as gone, a failed rewrite does not), and `/api/reset` answers 200 when the run and its record are both cleared, 409 when a transfer owns the run and nothing was cleared, and 500 when the run was cleared and the record could not be — the record left unchanged. The page no longer clears the screen before asking: it clears from the answer, re-attaches to the run on 409, and when no answer arrives it reads `/api/run` and claims only what that read holds. A record is never called gone from a run read, because a complete record is invisible to `/api/run`, and no retry or second transfer is offered while the evidence may be half-removed.
+- A sheet and the command palette are modals, not backdrop images. The rest of the body is `inert` while one is open, Tab and Shift+Tab cycle inside the card, a Tab that arrives while focus sits behind the overlay is pulled back in, and closing returns focus to the control that opened it — or the card's own primary control when that opener is now hidden or gone. `inert` is derived from the `show` classes rather than toggled per call, so no close path can leave the page stuck inert.
+- `GET /api/vault` answers flags, lengths, states, per-cookie metadata and the refresh list — no cookie value. It used to spread the vault dict into its body, which published both cookies in plaintext; nothing read a value from it, and the page uses `/api/cookies`, which never carried one.
+- A fatal append verdict travels as a value instead of being inferred from a sentence. `FatalAppend` carries the status through the create and resume exception paths, along with the sender's own `{position: status}` outcomes; top-up carries its verdict in its result. `/api/run` serves `kind` and `hint` from `_write_verdict`, which reads the status alone.
+- Rows are settled by what the server said about each copy: a copy that came back 400/401/403/404, a plain `FAILED` or a duplicate toast is filed `refused` or `duplicate` before anything still open is flattened into `unverified`, and `_reconcile` files a fatal status as `rejected` whatever the read reached. A row no longer says `unverified` beside a status that is a refusal.
+- The fatal hints name the possibilities and stop guessing: an auth-class answer may be an expired session, a permission answer or a playlist no longer reachable from this account, and a 404 a deleted id or a stale one. They point at the run's own recovery record, and they no longer advise Reset or deleting `created.json` to clear the error.
+
+### Fixed
+
+- `watchdog.py` stops printing advice the log cannot support: "already retried at 4 workers" (no code path sets a worker count), "already retried once automatically" (a failed add is not re-sent) and "cookie expired/wrong site" (an expired session and a cookie without permission produce the same line). A 429, a timeout, a 401 and a 403 now each say what is unknowable and where to look, and none of them promises a retry — the record can refuse to resume.
+- Removed code no path can reach: `yt_playlist_count`, the unused `inline_need`/`inline_ids` computations in `_create_new`, and the three guards for a read-back that never returns `None` (`_append_verify` returns the read it was given, so `entries is None` already gated the path and the second sentence was only a way to lose the reason the run stopped).
+- The offline gate writes no more into the live app's folder. `acceptance.cmd` makes an exclusive scratch root (`mkdir` is the claim, so a directory this run did not create is never adopted and never deleted), points `APPDATA`, `LOCALAPPDATA`, `USERPROFILE`, `HOME`, `TEMP` and `TMP` into it, and runs every Python gate through `tests/state_guard.py`, which refuses to execute one when a backend state path — or backend's own fallback to the repository when `STATE` cannot be created — would write outside the root. `tests/acceptance.py` redirects the same variables and its temp dir before importing backend, and fails the run if any derived path escaped. A scratch root that survives is a red run, not a leftover.
+- `.gitignore` covers `cookie_state.json`.
+
+### Known limits
+
+- The cause of a 401/403 is not established: an auth-class answer does not distinguish an expired session from a permission answer or an unreachable playlist. This change reports the answer; it does not fix the underlying rejection.
+- No live transfer was run against this change. What is claimed above is what the offline gates prove: the request guard, the fatal verdict and the reset paths are covered without reaching Spotify or YouTube Music, and a real transfer's behaviour is unverified.
+- The request guard cannot tell two processes of the same Windows user apart, and it allows a request that carries no `Origin` on purpose — a local program that speaks HTTP is outside what a header check can separate.
+
 ## [0.5.1] - 2026-11-17
 
 Emergency fix: a copy YouTube Music accepted and no read taken after the send can name is reported as an unknown write and never sent again. The run stops writing instead of repeating the same copies.
