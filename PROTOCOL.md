@@ -147,10 +147,10 @@ Loopback only, `127.0.0.1:8787`, same origin, no CDN and no third party.
 | `GET /api/run` | Poll the current run's ledger and counts |
 | `POST /api/transfer` | Start a transfer |
 | `POST /api/retry` | End a standby wait and verify immediately |
-| `POST /api/check` | Re-run the diagnosis classifier |
-| `POST /api/spotify` | Read a public playlist |
+| `POST /api/check` | Check a supplied Spotify or YouTube Music cookie, falling back to the saved one |
+| `POST /api/spotify` | Read a public playlist: name, cover, tracks and the declared total |
 | `POST /api/search`, `/api/search-batch` | Search, and batched search (≤25 items, 1–10 workers) |
-| `POST /api/create-playlist` | Create/append |
+| `POST /api/create-playlist` | Create a playlist with its inline ids, or return the existing copy |
 | `GET /api/cookies`, `/api/vault` | Cookie state — flags and lengths, never values |
 | `POST /api/cookies/check`, `/use`, `/remove`, `/latch` | Verify, choose, remove, latch a cookie |
 | `POST /api/watch` | Read or set the one extra watch folder |
