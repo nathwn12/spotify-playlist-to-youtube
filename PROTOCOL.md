@@ -136,9 +136,13 @@ that "did not happen":
 - **A record that cannot be read is never overwritten.** Nothing is deleted or rewritten;
   take a safe copy first and check the playlist that record may still name.
 
-The practical consequence: after an interrupted or unattributed write, **check the playlist
-by hand**. Do not Reset, do not delete the playlist, do not delete `created.json` — that
-record is the only copy of the log, the plan and the playlist link.
+The practical consequence: after an interrupted or unattributed write, **check the playlist by
+hand**. Leave three things alone:
+
+- **Do not press Reset.**
+- **Do not delete the playlist.**
+- **Do not delete `created.json`** — that record is the only copy of the log, the plan and the
+  playlist link.
 
 ## 7. Order
 

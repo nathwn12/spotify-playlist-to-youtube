@@ -33,9 +33,24 @@ Two steps: the first runs once, the second runs every transfer.
 1. Connect YouTube Music. The card finds `music.youtube.com_cookies.txt` on your Desktop or in Downloads and offers it; choose the file, or paste its header instead. Once it is connected, `Replace` and `Remove` sit on the card — `Remove` clears the saved cookie, and it stays removed until you choose a file again. ([First-run screen](assets/app-setup.png))
 2. Paste a public Spotify link, choose the privacy (Private is the default), then press Start transfer (or `Ctrl+Enter`). The counter moves against Spotify's declared track count, and the new playlist appears as a chip in the top bar, linked to its `music.youtube.com/playlist?list=` page.
 
-If the card does not find a file by itself, choose it by hand — an export from a cookie extension works the same way. `More options` holds the watch folder (one extra folder) and Copy rows.
+If the card does not find a file by itself, choose it by hand — an export from a cookie extension works the same way.
 
-`Ctrl+K` palette · `Ctrl+Enter` start · `Esc` detach, which leaves the transfer running on the server · `Alt+1…6` outcome filter · `/` focus the link field · `j`/`k` scroll the ledger · `Ctrl+Shift+N` new transfer. Reloading or `Ctrl+Enter` re-attaches to a detached run.
+`More options` holds two controls:
+
+- Watch folder — one extra folder to watch.
+- Copy rows — a paste-ready list of the tracks that were not added.
+
+### Keys
+
+- `Ctrl+K` — command palette.
+- `Ctrl+Enter` — start a transfer, or re-attach to a detached one.
+- `Esc` — detach, which leaves the transfer running on the server.
+- `Alt+1…6` — outcome filter.
+- `/` — focus the link field.
+- `j` / `k` — scroll the ledger.
+- `Ctrl+Shift+N` — new transfer.
+
+Reloading the page re-attaches to a detached run.
 
 ## What you get
 
@@ -49,7 +64,13 @@ If the card does not find a file by itself, choose it by hand — an export from
 
 A write whose outcome is unknown — a timeout, a dropped connection, a 5xx, a 429 — is never re-sent automatically. The run stops and says so, and the doubt is written to disk so that a resume cannot resend it either.
 
-Check the playlist by hand. Do not Reset, do not delete the playlist, and do not delete `created.json`: that record is the only copy of the plan and the playlist link. [PROTOCOL.md](PROTOCOL.md#6-when-a-write-is-uncertain) states the rule in full.
+Check the playlist by hand, and leave these alone:
+
+- Do not Reset.
+- Do not delete the playlist.
+- Do not delete `created.json` — the only copy of the plan and the playlist link.
+
+[PROTOCOL.md](PROTOCOL.md#6-when-a-write-is-uncertain) states the rule in full.
 
 ## Configure it
 
@@ -76,22 +97,35 @@ The cookie is never logged — audit lines record lengths and flags only.
 - Public Spotify playlists only — no Spotify login.
 - YouTube Music caps playlists at 5,000 tracks.
 - Auto-match ran at about 90 % on the playlist this was built against; every miss is listed with its reason.
-- The cookie expires. The connect card's own check reports it and asks for a fresh export; a 401 on a write stops the run and says why, while a 401 that only reaches the search skips those rows like any other unanswered search.
+- The cookie expires. The connect card's own check reports it and asks for a fresh export.
+- A 401 on a write stops the run and says why.
+- A 401 that only reaches the search skips those rows like any other unanswered search.
 - An interrupted or unattributed write can require a manual playlist check.
-- Both surfaces are unofficial. A failure that is fatal to the run stops it with a diagnosis and a hint, and one the app does not recognize is reported as `unknown` with the raw error line, so nothing is written on a guess. A failure confined to one row does not stop anything: an unanswered search skips that row with its error as the reason, and a row still unresolved after one soft re-search keeps its skip while the rest continues. A change that raises nothing is not detected at all, so the ledger's reasons are the evidence.
-
-## Status
-
-**Unverified** — as-is, use at your own risk. The cover upload and cross-script matching are best-effort, and a 1,100-song transfer has not been verified end to end. Verify a transfer before relying on it.
+- Both surfaces are unofficial. A failure that is fatal to the run stops it with a diagnosis and a hint, and one the app does not recognize is reported as `unknown` with the raw error line, so nothing is written on a guess.
+- A failure confined to one row stops nothing: an unanswered search skips that row with its error as the reason, and a row still unresolved after one soft re-search keeps its skip while the rest continues.
+- A change that raises nothing is not detected at all, so the ledger's reasons are the evidence.
 
 ## Development
 
-Four files: `backend.py` (server and transfer logic), `index.html` (page), `app.py` (WebView2 shell), `watchdog.py` (diagnosis). `AGENTS.md` holds the invariants, `PROTOCOL.md` the protocol.
+Four files do the work, and two documents hold the rules:
+
+- `backend.py` — server and transfer logic.
+- `index.html` — the page.
+- `app.py` — the WebView2 shell.
+- `watchdog.py` — diagnosis from the audit trail.
+- `AGENTS.md` — the invariants a change must preserve.
+- `PROTOCOL.md` — the protocol in full.
+
+How to run and check it:
 
 - Dev lane: `sp2yt-start.cmd` serves the source at http://127.0.0.1:8787.
 - Build lane: `build.cmd` (needs `pyinstaller` and `pywebview`) backs up the exe, compiles one portable exe, smoke-tests `/health`, keeps green and restores on red.
 - Gate: `acceptance.cmd` must print `36/36 fixtures` and pass the language, counts, editions, order, cover, page-parse, UI, cookie, connect-card and release-asset checks.
 - Lint: `python3 -m ruff check .`
+
+## Status
+
+**Unverified** — as-is, use at your own risk. The cover upload and cross-script matching are best-effort, and a 1,100-song transfer has not been verified end to end. Verify a transfer before relying on it.
 
 ## Links
 
