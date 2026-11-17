@@ -9,11 +9,15 @@ Keyless Spotify to YouTube Music playlist transfer for Windows. The server binds
 - Python 3.12+, standard library only — no requirements file, no venv. Do not add dependencies (`backend.py` imports only the standard library).
 - Three files do everything: `backend.py` (server + all transfer logic), `app.py` (PROD WebView2 shell), `index.html` (single-page UI). `watchdog.py` diagnoses failures from the audit log.
 
+## Layout
+
+The root is the app package and its standard controls: `backend.py`, `app.py`, `watchdog.py`, `index.html`, `pyproject.toml`, `AGENTS.md`, `README.md`, `CHANGELOG.md`, `LICENSE`. Everything else has a folder — `scripts\` for the `.cmd` helpers, `docs\` for documents, `tests\` for the gates and fixtures, `assets\` for images and icons. `sp2yt.exe`, `build\`, `dist\`, `build.log` and `sp2yt.spec` at the root are git-ignored build artifacts, not sources. Every script resolves the root from its own location (`cd /d "%~dp0.."` or `%%~fI`), so it runs from any working directory; add a root-level file only when no folder fits.
+
 ## Run / build
 
-- **DEV (iterate here):** `python3 backend.py` (or `sp2yt-start.cmd`), open `http://127.0.0.1:8787`. No build step.
-- **PROD:** run `build.cmd` from the repo root (needs `pyinstaller` + `pywebview`). It backs up the exe, kills running instances, compiles one portable `sp2yt.exe`, smoke-tests `/health`, deletes the backup on green / restores it on red. Never invoke `pyinstaller` directly — the backup/restore + smoke logic is the build.
-- The gate is `acceptance.cmd`, which must print `36/36 fixtures` and then pass the language tests, the counts/API contract, the edition tests, the order/convergence tests, the cover tests, the page-script parse check, the UI checks, the cookie tests, the connect-card checks and the release-asset checks — every one green — before anything ships. The heavier offline suites are explicit: `tests/test_slices.py` (a 2,500-row transfer, ~20 s), `tests/test_repair.py` and `tests/test_scale_report.py`.
+- **DEV (iterate here):** `python3 backend.py` (or `scripts\sp2yt-start.cmd`), open `http://127.0.0.1:8787`. No build step.
+- **PROD:** run `scripts\build.cmd` (it cds to the repo root; needs `pyinstaller` + `pywebview`). It backs up the exe, kills running instances, compiles one portable `sp2yt.exe`, smoke-tests `/health`, deletes the backup on green / restores it on red. Never invoke `pyinstaller` directly — the backup/restore + smoke logic is the build.
+- The gate is `scripts\acceptance.cmd`, which must print `36/36 fixtures` and then pass the language tests, the counts/API contract, the edition tests, the order/convergence tests, the cover tests, the page-script parse check, the UI checks, the cookie tests, the connect-card checks and the release-asset checks — every one green — before anything ships. The heavier offline suites are explicit: `tests/test_slices.py` (a 2,500-row transfer, ~20 s), `tests/test_repair.py` and `tests/test_scale_report.py`.
 - **Lint / format:** `python3 -m ruff check .` and `python3 -m ruff format .`; the config is `pyproject.toml` (`target-version = "py312"`, rules `E,F,W,I,UP,B`). Outstanding findings are real debt, not a gate yet: fix them rule by rule, never with a mass reflow or `--unsafe-fixes`.
 - Port is fixed at `8787`, bound to `127.0.0.1` only.
 
@@ -58,4 +62,4 @@ Keyless Spotify to YouTube Music playlist transfer for Windows. The server binds
 
 ## Icons
 
-- Live mark is `assets/icon.ico` built from `assets/icon-src.png`. To change it: replace both, rebuild via `build.cmd`, then run `refresh-shortcut.cmd` (rebuilds the Desktop shortcut + refreshes the Windows icon cache).
+- Live mark is `assets/icon.ico` built from `assets/icon-src.png`. To change it: replace both, rebuild via `scripts\build.cmd`, then run `scripts\refresh-shortcut.cmd` (rebuilds the Desktop shortcut + refreshes the Windows icon cache).

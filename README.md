@@ -14,7 +14,7 @@ Download `sp2yt.exe` from the [latest release](https://github.com/nathwn12/spoti
 
 ### Offline or pinned
 
-Run the source instead of the exe: `sp2yt-start.cmd`, or `python3 backend.py`, then open http://127.0.0.1:8787. Python 3.12+ with the standard library only — nothing to install.
+Run the source instead of the exe: `scripts\sp2yt-start.cmd`, or `python3 backend.py`, then open http://127.0.0.1:8787. Python 3.12+ with the standard library only — nothing to install.
 
 Pin an exact version:
 
@@ -71,12 +71,14 @@ The cookie is never logged — audit lines record lengths and flags only.
 
 ## Development
 
-Four files do the work — `backend.py` (server and transfer logic), `index.html` (the page), `app.py` (the WebView2 shell), `watchdog.py` (diagnosis from the audit trail). Two documents hold the rules: `AGENTS.md` for the invariants a change must preserve, `PROTOCOL.md` for the protocol, the recovery rules, the local API and the measured costs.
+Four files do the work — `backend.py` (server and transfer logic), `index.html` (the page), `app.py` (the WebView2 shell), `watchdog.py` (diagnosis from the audit trail). Two documents hold the rules: `AGENTS.md` for the invariants a change must preserve, `docs/PROTOCOL.md` for the protocol, the recovery rules, the local API and the measured costs.
 
-- Dev lane: `sp2yt-start.cmd` serves the source at http://127.0.0.1:8787.
-- Build lane: `build.cmd` runs the gate, backs up the exe, compiles one portable exe, smoke-tests `/health`, keeps green and restores on red. It needs `pyinstaller` and `pywebview`.
-- Gate: `acceptance.cmd` replays the recorded fixtures plus every offline check, and ends `acceptance: all gates green`.
+- Dev lane: `scripts\sp2yt-start.cmd` serves the source at http://127.0.0.1:8787.
+- Build lane: `scripts\build.cmd` runs the gate, backs up the exe, compiles one portable exe, smoke-tests `/health`, keeps green and restores on red. It needs `pyinstaller` and `pywebview`.
+- Gate: `scripts\acceptance.cmd` replays the recorded fixtures plus every offline check, and ends `acceptance: all gates green`.
 - Lint: `python3 -m ruff check .`
+
+Layout: the root is the app package and its standard controls — `backend.py`, `app.py`, `watchdog.py`, `index.html`, `pyproject.toml`, `AGENTS.md`, `README.md`, `CHANGELOG.md`, `LICENSE`. Helper scripts live in `scripts\`, documents in `docs\`, checks in `tests\`, images in `assets\`; `sp2yt.exe` and the build outputs at the root are ignored artifacts, not sources. Each script resolves the root from its own location, so it runs from any directory.
 
 ## Status
 
@@ -86,6 +88,6 @@ Four files do the work — `backend.py` (server and transfer logic), `index.html
 
 - [Issues](https://github.com/nathwn12/spotify-playlist-to-youtube/issues) — report a break with the command you ran and what you saw.
 - [Releases](https://github.com/nathwn12/spotify-playlist-to-youtube/releases) — the portable `sp2yt.exe`.
-- [Protocol](PROTOCOL.md) — what the app sends, what it refuses, and what it cannot prove.
+- [Protocol](docs/PROTOCOL.md) — what the app sends, what it refuses, and what it cannot prove.
 - [Change invariants](AGENTS.md) — what a code change must preserve.
 - [MIT licence](LICENSE)

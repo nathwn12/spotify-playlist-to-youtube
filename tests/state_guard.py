@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run one acceptance gate under a proven-synthetic state root.
 
-acceptance.cmd creates a scratch root, points APPDATA, LOCALAPPDATA, USERPROFILE,
+scripts\acceptance.cmd creates a scratch root, points APPDATA, LOCALAPPDATA, USERPROFILE,
 HOME, TEMP and TMP into it, and runs every python gate through this script. The
 guard is the fail-closed half of that isolation: backend.py falls back to the
 repository directory when it cannot create its STATE dir, so a child that
@@ -41,7 +41,7 @@ def main(argv):
 
     scratch = os.environ.get("SP2YT_SCRATCH", "")
     if not scratch:
-        _fail("SP2YT_SCRATCH is unset - run the gates through acceptance.cmd")
+        _fail("SP2YT_SCRATCH is unset - run the gates through scripts\\acceptance.cmd")
     scratch = os.path.abspath(scratch)
     appdata = os.path.abspath(os.environ.get("APPDATA", ""))
     expect_appdata = os.path.join(scratch, "appdata")

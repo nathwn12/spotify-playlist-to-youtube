@@ -2,8 +2,10 @@
 rem Offline acceptance gate: replays the recorded playlist rows through backend.py,
 rem then runs every other offline gate below.
 rem Wrapper only - non-zero if any step fails (0 green, 1 red).
+rem Lives in scripts\ but runs from the repo root: cd one level up so every
+rem relative path below (tests\..., index.html) means the same as it always did.
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 rem --- isolated state -------------------------------------------------------
 rem backend.py derives STATE (server.log, created.json, settings.json and the
