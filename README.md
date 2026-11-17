@@ -76,9 +76,9 @@ The cookie is never logged — audit lines record lengths and flags only.
 - Public Spotify playlists only — no Spotify login.
 - YouTube Music caps playlists at 5,000 tracks.
 - Auto-match ran at about 90 % on the playlist this was built against; every miss is listed with its reason.
-- The cookie expires: a 401 stops the run and asks for a fresh export.
+- The cookie expires. The connect card's own check reports it and asks for a fresh export; a 401 on a write stops the run and says why, while a 401 that only reaches the search skips those rows like any other unanswered search.
 - An interrupted or unattributed write can require a manual playlist check.
-- Both surfaces are unofficial. A failure the app recognizes stops the run with a diagnosis and a hint (`parse`, `auth`, `source`, `throttle`, `transient`, `write`), and one it does not recognize is reported as `unknown` with the raw error line, so a run stops rather than writing on a guess. A change that raises nothing is not detected: matching is best-effort, so the ledger's reasons are the evidence.
+- Both surfaces are unofficial. A failure that is fatal to the run stops it with a diagnosis and a hint, and one the app does not recognize is reported as `unknown` with the raw error line, so nothing is written on a guess. A failure confined to one row does not stop anything: an unanswered search skips that row with its error as the reason, and a row still unresolved after one soft re-search keeps its skip while the rest continues. A change that raises nothing is not detected at all, so the ledger's reasons are the evidence.
 
 ## Status
 

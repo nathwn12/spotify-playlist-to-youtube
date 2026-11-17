@@ -7,11 +7,24 @@ change must preserve.
 Both surfaces are unofficial, so failures are diagnosed from the error text, not from a
 contract. `classify()` returns `auth`, `throttle`, `transient`, `parse`, `source`, `user`,
 `write`, or `unknown`, and an unrecognized failure is served as `unknown` with the raw error
-line for a person to read. The run stops rather than writing on a guess — a run that matched
-nothing raises before a playlist is created. What this cannot do is prove an upstream change
-raised at all: the embed metadata read is best-effort and matching is best-effort, so a
-change that returns plausible but different data is not detected. The per-row reasons in the
-ledger are the evidence, not the promise.
+line for a person to read.
+
+Two granularities, and they are not the same promise:
+
+- **Run-fatal.** A Spotify read or playlist read that cannot complete, a create or append
+  answered with a verdict (400/401/403/404), a write whose application is unproven, or a
+  record that cannot be read stops the run where it was given, and the run's error carries
+  the diagnosis. A fresh run that matched nothing raises before a playlist is created
+  (`no videoIds to send`), which lands as `unknown` rather than a named kind.
+- **Row-level.** A search that fails on the wire stops nothing: the exception is filed row
+  by row, each row becomes `skipped` with its error as the reason, one soft second search is
+  attempted under the same evidence bar, and a row still unresolved keeps its skip while the
+  rest of the run continues. `throttle` and `transient` describe exactly this shape - a rate
+  limit or a blip on one query - which is why they cannot be read as "the run stopped".
+
+What this cannot do is prove an upstream change raised at all: the embed metadata read is
+best-effort and matching is best-effort, so a change that returns plausible but different
+data is not detected. The per-row reasons in the ledger are the evidence, not the promise.
 
 ## 1. Spotify read — keyless
 
@@ -55,7 +68,8 @@ No Spotify login, no client id, no secret.
   among candidates already within 0.05 of the leader — a widening, never a gate.
 - Soft second search: a row whose search never answered (timeout, connection, 429, 5xx) is
   asked once more with its own first query, under the same evidence bar, capped at **8**
-  rows per run. A row that answered about the song is never re-searched.
+  rows per run. A row that answered about the song is never re-searched, and a row still
+  unresolved keeps its skip while the run carries on.
 
 ## 4. Write
 
@@ -80,17 +94,19 @@ returns the existing playlist and creates nothing.
 
 ## 5. Repeats are requested per copy, and granted per copy
 
-The request is one add per source row: there is no setting that merges two source rows into
-one, no dedupe of `video_ids`, and every add carries `"dedupeOption": "DEDUPE_OPTION_SKIP"`
-for that reason. N copies in is N copies asked for.
+The request is one add per **matched** source row. A row with no identified match is never
+added at all: it stays `skipped` with its reason, so a 100-row playlist can ask for fewer
+than 100 copies. Between the rows that did match, there is no setting that merges two of
+them into one and no dedupe of `video_ids`, and every add carries
+`"dedupeOption": "DEDUPE_OPTION_SKIP"` for that reason.
 
 N entries out is the outcome only when each of those copies is accepted and read back. The
 server may refuse a repeat anyway: that reply comes as HTTP 200 with `STATUS_FAILED` and the
 toast "This song is already in the playlist". It is filed as `duplicate` — "already on the
 playlist - a second copy cannot be added" — which is its own outcome, distinct from
-`refused`, and it does not count toward `complete`. A row that never matched is `skipped`.
-So a transfer can end with repeats preserved *and* named rows that are not entries, and the
-done line prints those counts rather than the count that was requested.
+`refused`, and it does not count toward `complete`. So a transfer can end with repeats
+preserved *and* named rows that are not entries, and the done line prints those counts
+rather than the count that was requested.
 
 ## 6. When a write is uncertain
 
