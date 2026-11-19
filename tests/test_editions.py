@@ -159,7 +159,6 @@ class Editions(unittest.TestCase):
         for k, v in self._saved.items():
             setattr(backend, k, v)
 
-    # --- 1: the source row carries its album --------------------------------
     def test_the_spotify_read_carries_the_album_when_the_player_supplies_it(self):
         rows = [
             {"uri": "spotify:track:1", "title": "Neon", "artist": "Artist",
@@ -180,7 +179,6 @@ class Editions(unittest.TestCase):
         self.assertEqual([t["uri"] for t in got["tracks"]],
                          ["spotify:track:1", "spotify:track:2", "spotify:track:3"])
 
-    # --- 2: the cache key separates editions --------------------------------
     def test_two_editions_never_share_one_search_lookup(self):
         a = backend._search_key("Neon Artist", "Neon", "Artist", 180000,
                                 album="Night Drive (Deluxe Edition)")
@@ -194,7 +192,6 @@ class Editions(unittest.TestCase):
         self.assertEqual(backend._search_key("Neon Artist", "Neon", "Artist", 180000),
                          backend._search_key("Neon Artist", "Neon", "Artist", 180000))
 
-    # --- 3: the album query is a last-resort widening ----------------------
     def test_the_album_query_is_tried_last_and_only_when_the_plain_ones_fail(self):
         plain = backend._query_variants("Neon", "Artist")
         self.assertEqual(plain, ["Neon Artist", "Neon", "Artist - Neon"],
@@ -283,7 +280,6 @@ class Editions(unittest.TestCase):
                             ("Night Drive", set())):
             self.assertEqual(set(backend._edition_sig(label)), want, label)
 
-    # --- 5: compound version labels never substitute -----------------------
     def test_compound_version_labels_are_distinct_versions(self):
         rows = ["Song - Slowed + Reverb", "Song - Super Slowed + Reverb", "Song - Slowed",
                 "Song - Reverb", "Song"]

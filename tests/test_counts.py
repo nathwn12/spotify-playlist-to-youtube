@@ -203,7 +203,6 @@ class Counts(unittest.TestCase):
             backend._transfer_thread(SPOTIFY_URL, COOKIE, "", "PRIVATE", rid)
         return backend.run_snapshot()
 
-    # --- (a) the counts, from the owner's real run ---------------------------
     def test_a_508_row_run_with_28_repeats_reports_every_copy_landed(self):
         upstream = Upstream()
         snap = self.transfer(upstream, tracks(480, REPEATS))
@@ -475,7 +474,6 @@ class Counts(unittest.TestCase):
         ledger = backend._reconcile(ids, ["AAAAAAAAAAA"], {1: backend.STATUS_DUPLICATE}, True)
         self.assertEqual(ledger[1]["outcome"], "duplicate", ledger[1])
 
-    # --- (d) pending is attempted, added is proved --------------------------
     def test_a_sent_copy_is_pending_and_pending_is_counted_as_attempted(self):
         """The counter the page reads mid-run: a row that was sent and not proved
         is pending. It is attempted work (so progress moves) and it is not added
@@ -497,7 +495,6 @@ class Counts(unittest.TestCase):
         self.assertEqual(backend._attempted_from(backend.run_snapshot()), 4,
                          "pending and skipped are attempted; a matched row is not")
 
-    # --- (e) the done line: one line, the shared shape ----------------------
     def test_the_done_line_is_one_line_in_the_shared_shape(self):
         upstream = Upstream()
         snap = self.transfer(upstream, tracks(480, REPEATS))
@@ -529,7 +526,6 @@ class Counts(unittest.TestCase):
             {"source": 5, "unique": 4, "added": 3, "skipped": 1, "duplicate": 0,
              "unverified": 0, "refused": 0}, 3, topped_up=2, sent=4))
 
-    # --- (f) the endpoints ---------------------------------------------------
     def _serve(self):
         srv = ThreadingHTTPServer(("127.0.0.1", 0), backend.H)
         threading.Thread(target=srv.serve_forever, daemon=True).start()

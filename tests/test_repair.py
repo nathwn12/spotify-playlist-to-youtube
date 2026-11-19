@@ -309,7 +309,6 @@ class Repair(unittest.TestCase):
         self.assertFalse(hasattr(backend, "is_retry_status"),
                          "a predicate that authorises re-sending an append is back")
 
-    # --- 1c: what "complete" may say ---------------------------------------
     def test_a_refused_copy_keeps_the_record_incomplete(self):
         """A duplicate is a source row the playlist does not hold, so the create's own
         write of `complete` may not count it. The record a later run starts from must
@@ -415,7 +414,6 @@ class Repair(unittest.TestCase):
         self.assertEqual(rec["unsure"], [50, 51])
         self.assertEqual(rec["expected_min"], 58)
 
-    # --- 3: an incomplete read-back appends nothing -------------------------
     def test_an_incomplete_read_back_stands_by_and_appends_nothing(self):
         tracks = tracks_for(40)                   # all 40 land inline at create
         extras = ["X%010d" % i for i in range(70)]
@@ -1219,7 +1217,6 @@ class Repair(unittest.TestCase):
         self.assertEqual(upstream.appends, [], "a run without a plan appended off a guess")
         self.assertEqual(upstream.playlist, [vid(i) for i in range(1, 6)])
 
-    # --- 5: an empty parse is not an empty playlist -------------------------
     def test_a_read_that_parsed_no_ids_never_deletes_the_playlist(self):
         """Rows the parser cannot name, then a continuation that stalls: the read
         parses zero ids and proves nothing, so it must not delete the playlist."""
@@ -1264,7 +1261,6 @@ class Repair(unittest.TestCase):
         self.assertEqual(snap["counts"]["refused"], 0)
         self.assertEqual(upstream.creates, 1)
 
-    # --- 6: an unknown outcome is read before it is resent ------------------
     def test_an_ambiguous_add_is_not_resent_without_a_complete_read(self):
         """The add was applied and its reply was lost. A resend may only follow a
         COMPLETE read; when the read cannot prove the playlist, nothing is sent."""
@@ -2230,7 +2226,6 @@ class Repair(unittest.TestCase):
         self.assertEqual(snap["state"], "done", snap)
         self.assertEqual(snap["counts"]["added"], 6, snap["counts"])
 
-    # --- 7: a short complete read is short, not complete --------------------
     def test_a_token_complete_read_below_the_minimum_is_not_complete(self):
         """Three entries served with no continuation is a token-complete read; when
         five are expected it proves the playlist is short, not that it is whole."""
@@ -2293,7 +2288,6 @@ class Repair(unittest.TestCase):
         self.assertNotEqual(snap["rows"][-1]["state"], "landed")
         self.assertEqual(snap["landed"], 59)
 
-    # --- 5: Retry now only has a wait to cut short --------------------------
     def test_retry_now_only_cuts_short_a_standby(self):
         backend.run_set(state="done", next_attempt_at=0.0)
         self.assertFalse(backend.run_retry_now())

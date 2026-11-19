@@ -137,7 +137,6 @@ class Order(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", upstream):
             return backend._converge(PLID, COOKIE, plan, spotify_id=spotify_id)
 
-    # --- 1: order is a real property of a transfer --------------------------
     def test_order_preserved_is_a_subsequence_test(self):
         self.assertTrue(backend._order_preserved([A, B, A, C], [A, B, A, C]))
         self.assertTrue(backend._order_preserved([A, B, A, C], ["X", A, B, A, C]))
@@ -148,7 +147,6 @@ class Order(unittest.TestCase):
         self.assertFalse(backend._order_preserved([A, B, A, C], [A, A, B, C]),
                          "the two A copies may not swap places")
 
-    # --- 2: a missing repeat is repaired, not declared done -----------------
     def test_a_missing_repeat_copies_the_copy_the_plan_asked_for(self):
         plan = [A, B, A, C]
         upstream = Upstream([A, B, C])          # the second A was lost

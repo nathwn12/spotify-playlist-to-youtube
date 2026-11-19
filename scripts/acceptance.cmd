@@ -7,7 +7,6 @@ rem relative path below (tests\..., index.html) means the same as it always did.
 setlocal
 cd /d "%~dp0.."
 
-rem --- isolated state -------------------------------------------------------
 rem backend.py derives STATE (server.log, created.json, settings.json and the
 rem three cookie files) from APPDATA at import time, and every python gate below
 rem imports it. Without this the run wrote into the live app's state dir.

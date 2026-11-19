@@ -1255,7 +1255,6 @@ def _prefer_edition(scored: list, album: str) -> list:
     except Exception:
         return scored
 
-# --- script-aware matching -------------------------------------------------
 # The legacy scorer above folds to ASCII, so any CJK title becomes "" on both
 # sides and the row skips even when the right video is rank 1. These helpers
 # keep the script, romanize kana deterministically, and compare characters.

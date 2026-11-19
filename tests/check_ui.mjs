@@ -88,7 +88,6 @@ function ok(name, cond, detail = "") {
   console.log("FAIL " + name + (detail ? "  <- " + detail : ""));
 }
 
-/* ---------- the smallest DOM the page actually touches ---------- */
 
 const stripTags = (s) => s.replace(/<[^>]*>/g, "");
 
@@ -816,7 +815,6 @@ feed({seq: 10, counts: {source: 5000, unique: 5000, added: 1, skipped: 0, duplic
 ok("a count-only poll does not touch the row memo", run("_sortCalls") === 0,
   "sorts " + run("_sortCalls"));
 
-/* ---------- 6. rate and ETA across a verified slice ---------- */
 run("clearLocal();");
 feed({
   run_id: "rate", seq: 11, phase: "append", state: "running", total: 508, declared: 508,
@@ -1898,7 +1896,6 @@ ok("a retry with no detach still re-reads the run",
 retryReply = () => jsonResponse({ok: false});
 run("unpoll();tickStop();");
 
-/* ---------- the load-time surface is still intact ---------- */
 ok("the page read its settings, its cookie record and its version on load",
   requests.some((u) => u.startsWith("/api/settings")) &&
   requests.some((u) => u.startsWith("/api/cookies")) &&

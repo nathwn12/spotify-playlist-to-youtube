@@ -149,7 +149,6 @@ class Upstream:
             return Resp(self.home_html())
         raise MissingResponse("no fake for " + url)
 
-    # --- Spotify -----------------------------------------------------------
     def home_html(self):
         return ('<html><script src="' + BUNDLE_JS + '"></script></html>')
 
@@ -182,7 +181,6 @@ class Upstream:
             "__typename": "Playlist", "name": "Scale Test 500",
             "content": {"totalCount": len(self.tracks), "items": items}}}})
 
-    # --- InnerTube ---------------------------------------------------------
     def search(self, body):
         q = str(body.get("query", ""))
         if q not in self.searches:

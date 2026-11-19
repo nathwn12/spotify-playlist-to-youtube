@@ -150,7 +150,6 @@ class Upstream:
             for q in backend._query_variants(src["title"], src["artist"]):
                 self.searches[q] = search_sections(song)
 
-    # --- progress capture --------------------------------------------------
     def note(self, stage):
         if self.watcher is None:
             return
@@ -186,7 +185,6 @@ class Upstream:
             return self.search(body)
         raise MissingResponse("no fake for " + url)
 
-    # --- InnerTube ---------------------------------------------------------
     def search(self, body):
         q = str(body.get("query", ""))
         if q not in self.searches:
@@ -286,7 +284,6 @@ class Slices(unittest.TestCase):
             backend._transfer_thread(SPOTIFY_URL, COOKIE, "", "PRIVATE", rid)
         return backend.run_snapshot()
 
-    # --- 1: 2,500 rows, every occurrence, in order --------------------------
     def test_2500_rows_keep_every_occurrence_in_source_order(self):
         rows = source_tracks(2500, 50)
         upstream = Upstream(rows)
@@ -312,7 +309,6 @@ class Slices(unittest.TestCase):
         self.assertEqual(snap["summary"].count("\n"), 0)
         self.assertIn("holds 2500", snap["summary"])
 
-    # --- 2: bounded network, one read burst per slice -----------------------
     def test_the_write_is_sent_in_100_song_slices_with_a_read_back_after_each(self):
         rows = source_tracks(2500, 50)
         upstream = Upstream(rows)
@@ -335,7 +331,6 @@ class Slices(unittest.TestCase):
         for act in upstream.actions:
             self.assertEqual(act.get("dedupeOption"), SKIP, act)
 
-    # --- 3: live progress is verified progress ------------------------------
     def test_live_progress_is_verified_and_a_sent_copy_is_pending(self):
         rows = source_tracks(2500, 50)
         upstream = Upstream(rows)
@@ -364,7 +359,6 @@ class Slices(unittest.TestCase):
         pending_snaps = [s for s in self.snaps if s["pending"]]
         self.assertTrue(pending_snaps, "no in-flight copy was ever reported pending")
 
-    # --- 4: a read that stops early sends nothing further -------------------
     def test_a_broken_continuation_stops_the_sends_and_claims_nothing(self):
         rows = source_tracks(300, 0)
         upstream = Upstream(rows, broken_from=2)   # read 1 = the create's
