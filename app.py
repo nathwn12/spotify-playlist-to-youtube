@@ -1,4 +1,3 @@
-"""sp2yt desktop shell: localhost server + Edge WebView2 window. No browser tab."""
 import multiprocessing
 import sys
 import time

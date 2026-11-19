@@ -1,17 +1,4 @@
 #!/usr/bin/env python3
-"""Run one acceptance gate under a proven-synthetic state root.
-
-scripts\acceptance.cmd creates a scratch root, points APPDATA, LOCALAPPDATA, USERPROFILE,
-HOME, TEMP and TMP into it, and runs every python gate through this script. The
-guard is the fail-closed half of that isolation: backend.py falls back to the
-repository directory when it cannot create its STATE dir, so a child that
-imported backend on a bad root would write server.log, created.json and the
-cookie records into the tree instead of failing. Nothing of the gate runs until
-that fallback is proven not to have happened.
-
-Exit codes: the gate's own code; 3 when the isolation is broken, in which case
-the gate was never executed.
-"""
 import importlib
 import os
 import runpy
@@ -48,9 +35,6 @@ def main(argv):
     if os.path.normcase(appdata) != os.path.normcase(expect_appdata):
         _fail(f"APPDATA is {appdata}, not this run's {expect_appdata}")
 
-    # Pre-created so backend's own makedirs cannot be the thing that fails; if it
-    # still falls back to the repo, STATE stops matching this path and the guard
-    # stops the child below.
     state = os.path.join(appdata, "sp2yt")
     try:
         os.makedirs(state, exist_ok=True)

@@ -1,23 +1,4 @@
 #!/usr/bin/env python3
-"""Order and multiplicity: a playlist that holds every copy, in the source's order.
-
-Two separate claims, both proved here:
-
-  * MULTISET. A plan can repeat a videoId (the same song on an album and on its
-    single). The convergence pass must count copies, not distinct ids: plan
-    [A,B,A,C] against a playlist holding [A,B,C] is one copy short, and re-sending
-    that copy is the repair - declaring it done is a false success that persists
-    `complete: true` over a playlist missing a row.
-  * ORDER. `edit_playlist` can only append, so a copy repaired after a later copy
-    already landed sits at the end: [A,B,A,C] repaired from [A,C] becomes
-    [A,C,B,A]. That cannot be undone safely, so it must be *said*: the run reports
-    the plan is no longer a subsequence of the playlist instead of claiming a
-    faithful transfer.
-
-No network: one fake holds the playlist and answers create/edit/browse.
-
-Run: python -X utf8 tests/test_order.py   (exit 0 only when every check passes)
-"""
 import json
 import os
 import re
@@ -52,8 +33,6 @@ class Resp:
 
 
 class Upstream:
-    """A playlist that accepts every add carrying the skip, and refuses a second
-    copy without it (unless `refuse_extra` models a server that refuses anyway)."""
 
     def __init__(self, held, refuse_extra=False, script=()):
         self.playlist = list(held)
@@ -93,8 +72,6 @@ class Upstream:
             self.reads += 1
         held = list(self.playlist)
         if not token and self.script:
-            # A complete reply that is not the playlist's current state: the stale
-            # snapshot served for a read taken before the writes it should show.
             held = list(self.script.pop(0))
         page = held[start:start + PAGE]
         shelf = {"contents": [{"musicResponsiveListItemRenderer":
@@ -141,7 +118,6 @@ class Order(unittest.TestCase):
         self.assertTrue(backend._order_preserved([A, B, A, C], [A, B, A, C]))
         self.assertTrue(backend._order_preserved([A, B, A, C], ["X", A, B, A, C]))
         self.assertTrue(backend._order_preserved([], []))
-        # a repaired copy that landed at the end is not the source's order
         self.assertFalse(backend._order_preserved([A, B, A, C], [A, C, B, A]))
         self.assertFalse(backend._order_preserved([A, B, A, C], [A, B, C]))
         self.assertFalse(backend._order_preserved([A, B, A, C], [A, A, B, C]),
@@ -165,12 +141,6 @@ class Order(unittest.TestCase):
         self.assertEqual(upstream.playlist, [A, C, B, A])
 
     def test_a_repair_of_a_repeated_copy_is_proved_by_the_copies_it_sent(self):
-        """Plan [A,A,B] against a playlist holding [B]: two copies are absent and the
-        repair sends both. The read that follows must prove TWO new entries. Counted
-        by videoId the batch promises one, so a stale read one entry short reads as
-        complete, one copy looks absent, and it is sent a third time - for a plan
-        that asks for two. The pass also reports one status per copy, never one per
-        videoId."""
         upstream = Upstream([B], script=[[B], [B, A]])   # read 2 is a stale page
         out = self.converge(upstream, [A, A, B])
         self.assertEqual(out["state"], "done", out)
@@ -186,20 +156,16 @@ class Order(unittest.TestCase):
         out = self.converge(upstream, plan, spotify_id="SPORDER")
         self.assertEqual(out["state"], "gaveup", out)
         self.assertIn(A, out["residual"], out)
-        # The persisted verdict is what a later run starts from: a playlist that
-        # is a copy short must never be recorded as complete.
         rec = backend.load_created().get("SPORDER") or {}
         self.assertIs(rec.get("complete"), False,
                       "a short playlist persisted complete: %r" % (rec,))
 
-    # --- 3: the repaired order is named, never silently accepted ------------
     def test_a_repaired_copy_at_the_end_is_reported_as_a_different_order(self):
         plan = [A, B, A, C]
         upstream = Upstream([A, C])
         out = self.converge(upstream, plan)
         self.assertEqual(upstream.playlist, [A, C, B, A])
         self.assertFalse(backend._order_preserved(plan, out["entries"] or []))
-        # ...and the done line says so instead of claiming a faithful transfer.
         line = backend._done_summary(
             {"source": 4, "unique": 3, "added": 4, "skipped": 0, "duplicate": 0,
              "unverified": 0, "refused": 0}, 4, order_differs=True)

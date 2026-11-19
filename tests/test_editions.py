@@ -1,29 +1,4 @@
 #!/usr/bin/env python3
-"""Editions: the same song on an album and on its single is two rows.
-
-Spotify hands the transfer rows, not songs. A playlist can hold the album cut and
-the single, or the deluxe cut and the standard one, with one title, one artist and
-often one duration between them. Three things keep those rows faithful:
-
-  * the Spotify row carries `album` when the player query supplies
-    `albumOfTrack.name` - the edition lives there, not in the title;
-  * the search cache key includes the album, so two editions never share one
-    lookup (and one edition's candidates never answer for the other);
-  * an album-bearing query is tried LAST, only when the plain queries did not
-    identify the row, and an edition word in the source album breaks a near-tie
-    among candidates already within 0.05 of the leader.
-
-None of that is a gate: a row the album query cannot identify skips exactly as it
-would have, and no row is dropped or merged. With no album metadata every one of
-these paths is inert, which is why the recorded fixtures are unaffected.
-
-Also pinned here: compound version labels. "Slowed + Reverb" and "Super Slowed +
-Reverb" are different versions and must never substitute for one another.
-
-No network: one fake answers the Spotify reads and the InnerTube searches.
-
-Run: python -X utf8 tests/test_editions.py   (exit 0 only when every check passes)
-"""
 import json
 import os
 import sys
@@ -67,7 +42,6 @@ def json_resp(obj):
 
 
 def card(video_id, title, artist, duration="3:00"):
-    """One InnerTube shelf row in the shape the matcher reads."""
     return {"musicShelfRenderer": {"contents": [{"musicResponsiveListItemRenderer": {
         "playlistItemData": {"videoId": video_id},
         "flexColumns": [
@@ -82,7 +56,6 @@ def card(video_id, title, artist, duration="3:00"):
 
 
 class SpotifyFake:
-    """The keyless Spotify read: embed page, player bundle, token, pathfinder."""
 
     def __init__(self, rows, declared=None):
         self.rows = rows
@@ -127,7 +100,6 @@ class SpotifyFake:
 
 
 class SearchFake:
-    """InnerTube search: answers by query text, exactly as recorded."""
 
     def __init__(self, table):
         self.table = table
@@ -174,8 +146,6 @@ class Editions(unittest.TestCase):
         self.assertEqual([t["album"] for t in got["tracks"]],
                          ["Night Drive (Deluxe Edition)", "Night Drive", ""])
         self.assertEqual(len(got["tracks"]), 3)
-        # The edition is on the row, so the transfer can tell the two Neons apart;
-        # nothing was dropped or merged on the way.
         self.assertEqual([t["uri"] for t in got["tracks"]],
                          ["spotify:track:1", "spotify:track:2", "spotify:track:3"])
 
@@ -188,7 +158,6 @@ class Editions(unittest.TestCase):
                                 album="Night Drive (Deluxe Edition)")
         self.assertNotEqual(a, b, "two editions shared one cache key")
         self.assertEqual(a, c, "the same edition must reuse its own lookup")
-        # No album metadata at all: the key is exactly what it was before.
         self.assertEqual(backend._search_key("Neon Artist", "Neon", "Artist", 180000),
                          backend._search_key("Neon Artist", "Neon", "Artist", 180000))
 
@@ -239,7 +208,6 @@ class Editions(unittest.TestCase):
         self.assertIsNone(r.get("videoId"), r)
         self.assertTrue(r.get("skipped"), "a skip must carry its reason")
 
-    # --- 4: the edition breaks a near-tie, and only a near-tie --------------
     def test_the_named_edition_wins_a_near_tie(self):
         cands = [
             {"videoId": "ALBUMCUT001", "title": "Neon", "artist": "Artist \u2022 Night Drive",
@@ -261,8 +229,6 @@ class Editions(unittest.TestCase):
                          "without album metadata the matcher's order stands")
 
     def test_the_edition_never_promotes_a_candidate_the_matcher_refused(self):
-        """Only candidates within 0.05 of the leader can be reordered: a deluxe
-        card that scores far below the album cut stays where it is."""
         scored = [
             {"videoId": "ALBUMCUT001", "title": "Neon", "artist": "Artist \u2022 Night Drive",
              "duration": "3:00", "score": 0.95, "t": 1.0, "a": 1.0, "d": 1.0},

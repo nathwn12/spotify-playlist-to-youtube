@@ -1,14 +1,4 @@
 #!/usr/bin/env python3
-"""Record a playlist's acceptance fixture rows from the real services.
-
-Budget: at most 40 real YouTube Music searches, 300 ms apart. The playlist
-read is one keyless Spotify fetch. Everything the gate later does is offline.
-
-The version rows at the top are tied to the recorded playlist, so re-recording
-a different playlist means editing VERSION_ROWS.
-
-Run from the repo root:  python3 tests\\record_fixtures.py <public spotify playlist url>
-"""
 import json
 import os
 import re
@@ -29,8 +19,6 @@ MAX_SEARCHES = 40  # hard cap; this pass spent two probe searches before recordi
 SPACING_S = 0.3
 OUT = fixture_lib.FIXTURE
 
-# The ten version titles that previously mismatched. Four share one title,
-# which is the distinct-id check in the gate.
 VERSION_ROWS = [
     ("MONTAGEM RETINAL PLATINA - Sped Up", None),
     ("MONTAGEM RETINAL PLATINA - Slowed", None),
@@ -153,13 +141,6 @@ def sections_of(raw):
 
 
 def merge_rows(old_rows, new_rows):
-    """Keep the hand-authored rows across a re-record, then append new ones.
-
-    A row carrying its own "responses" map was written by hand (the Japanese
-    script rows), so it is never discarded: it goes first, in its old order,
-    with its map untouched. Newly recorded rows follow, minus any whose id is
-    already taken. One id, one row.
-    """
     curated = [r for r in (old_rows or [])
                if isinstance(r, dict) and isinstance(r.get("responses"), dict)]
     kept = {r.get("id") for r in curated}
@@ -173,10 +154,6 @@ def merge_rows(old_rows, new_rows):
 
 
 def self_check():
-    """Offline proof that a re-record cannot drop the hand-authored rows.
-
-    No network, no fixture read, no fixture write: merge_rows is pure.
-    """
     curated = {"id": "ja-best-guess", "kind": "playlist",
                "source": {"title": "群青", "artist": "YOASOBI", "duration_ms": 252000},
                "queries": ["群青 YOASOBI"],

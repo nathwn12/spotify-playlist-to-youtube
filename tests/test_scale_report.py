@@ -1,18 +1,4 @@
 #!/usr/bin/env python3
-"""Scale regression: a 500-track transfer must report what the playlist holds.
-
-The transfer derives every reported outcome from the playlist read-back
-(yt_playlist_entries). A real ~500-item playlist is served by InnerTube in
-pages of ~100 behind a continuation token. When the read-back consumes one
-page and never follows the continuation, 400 tracks that really landed are
-scored absent and reported as refused/missing.
-
-No network: urlopen is replaced by one upstream that answers exactly the
-shapes backend.py asks for, and holds the playlist as a real one would -
-paged, with a continuation, and refusing an id it already holds.
-
-Run: python -X utf8 tests/test_scale_report.py   (exit 0 only when every check passes)
-"""
 import json
 import os
 import re
@@ -42,25 +28,20 @@ PLID = "PLscaleReport0001"
 SPOTIFY_URL = "https://open.spotify.com/playlist/" + PLID
 YT_COOKIE = "SID=test-only; HSID=test-only; SAPISID=test-only-value"
 BUNDLE_JS = "https://open.spotifycdn.com/cdn/build/web-player/web-player.test01.js"
-# The report may not print a refusal it cannot prove; these are the words that
-# mark a track as present-but-unproven instead.
 UNVERIFIED_WORDS = ("unverified", "inconclusive", "not verified", "unconfirmed")
 
 
 def vid(i: int) -> str:
-    """11-char InnerTube videoId for source track i (1-based)."""
     return "T%010d" % i
 
 
 def source_tracks(n=TRACKS):
-    """The Spotify rows a 500-track playlist resolves to: plain titles, no versions."""
     return [{"uri": "spotify:track:%022d" % i, "title": "Test Track %03d" % i,
              "artist": "Test Artist %03d" % i, "duration_ms": 180000 + i}
             for i in range(1, n + 1)]
 
 
 def search_sections(i: int):
-    """One confident match, in the recorded-fixture shape (fixture_lib.envelope wraps it)."""
     return [{"musicShelfRenderer": {"contents": [{"musicResponsiveListItemRenderer": {
         "playlistItemData": {"videoId": vid(i)},
         "flexColumns": [
@@ -100,8 +81,6 @@ def json_resp(obj):
 
 
 class Upstream:
-    """The fake platform: Spotify embed + web-player token, InnerTube search,
-    playlist create/append/browse. Holds the playlist the way YTM does."""
 
     def __init__(self, tracks, paging_broken=False):
         self.tracks = tracks
@@ -198,15 +177,12 @@ class Upstream:
                 continue
             self.appends.append(v)
             if v in self.playlist:
-                # A real edit_playlist refuses an id the list already holds.
                 self.refused_adds.append(v)
                 return json_resp({"status": "STATUS_FAILED"})
             self.playlist.append(v)
         return json_resp({"status": "STATUS_SUCCEEDED"})
 
     def browse(self, body):
-        """One playlist page, with a continuation when more entries follow.
-        Asking for a page the fake cannot deliver raises a transport error."""
         held = list(self.playlist)
         token = body.get("continuation")
         if token:
@@ -233,7 +209,6 @@ class ScaleReport(unittest.TestCase):
         backend._SEARCH_CACHE = {}
         backend._SP_TOK = {"token": "", "exp_ms": 0}
         backend._SP_BUNDLE = {"js": "", "qhash": "", "at": 0.0}
-        # The clock seam: the run's backoff is exercised, never spent.
         self.waits = []
         self._seams = [mock.patch.object(backend, "_pause", lambda s: None),
                        mock.patch.object(backend, "_standby_wait", self._wait, create=True)]
@@ -251,18 +226,15 @@ class ScaleReport(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def transfer(self, upstream):
-        """A complete run through the backend's own transfer path."""
         with mock.patch("urllib.request.urlopen", upstream):
             rid = backend.run_begin("", "")
             backend._transfer_thread(SPOTIFY_URL, YT_COOKIE, "", "PRIVATE", rid)
         return backend.run_snapshot()
 
-    # 1
     def test_a_500_track_transfer_reports_every_track_it_really_holds(self):
         upstream = Upstream(source_tracks())
         snap = self.transfer(upstream)
         self.assertEqual(snap["phase"], "done", snap.get("error"))
-        # The fake accepted every add, so the playlist really holds all 500.
         self.assertEqual(len(upstream.playlist), TRACKS)
         self.assertEqual(snap["total"], TRACKS)
         self.assertEqual(snap["landed"], TRACKS)
@@ -271,7 +243,6 @@ class ScaleReport(unittest.TestCase):
         self.assertEqual(snap["playlist_count"], TRACKS)
         self.assertIn("holds %d" % TRACKS, snap["summary"])
 
-    # 2
     def test_the_served_ledger_agrees_with_the_summary(self):
         upstream = Upstream(source_tracks())
         snap = self.transfer(upstream)
@@ -281,28 +252,20 @@ class ScaleReport(unittest.TestCase):
         states = {}
         for row in rows:
             states[row.get("state")] = states.get(row.get("state"), 0) + 1
-        # Every present track is a landed row; nothing present is scored absent.
         self.assertEqual(states.get("landed", 0), TRACKS, states)
         self.assertEqual(states.get("refused", 0), 0, states)
         self.assertEqual(states.get("missing", 0), 0, states)
-        # The session counters are recounted from those rows, so they must agree.
         self.assertEqual(snap["landed"], states.get("landed", 0))
         self.assertEqual(snap["refused"], states.get("refused", 0))
         self.assertEqual(snap["missing"], states.get("missing", 0))
         wrong = [r for r in rows if r.get("state") in ("refused", "missing")][:5]
         self.assertEqual(wrong, [])
 
-    # 3
     def test_an_incomplete_read_back_never_reports_tracks_as_absent(self):
         upstream = Upstream(source_tracks(), paging_broken=True)
         snap = self.transfer(upstream)
-        # The create's read proved its 50 inline copies, so ONE slice went out; the
-        # read after it could not reach the end, so no further slice was sent. The
-        # old queue appended all 450 blind and then admitted 400 were unproven;
-        # this run stops at the first unproved read instead of adding to it.
         self.assertEqual(len(upstream.playlist), CREATE_INLINE + PAGE)
         self.assertEqual(len(upstream.appends), PAGE)
-        # Exactly the first page was proven; the rest is present-in-plan but unproven.
         self.assertEqual(snap["landed"], PAGE)
         self.assertEqual(snap["refused"], 0)
         self.assertEqual(snap["missing"], 0)
@@ -315,16 +278,10 @@ class ScaleReport(unittest.TestCase):
         summary = snap["summary"]
         self.assertTrue(any(w in summary.lower() for w in UNVERIFIED_WORDS), summary)
         self.assertIn(str(TRACKS - PAGE), summary)
-        # A count it cannot support must not be printed at all. The real summary
-        # format is "<n> refused" / "<n> missing", so the assertion names that
-        # format - the old "refused <n>" spelling passed on the wrong text.
         self.assertNotIn("%d refused" % (TRACKS - PAGE), summary)
         self.assertNotIn("%d missing" % (TRACKS - PAGE), summary)
         self.assertNotIn("refused %d" % (TRACKS - PAGE), summary)
         self.assertNotIn("missing %d" % (TRACKS - PAGE), summary)
-        # A read that never reached the end proves nothing about its tail, so
-        # nothing is re-sent off it: no copy is appended twice, and the run stands
-        # by for a read it can trust instead of declaring itself done.
         self.assertEqual(sorted(upstream.appends), sorted(set(upstream.appends)),
                          "a copy was appended twice off an incomplete read")
         self.assertTrue(self.waits, "the run never stood by")

@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""Structure gate for the always-visible YouTube Music connect card in index.html.
-
-Static assertions only. The page script's parse gate is tests/check_page.py,
-which scripts\acceptance.cmd runs before this file; runtime behaviour against
-/api/cookies needs the live server and is not covered here.
-"""
 import os
 import re
 import sys
@@ -27,7 +21,6 @@ def ok(name, cond, detail=""):
         fails.append(name)
 
 
-# 1 the advanced collapse is gone and nothing from it survives
 ok("no details drawer", 'class="adv"' not in html, "details.adv is still in index.html")
 ok("no details element at all", "<details" not in html, "<details> still in the rail")
 ok("no summary element", "<summary" not in html, "<summary> still in the rail")
@@ -41,7 +34,6 @@ ok("hidden cookie file input exists", bool(tag), "no #ckfile input for the card 
 ok("cookie file input is not visible", bool(tag) and ("hidden" in tag.group(0) or 'class="sr"' in tag.group(0)),
    "the file input must stay out of sight")
 
-# 2 every id the contract names
 IDS = ["acct", "acctbadge", "acctsub", "accthelp", "acctactions",
        "pickcookie", "pastecookie", "replacecookie", "removecookie",
        "detectedrow", "detectedname", "usecookie",
@@ -50,7 +42,6 @@ for i in IDS:
     ok('id="%s"' % i, 'id="%s"' % i in html, "missing from index.html")
 ok('data-state="none" at rest', 'data-state="none"' in html, "#acct has no initial state")
 
-# 3 the card talks to the cookies API only
 ok("/api/cookies is read", '"/api/cookies"' in script, "no GET /api/cookies")
 ok("/api/cookies/check is used", '"/api/cookies/check"' in script, "no check call")
 ok("/api/cookies/remove is used", '"/api/cookies/remove"' in script, "no remove call")
@@ -59,8 +50,6 @@ ok("/api/vault is gone", "/api/vault" not in script, "the page still reads the r
 ok("one latch call site only", script.count('"/api/latch"') == 1,
    "expected exactly one /api/latch call, found %d" % script.count('"/api/latch"'))
 
-# the rejection path must ask what is really stored before it claims failure:
-# /api/latch can save a valid yt cookie and still 400 on a junk spotify cookie.
 _i = script.index("async function latchText(")
 latch = script[_i:script.index("\n}", _i)]
 tail = latch[latch.index("return true;"):]
@@ -76,13 +65,11 @@ ok("latch shows the rejection only when nothing usable is stored",
    GUARD in tail and JUNK in tail and tail.index(GUARD) < tail.index(JUNK),
    "the backend error can cover a cookie that was really stored")
 
-# 4 the transfer surface is intact
 for i in ("srcurl", "startbtn", "ledger"):
     ok('id="%s" survives' % i, 'id="%s"' % i in html, "transfer surface broken")
 ok("/api/transfer still called", '"/api/transfer"' in script, "start no longer posts a transfer")
 ok("start reads the card state", "S.ytState" in script, "startTransfer has no cookie gate")
 
-# the six states, in the contract's words
 STATES = {
     "none": ("Setup", "Not connected yet"),
     "checking": ("Checking\u2026", "Checking your file\u2026"),
@@ -101,7 +88,6 @@ ok("start gate sentence", "Connect YouTube Music first \u2014 choose your cookie
 ok("using-file line", "Using ${" in script, "no `Using <file>` line")
 ok("needs pulse", "needs" in script and ".acct.needs" in html, "no .needs pulse on #acct")
 
-# 5 the link row: one height, one line, label welded to its control
 GROUP = re.search(r'<div class="privgroup"[^>]*>(.*?)</div>\s*<button id="morebtn"', html, re.S)
 ok("privacy label and control share a wrapper",
    bool(GROUP) and 'id="privcap"' in GROUP.group(1) and 'class="privseg"' in GROUP.group(1),
@@ -122,7 +108,6 @@ ok("kbd chips are not clipped by .keys",
    and re.search(r"\.keys kbd\{[^}]*vertical-align:top", html) is not None,
    ".keys is still shorter than the kbd inline boxes")
 
-# 6 no cookie value is ever rendered
 ok("no cookie sample in the page", "SAPISID=" not in html, "a cookie value sample is in the markup")
 ok("no cookie-looking placeholder",
    not re.search(r'placeholder="[^"]*(SAPISID|cookie=|sp_dc=)', html), "a placeholder leaks a cookie shape")
@@ -130,8 +115,6 @@ ok("paste box starts empty",
    re.search(r"<textarea[^>]*\bid=\"pasteinput\"[^>]*>\s*</textarea>", html) is not None,
    "#pasteinput carries content at rest")
 
-# 7 the cover tile never paints a broken-image glyph: a failed load falls back
-# to a 1x1 transparent pixel, because WebView2 keeps the glyph after src removal
 BLANK = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
 ok("cover tile has a transparent placeholder pixel", BLANK in html,
    "#pcover has no transparent data URI to fall back to")
@@ -142,7 +125,6 @@ ok("page never removes the cover src",
    "removeAttribute('src')" not in html and 'removeAttribute("src")' not in html,
    "removeAttribute('src') lets WebView2 keep painting the broken glyph")
 
-# 8 a guessed match is labelled in the ledger, in the slot the skip reason uses
 ok("guessed row shows its reason", 'r.guess?(r.status||"best guess")' in script,
    "a matched row with r.guess renders no reason; it must show r.status || 'best guess'")
 

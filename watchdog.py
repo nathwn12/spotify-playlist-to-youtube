@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-"""watchdog: inspects sp2yt audit log + live status, diagnoses failures.
-Usage: python3 watchdog.py [--watch]  (single check; --watch loops every 15s)
-Never prints cookie values — log contains lengths only by design."""
 import json
 import os
 import sys
@@ -15,17 +12,11 @@ def get(p, timeout=10):
     return urllib.request.urlopen(BASE + p, timeout=timeout).read().decode()
 
 def _evidence_advice():
-    """The close every failure branch ends on. None of them can see the request, so
-    none promises that a retry is available - the record can refuse to resume - and
-    none replaces evidence: the log, created.json and the playlist are the only
-    record of what happened."""
     print("     Check the run's status and the playlist before deciding whether to retry;")
     print("     keep the log and created.json as they are, and do not Reset or delete the")
     print("     playlist.")
 
 def _unproven_advice(what):
-    """A 429 and a timeout look the same to this heuristic: either can hit a search,
-    a read, or an add, and the exception text names none of them."""
     print(f"fix: {what}.")
     print("     The log cannot say which request it was, and an add that failed this way may")
     print("     have landed.")

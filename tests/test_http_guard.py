@@ -1,16 +1,4 @@
 #!/usr/bin/env python3
-"""Offline gate for the loopback request guard and the redacted vault route.
-
-Every request here goes to a throwaway instance of the real handler bound to an
-ephemeral 127.0.0.1 port, with a synthetic cookie and a temporary app-state folder.
-Nothing reaches the network, and nothing reads or writes the user's real vault,
-record or cookie files.
-
-What is claimed: this server refuses a request that names a non-loopback Host (the
-shape a DNS-rebinding page produces) and a browser request whose Origin is not this
-server's own page. What is NOT claimed: isolation from another process of the same
-Windows user - a local program can send any header it likes, including none.
-"""
 
 import http.client
 import json
@@ -26,7 +14,6 @@ sys.path.insert(0, os.path.dirname(HERE))
 
 import backend  # noqa: E402
 
-# Synthetic, never a real credential: the marker is asserted absent from every body.
 SECRET = "SyntheticGuardValue01"
 SYNTH_YT = "\n".join(
     [
@@ -72,7 +59,6 @@ class GuardCase(unittest.TestCase):
             setattr(backend, k, v)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    # one request, every header explicit
     def call(self, method, path, body=None, host=None, origin=None):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         headers = {}
@@ -110,9 +96,7 @@ class GuardCase(unittest.TestCase):
         except FileNotFoundError:
             return None
 
-    # 1
     def test_forged_host_is_refused_on_reads_and_writes(self):
-        """A page whose own name resolves to loopback sends its own Host, not this one."""
         forged = "attacker.example:%d" % self.port
         for method, path, body in (
             ("GET", "/api/cookies", None),
@@ -127,9 +111,7 @@ class GuardCase(unittest.TestCase):
             self.assertFalse(json.loads(raw)["ok"], "%s %s looked successful" % (method, path))
         self.assertEqual(self.vault_text(), "", "a refused write still reached the vault")
 
-    # 2
     def test_rebinding_name_that_resolves_to_loopback_is_refused(self):
-        """The socket is loopback either way; only the Host separates the two callers."""
         for host in (
             "127.0.0.1.nip.io:%d" % self.port,
             "localhost.attacker.example:%d" % self.port,
@@ -139,7 +121,6 @@ class GuardCase(unittest.TestCase):
             status, _, _ = self.call("GET", "/api/cookies", host=host)
             self.assertEqual(status, 403, host + " was accepted")
 
-    # 3
     def test_cross_origin_write_is_refused(self):
         for origin in (
             "https://attacker.example",
@@ -152,7 +133,6 @@ class GuardCase(unittest.TestCase):
             self.assertEqual(status, 403, origin + " was accepted")
         self.assertEqual(self.vault_text(), "", "a refused write still reached the vault")
 
-    # 4
     def test_same_origin_write_is_accepted(self):
         for host in ("127.0.0.1:%d" % self.port, "localhost:%d" % self.port):
             origin_host = host.split(":")[0]
@@ -166,15 +146,11 @@ class GuardCase(unittest.TestCase):
             self.assertEqual(status, 200, raw)
             self.assertTrue(json.loads(raw)["ok"])
 
-    # 5
     def test_no_origin_caller_is_allowed(self):
-        """The native shell, the build smoke test and a CLI send no Origin. Allowing them
-        is a deliberate limit: nothing here can tell a local program from the app."""
         status, raw, _ = self.call("POST", "/api/latch", {"yt_cookie": SYNTH_YT})
         self.assertEqual(status, 200, raw)
         self.assertTrue(json.loads(raw)["ok"])
 
-    # 6
     def test_health_and_page_stay_readable_for_the_shell_and_the_build(self):
         status, raw, _ = self.call("GET", "/health")
         self.assertEqual(status, 200, raw)
@@ -183,7 +159,6 @@ class GuardCase(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("text/html", headers["content-type"])
 
-    # 7
     def test_vault_route_returns_flags_not_values(self):
         self.assertTrue(self.call("POST", "/api/latch", {"yt_cookie": SYNTH_YT, "spotify_cookie": SYNTH_SP})[0] == 200)
         blob = json.loads(self.vault_text())
@@ -200,18 +175,13 @@ class GuardCase(unittest.TestCase):
         self.assertNotIn("yt_cookie", body)
         self.assertNotIn("sp_cookie", body)
 
-    # 8
     def test_no_cors_grant_is_ever_answered(self):
-        """A browser preflight must not be granted: nothing here answers with an allow."""
         for method in ("OPTIONS", "HEAD"):
             _, _, headers = self.call(method, "/api/latch")
             self.assertNotIn("access-control-allow-origin", headers)
             self.assertNotIn("access-control-allow-methods", headers)
 
-    # 9
     def test_reset_reports_a_record_it_could_not_rewrite(self):
-        """A failed save must not read as "reset": the record is the only copy of the
-        plan and the playlist link."""
         self.write_created({"sid-1": {"yt_id": "PLone", "complete": False}})
         os.makedirs(backend.CREATEDF + ".tmp")  # the atomic write cannot land
         status, raw, _ = self.call("POST", "/api/reset", {"spotify_id": "sid-1"})
@@ -223,7 +193,6 @@ class GuardCase(unittest.TestCase):
         self.assertIn("sid-1", self.read_created(), "the record was lost by its own failure")
         self.assert_says_record_survived(body["error"])
 
-    # 10
     def test_reset_reports_a_record_it_could_not_remove(self):
         os.makedirs(backend.CREATEDF)
         status, raw, _ = self.call("POST", "/api/reset", {})
@@ -235,14 +204,10 @@ class GuardCase(unittest.TestCase):
         self.assert_says_record_survived(body["error"])
 
     def assert_says_record_survived(self, error):
-        """The failure names what happened and promises nothing about the next transfer:
-        a record can be blocked or non-resumable, and an empty spotify_id concerns every
-        record, so "it will be resumed" is a claim this route cannot make."""
         self.assertIn("could not be cleared", error)
         self.assertIn("may still be used", error)
         self.assertNotIn("resum", error.lower(), "a reset failure promised a resume")
 
-    # 11
     def test_reset_still_clears_a_record_it_can(self):
         self.write_created(
             {"sid-1": {"yt_id": "PLone", "complete": False}, "sid-2": {"yt_id": "PLtwo", "complete": False}}
@@ -258,10 +223,7 @@ class GuardCase(unittest.TestCase):
                          "a completed reset carried a partial-reset verdict")
         self.assertIsNone(self.read_created())
 
-    # 12
     def test_repeated_refusals_do_not_grow_the_audit_log(self):
-        """A page that keeps knocking must not make this server write a line per request:
-        the first refusal of each shape is recorded, the rest are not."""
         for _ in range(20):
             self.call("GET", "/api/cookies", host="attacker.example")
             self.call("POST", "/api/latch", {"yt_cookie": SYNTH_YT}, origin="https://attacker.example")
@@ -272,10 +234,7 @@ class GuardCase(unittest.TestCase):
             blocked = []
         self.assertEqual(len(blocked), 2, blocked)
 
-    # 13
     def test_a_refused_reset_carries_no_partial_verdict(self):
-        """A live run refuses before anything is cleared, so the answer may not even hint
-        that half of a reset happened - and the record must still be there."""
         self.write_created({"sid-1": {"yt_id": "PLone", "complete": False}})
         saved = backend.RUN["phase"]
         backend.RUN["phase"] = "append"

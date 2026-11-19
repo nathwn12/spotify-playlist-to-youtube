@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""Offline checks for cookie detection, shape validation, adoption and the state API.
-
-No network: nothing here calls check_yt_cookie or check_spotify_cookie.
-Every state path is redirected into a temporary directory, so the real
-%APPDATA%\\sp2yt, the Desktop and Downloads are never read or written.
-"""
 import json
 import os
 import shutil
@@ -69,8 +63,6 @@ NOTES = "my cookie notes\nfoo=bar\n"
 
 
 def api(path, body=None):
-    """One call against a throwaway loopback instance of the real handler.
-    Returns (status, parsed body); an error status is a result, not an exception."""
     srv = backend.ThreadingHTTPServer(("127.0.0.1", 0), backend.H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
@@ -91,14 +83,6 @@ def api(path, body=None):
 
 
 class LockProbe:
-    """Stands in for the shared cookie lock and records who reached the gate, who was let in,
-    and whether two threads were ever inside the section at the same time.
-
-    Ordering claims in the race tests come from these records, never from an elapsed time: a
-    test parks one operation inside its critical section, waits for the other to *arrive* at
-    the gate (an announcement), and then reads who is inside. A lock-free copy of `backend.py`
-    never enters the gate, so the first assertion goes red instead of racing.
-    """
 
     def __init__(self, real):
         self.real = real
@@ -133,9 +117,6 @@ class LockProbe:
         return self.real.__exit__(*exc)
 
     def wait_arrival(self, not_tid, timeout=10):
-        """Block until a thread other than `not_tid` has reached the gate.
-        A liveness bound only: in the fixed code the other side always calls the lock, and the
-        caller passes as soon as it has. What is claimed afterwards is read from `inside`."""
         deadline = time.time() + timeout
         with self.cv:
             while not [t for t in self.arrived if t != not_tid]:
@@ -177,7 +158,6 @@ class CookieTests(unittest.TestCase):
         return p
 
     def probe_lock(self):
-        """Put the probe in front of the shared lock; every cookie writer then goes through it."""
         real = backend._COOKIE_LOCK
         probe = LockProbe(real)
         backend._COOKIE_LOCK = probe
@@ -185,14 +165,11 @@ class CookieTests(unittest.TestCase):
         return probe
 
     def assert_shared_lock_held(self, probe, msg):
-        """The parked operation is inside the section and the lock really excludes: this thread
-        cannot acquire it. A no-op lock hands it over, so the case goes red instead of racing."""
         got = probe.real.acquire(blocking=False)
         if got:
             probe.real.release()
         self.assertFalse(got, msg)
 
-    # 1
     def test_desktop_export_filename_is_a_yt_cookie(self):
         self.assertEqual(backend.cookie_site(NETSCAPE, DESKTOP_NAME), "yt")
         shp = backend.cookie_shape(NETSCAPE, "yt")
@@ -200,14 +177,12 @@ class CookieTests(unittest.TestCase):
         self.assertEqual(shp["state"], "valid")
         self.assertEqual(shp["expires_at"], 0)
 
-    # 2
     def test_header_paste_is_valid_and_never_expired(self):
         self.assertEqual(backend.cookie_site(HEADER), "yt")
         shp = backend.cookie_shape(HEADER, "yt")
         self.assertEqual(shp["state"], "valid")
         self.assertEqual(shp["expires_at"], 0)
 
-    # 3
     def test_text_file_without_marker_is_junk_even_with_the_right_name(self):
         self.assertEqual(backend.cookie_site(NOTES), "")
         shp = backend.cookie_shape(NOTES, "yt")
@@ -218,12 +193,10 @@ class CookieTests(unittest.TestCase):
         self.assertEqual(backend.cookie_site(NOTES, DESKTOP_NAME), "yt")
         self.assertEqual(backend.cookie_shape(NOTES, "yt")["state"], "junk")
 
-    # 4
     def test_html_and_json_exports_are_junk(self):
         self.assertEqual(backend.cookie_shape(HTML, "yt")["state"], "junk")
         self.assertEqual(backend.cookie_shape(JSON_BLOB, "yt")["state"], "junk")
 
-    # 5
     def test_expired_netscape_auth_cookie_is_expired_and_not_adopted(self):
         shp = backend.cookie_shape(EXPIRED, "yt")
         self.assertEqual(shp["state"], "expired")
@@ -233,14 +206,12 @@ class CookieTests(unittest.TestCase):
         self.assertEqual(v["yt_cookie"], "")
         self.assertEqual(v["state"]["yt"], "none")
 
-    # 6
     def test_httponly_netscape_line_survives_normalize(self):
         norm = backend.normalize_cookie(HTTPONLY)
         self.assertIn("SAPISID=HtTpOnLyOnLy1234", norm)
         self.assertEqual(backend.cookie_site(HTTPONLY), "yt")
         self.assertEqual(backend.cookie_shape(HTTPONLY, "yt")["state"], "valid")
 
-    # 7
     def test_only_a_newer_file_is_adopted(self):
         old = self.write(DESKTOP_NAME, OLD_NETSCAPE, mtime=time.time() - 3600)
         v = backend.vault_load()
@@ -260,7 +231,6 @@ class CookieTests(unittest.TestCase):
         self.assertIn("yt:yt-new.txt", v["refreshed"])
         self.assertGreater(os.path.getmtime(old), 0)
 
-    # 9
     def test_rejected_files_are_ignored_not_best(self):
         self.write(DESKTOP_NAME, JUNK, mtime=time.time())
         self.write("yt-old.txt", EXPIRED, mtime=time.time() - 60)
@@ -283,8 +253,6 @@ class CookieTests(unittest.TestCase):
         self.assertEqual(backend.vault_load()["yt_cookie"], "")
 
     def test_check_rejects_only_the_value_that_failed(self):
-        """A definitive verdict drops the stored cookie; a different posted value never drops it.
-        check_yt_cookie is stubbed: this test must never touch the network."""
         real = backend.check_yt_cookie
         try:
             self.assertTrue(backend.vault_save("yt", HEADER)["ok"])
@@ -308,10 +276,7 @@ class CookieTests(unittest.TestCase):
         finally:
             backend.check_yt_cookie = real
 
-    # 10
     def test_a_connected_verdict_never_survives_a_different_cookie(self):
-        """An adopted value is unverified until it is itself checked.
-        check_yt_cookie is stubbed: this test must never touch the network."""
         real = backend.check_yt_cookie
         try:
             self.assertTrue(backend.vault_save("yt", OLD_NETSCAPE)["ok"])
@@ -326,13 +291,11 @@ class CookieTests(unittest.TestCase):
                              "a connected verdict was carried onto a different cookie")
             self.assertEqual(backend.cookies_state()["yt"]["state"], "unverified")
 
-            # the same value keeps the verdict it already earned
             self.assertEqual(backend.cookie_check("yt", backend.normalize_cookie(NEW_NETSCAPE))["state"], "connected")
             self.assertEqual(backend.vault_load()["state"]["yt"], "connected")
         finally:
             backend.check_yt_cookie = real
 
-    # 11
     def test_remove_stays_removed_until_an_explicit_use(self):
         self.write(DESKTOP_NAME, NETSCAPE, mtime=time.time() - 60)
         self.assertEqual(backend.vault_load()["yt_cookie"], backend.normalize_cookie(NETSCAPE))
@@ -353,7 +316,6 @@ class CookieTests(unittest.TestCase):
         self.assertEqual(v["yt_cookie"], backend.normalize_cookie(NETSCAPE))
         self.assertEqual(v["state"]["yt"], "unverified")
 
-    # 12
     def test_an_expired_paste_is_rejected_and_the_working_cookie_survives(self):
         self.assertTrue(backend.vault_save("yt", HEADER)["ok"])
         before = backend.vault_load()["yt_cookie"]
@@ -370,7 +332,6 @@ class CookieTests(unittest.TestCase):
         self.assertEqual(body["state"], "expired")
         self.assertEqual(backend.vault_load()["yt_cookie"], before)
 
-    # 13
     def test_check_cannot_resurrect_a_removed_cookie(self):
         self.write(DESKTOP_NAME, NETSCAPE, mtime=time.time() - 60)
         self.assertTrue(backend.vault_load()["yt_cookie"])
@@ -392,7 +353,6 @@ class CookieTests(unittest.TestCase):
         self.assertFalse(body["yt"]["has"])
         self.assertEqual(body["yt"]["state"], "none")
 
-    # 14
     def test_latch_reports_the_spotify_verdict_and_never_calls_junk_saved(self):
         backend.HISTORY.clear()
         code, body = api("/api/latch", {"spotify_cookie": NOTES, "yt_cookie": HEADER})
@@ -413,7 +373,6 @@ class CookieTests(unittest.TestCase):
         self.assertEqual(body["sp"]["state"], "unverified")
         self.assertEqual(backend.vault_load()["sp_cookie"], backend.normalize_cookie(SP_HEADER))
 
-    # 15
     def test_remove_is_idempotent_and_keeps_its_block(self):
         self.write(DESKTOP_NAME, NETSCAPE, mtime=time.time() - 60)
         self.assertTrue(backend.vault_load()["yt_cookie"])
@@ -429,7 +388,6 @@ class CookieTests(unittest.TestCase):
         self.assertFalse(body["yt"]["has"])
         self.assertEqual(backend.vault_load()["yt_cookie"], "")
 
-    # 16
     def test_a_verdict_is_only_shown_for_the_value_it_describes(self):
         real = backend.check_yt_cookie
         try:
@@ -449,14 +407,12 @@ class CookieTests(unittest.TestCase):
         self.assertEqual((backend.cookie_states().get("yt") or {}).get("state"), "unverified",
                          "a probe overwrote the stored verdict")
 
-        # a record that describes some other value is never shown for the stored one
         backend._cookie_state_set("yt", "connected", "ok", "manual", NEW_NETSCAPE)
         self.assertEqual(backend.vault_load()["state"]["yt"], "unverified")
         body = api("/api/cookies")[1]
         self.assertEqual(body["yt"]["state"], "unverified")
         self.assertEqual(body["yt"]["checked_at"], 0, "a foreign record's checked_at was reported")
 
-    # 17
     def test_an_empty_yt_key_is_rejected_and_writes_nothing(self):
         code, body = api("/api/latch", {"yt_cookie": "", "spotify_cookie": SP_HEADER})
         self.assertEqual(code, 400, body)
@@ -471,7 +427,6 @@ class CookieTests(unittest.TestCase):
         self.assertTrue(body["ok"])
         self.assertEqual(backend.vault_load()["sp_cookie"], backend.normalize_cookie(SP_HEADER))
 
-    # 18
     def test_an_empty_probe_writes_nothing_and_the_removed_record_survives(self):
         self.write(DESKTOP_NAME, NETSCAPE, mtime=time.time() - 60)
         self.assertTrue(backend.vault_load()["yt_cookie"])
@@ -499,7 +454,6 @@ class CookieTests(unittest.TestCase):
         self.write(DESKTOP_NAME, NETSCAPE, mtime=time.time() - 60)
         self.assertEqual(backend.vault_load()["yt_cookie"], "", "an empty probe let the removed file back in")
 
-    # 19
     def test_a_verdict_never_lands_on_a_record_it_did_not_see(self):
         self.assertTrue(backend.vault_save("yt", HEADER)["ok"])
         started, release = threading.Event(), threading.Event()
@@ -531,7 +485,6 @@ class CookieTests(unittest.TestCase):
         self.assertEqual(backend.vault_load()["yt_cookie"], "",
                          "an in-flight verdict let the removed value back in on the next scan")
 
-    # 20
     def test_a_named_file_can_be_chosen_even_when_it_is_not_the_newest(self):
         self.write("yt-old.txt", OLD_NETSCAPE, mtime=time.time() - 600)
         self.write("yt-new.txt", NEW_NETSCAPE, mtime=time.time() - 60)
@@ -550,12 +503,7 @@ class CookieTests(unittest.TestCase):
         self.assertEqual(body["yt"]["state"], "unverified")
         self.assertEqual(body["detected"]["yt"]["name"], "yt-new.txt", "detected must still name the newest")
 
-    # 21
     def test_a_removal_that_lands_during_the_verdict_write_still_wins(self):
-        """A removal cannot land between a check's record comparison and its state write.
-        The check is parked inside its window, so the probe can say who holds the shared lock:
-        the check is in, the removal arrives at the gate and stays out, and only a released
-        check lets it in. Nothing here waits a duration or infers an order from one."""
         self.assertTrue(backend.vault_save("yt", HEADER)["ok"])
         probe = self.probe_lock()
         at_barrier, resume, out = threading.Event(), threading.Event(), {}
@@ -606,11 +554,7 @@ class CookieTests(unittest.TestCase):
         self.assertEqual(backend.vault_load()["yt_cookie"], "",
                          "the removed value came back on the next scan")
 
-    # 22
     def test_a_removal_that_lands_during_a_disk_adoption_still_wins(self):
-        """Adoption is a read-modify-write of the vault and the record, and so is a removal.
-        The adoption is parked inside its window; the probe reads who holds the shared lock:
-        the adoption is in, the removal waits at the gate, and the file stays blocked after."""
         self.assertTrue(backend.vault_save("yt", OLD_NETSCAPE)["ok"])
         self.write(DESKTOP_NAME, NETSCAPE, mtime=time.time() + 120)   # newer than the held value
         probe = self.probe_lock()
@@ -659,10 +603,7 @@ class CookieTests(unittest.TestCase):
                          "the removed file was re-adopted by the next load")
         self.assertEqual(backend.cookies_state()["yt"]["state"], "none")
 
-    # 23
     def test_a_removal_that_lands_during_a_save_still_wins(self):
-        """A save that read the vault before a removal must not write that stale view back.
-        The same probe reads the boundary: the save is inside the section, the removal waits."""
         self.assertTrue(backend.vault_save("yt", OLD_NETSCAPE)["ok"])
         probe = self.probe_lock()
         at_save, resume, out = threading.Event(), threading.Event(), {}
@@ -707,18 +648,13 @@ class CookieTests(unittest.TestCase):
                          "the removal did not remember the value it dropped")
         self.assertEqual(backend.vault_load()["yt_cookie"], "", "a removed value stayed in the vault")
 
-        # the other order: an explicit save after the removal is the documented exception
         self.assertTrue(backend.vault_save("yt", OLD_NETSCAPE)["ok"])
         self.assertEqual(backend.vault_load()["yt_cookie"], backend.normalize_cookie(OLD_NETSCAPE))
         backend.vault_remove("yt")
         self.assertEqual(backend.vault_load()["yt_cookie"], "")
         self.assertEqual(backend.cookie_states()["yt"]["state"], "removed")
 
-    # 24
     def test_a_reset_is_one_critical_section_and_a_concurrent_save_cannot_be_lost(self):
-        """Reset drops both cookies and deletes both files as one critical section. A save that
-        arrives inside that window waits at the gate, so it lands whole after the reset instead
-        of being deleted by its next statement, and vault and record still agree afterwards."""
         self.assertTrue(backend.vault_save("yt", OLD_NETSCAPE)["ok"])
         probe = self.probe_lock()
         at_forget, resume, out = threading.Event(), threading.Event(), {}
@@ -761,7 +697,6 @@ class CookieTests(unittest.TestCase):
         self.assertEqual(record["hash"], backend.cookie_hash(HEADER),
                          "vault and record disagree after a reset")
 
-    # 8
     def test_api_cookies_never_carries_a_value(self):
         self.assertTrue(backend.vault_save("yt", HEADER)["ok"])
         srv = backend.ThreadingHTTPServer(("127.0.0.1", 0), backend.H)

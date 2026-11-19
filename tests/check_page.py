@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""Parse-check the inline page script shipped in index.html.
-
-The build gate and CI both run this, so a broken <script> cannot ship.
-"""
 import os
 import re
 import subprocess

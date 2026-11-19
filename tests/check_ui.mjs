@@ -1,72 +1,10 @@
 #!/usr/bin/env node
-/* Headless check of the shipped page UI: index.html's inline script is run in a
-   stub DOM and driven through the same mergeRun()/render() path the poll uses.
-
-   What it proves, and why each one is here:
-   - the 1:1 toggle is gone and nothing still calls /api/one-to-one;
-   - a verified count and a not-yet-verified count are shown as two different
-     things (counter, counts row, pill, progress band), on the current payload
-     shape and on the older one that carries no `pending` - where the number is
-     taken from the rows' own states, never from source-minus-outcomes, and no
-     such row reads as an explicit 0; nothing calls those rows "sent", because
-     the server's `pending` also holds queued, in-flight and failed adds;
-   - a terminal line never claims success over rows the read did not confirm;
-   - the entry count a playlist read reported (`playlist_count`) is shown as its own
-     fact - on both terminal lines, in the counts row and in the counter title - beside
-     the matched plan and the verified adds, and never folded into either; it is
-     worded as what the read observed, never as the playlist's total, because the
-     backend fills it from any finished read and the payload carries no completeness
-     flag; a count the payload did not serve is left unsaid rather than printed as
-     zero; a reported 401 is repeated as that one fact - never as a cause, never with a
-     reconnect or a retry - and prose that only sounds like a login problem never becomes
-     a 401; the absence of a status is named as unreported instead of guessed;
-   - an interrupted record the server marks not resumable (`resumable:false` or a
-     `blocked` reason) never reads as an offer to resume: the pin names the refusal,
-     repeats the reason served, points at checking the linked playlist by hand, and
-     recommends neither deleting the playlist nor resetting the run;
-   - the ledger's sort, tally, missing list and follow index are memoised per
-     row revision: repeated paints and filter changes do not rescans a large
-     playlist, and one arriving row does;
-   - a verified jump (a slice read back at once) does not blank the rate/ETA,
-     while a count that goes backwards does.
-   - the playlist preview - the page's one full-track read - is not given the
-     transfer's 25 s budget, says so when it cannot answer instead of dropping
-     the failure, still points at Ctrl+Enter, and does not read the same link
-     twice (remembered, in flight, or answering late over a live run);
-   - the running version is the server's own: /health's `version` is the one
-     painted, no copy of backend.py's APP_VERSION lives in the page (the stub
-     serves a version no shipped file contains, so a hardcoded one cannot pass),
-     and a read that fails - no answer, a non-2xx, a body with no version - says
-     the version is unread instead of leaving a plausible number on screen;
-   - the two sheets behave as the modals they declare: opening one moves focus
-     into its card, the page behind it is made inert (not merely covered), Tab and
-     Shift+Tab stay inside it, a Tab arriving while focus sits behind the overlay is
-     pulled back, closing returns focus to the control that opened it (or the card's
-     own control when that one is now hidden), and the ledger sits inside the page's
-     one main landmark. No progressbar role is claimed anywhere: the run's progress
-     is several phases, not one percentage;
-   - Clear and New transfer report what the server actually did. /api/reset clears
-     the run and the created-playlist record in two steps, so 200 (both gone), 409
-     (nothing cleared) and 500 (run cleared, record kept) are three different
-     outcomes: a confirmed reset clears the screen, a refused one clears nothing and
-     re-attaches, a partial one clears the run and states the record fact rather than
-     showing a fresh-looking idle page, and a reset that never got an answer is never
-     reported as done, with the server's own next read deciding what is still there.
-     Any reset that ends unresolved then locks the session - no reset and no start, for
-     any source, because an empty-id reset clears every record and a per-source guard
-     could be replaced - and the lock says it is in memory for this session only: a
-     reload clears it and settles nothing, so it neither restores nor clears the record;
-
-   No network, no browser, no dependencies. Run: node tests/check_ui.mjs
-   (exit 0 only when every check passes). */
 import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import {fileURLToPath} from "node:url";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-/* Optional argument: check a specific copy of the page (used to prove a check
-   goes red against an older file). Default: the shipped index.html. */
 const TARGET = process.argv[2] ? path.resolve(process.argv[2]) : path.join(ROOT, "index.html");
 const html = fs.readFileSync(TARGET, "utf8");
 const found = /<script>([\s\S]*?)<\/script>/.exec(html);
@@ -206,21 +144,13 @@ class StubEl {
     const at = list.indexOf(fn);
     if (at >= 0) list.splice(at, 1);
   }
-  /* A browser moves focus for real, and the sheet's whole job is where focus
-     lands, so the stub tracks it: focus() is observable through
-     document.activeElement, as it is on the page. */
   focus() { this.ownerDocument.focusEl(this); }
-  /* Node.contains: true for itself and for anything under it. */
   contains(node) {
     if (!node) return false;
     if (node === this) return true;
     return this.children.some((child) => child.contains(node));
   }
-  /* Nothing in the stub is ever detached from a document, so every node it makes
-     is connected - which is what the restore path asks before it moves focus. */
   get isConnected() { return true; }
-  /* Dispatch one event to this element's own listeners. Bubbling is not modelled,
-     so a case that drives a handler attached to an ancestor fires it there. */
   fire(type, ev) {
     for (const fn of this._listeners.get(type) || []) fn(ev);
   }
@@ -256,9 +186,6 @@ class StubDoc {
     this.body = new StubEl(this, "body", "body");
     this.listeners = new Map();
     this._active = null;
-    /* A browser also exposes every element with an id as a global. The page
-       leans on that once (palcard), so the stub does the same instead of
-       missing a surface the real page can reach. */
     this.named = () => {};
     this._fbts = ["all", "added", "skipped", "duplicate", "refused", "notverified", "pending"]
       .map((f) => {
@@ -317,26 +244,14 @@ class StubBlob {
 }
 
 const requests = [];
-/* /health is the page's running-version read, decided per case. The default answer
-   is a version no shipped file contains, so a page that hardcodes its own number
-   cannot pass by accident. */
 const healthOk = () => jsonResponse({ok: true, version: "9.9.9-test"});
 let healthReply = healthOk;
 let healthHits = 0;
-/* The playlist preview is the one route whose answer each case decides for
-   itself: it is the page's only full-track read, and its timing is the point. */
 let spotifyReply = null;
 let spotifyHits = 0;
-/* The transfer start, decided per case: a fresh run must not inherit counts. */
 let transferReply = null;
-/* /api/run is read after a reset the page could not confirm, so its answer is decided
-   per case too; the default is an idle, empty run. */
 let runReply = () => jsonResponse({ok: true, seq: 0});
-/* Retry now is a request followed by a read, so its answer is decided per case: the race case
-   holds it open across a detach. */
 let retryReply = () => jsonResponse({ok: false});
-/* /api/reset answers with a real status, because the page must tell 200, 409 and 500
-   apart, and the body it sent is kept so a case can prove which record was cleared. */
 const http = (status, body) => ({ok: status >= 200 && status < 300, status,
   json: async () => body, text: async () => JSON.stringify(body)});
 let resetReply = () => http(200, {ok: true});
@@ -372,11 +287,6 @@ async function stubFetch(url, opts) {
 }
 
 const doc = new StubDoc();
-/* The stub cannot parse markup, so body's own children and the two modal sheets are
-   built to the same shape and order index.html ships: the bar, the deck, the action
-   bar, then the palette and the sheets as siblings. That sibling set is what the page
-   inerts, so the stub has to have it, and the cards carry the shipped order (field,
-   then footer buttons) because focus containment is only provable against it. */
 function seedSheets(d) {
   const make = (tag, id, cls) => {
     const n = d.createElement(tag);
@@ -408,8 +318,6 @@ function seedSheets(d) {
   row(mcard, "minirow", [make("button", "copybtn", "acctbtn quiet")]);
   row(mcard, "sheetfoot", [make("button", "moreclose", "acctbtn")]);
 }
-/* The nested spans the script queries by class are in the shipped markup; the
-   stub cannot parse HTML, so it seeds the ones the page reaches for. */
 function seed(d) {
   const pill = d.getElementById("statepill");
   for (const cls of ["pdot", "ptxt"]) {
@@ -427,9 +335,6 @@ function seed(d) {
   seedSheets(d);
 }
 seed(doc);
-/* Every key the page writes to localStorage, so a case can prove what it does NOT persist:
-   the unresolved-reset lock must live in memory only, and nothing about a playlist may be
-   stored where a reload could read it back as a fact. */
 const stored = [];
 const ctx = {
   document: doc,
@@ -452,7 +357,6 @@ ctx.globalThis = ctx;
 doc.named = (id, el) => { if (!(id in ctx)) ctx[id] = el; };
 vm.createContext(ctx);
 vm.runInContext(script, ctx, {filename: "index.html"});
-/* the page's load-time GETs are awaited; let their microtasks settle */
 await new Promise((r) => setTimeout(r, 0));
 await new Promise((r) => setTimeout(r, 0));
 
@@ -470,7 +374,6 @@ function tracks(n, state = "pending") {
     state,
   }));
 }
-/* One row per state, indexed so the ledger keeps them apart. */
 function mixed(states) {
   return states.map((state, k) => ({
     i: k + 1,
@@ -491,7 +394,6 @@ ok("nothing posts /api/one-to-one", !script.includes("/api/one-to-one"), "the to
 ok("the copy-missing button still owns the row's right edge", /#missbtn\{margin-left:auto\}/.test(html),
   "#missbtn lost the placement #oneone used to provide");
 
-/* ---------- 2. verified vs pending, on the current payload ---------- */
 run("clearLocal();");
 feed({
   run_id: "r1", seq: 1, phase: "append", state: "running", total: 508, declared: 508,
@@ -529,7 +431,6 @@ ok("rule shows the waiting band behind it, capped at the total",
   fill2 >= fill && Math.abs(fill2 - 220 / 508 * 100) < 0.01 && fill2 <= 100,
   "--fill2 read " + fill2);
 
-/* a run that has sent 500 and proved nothing yet: still no fake success */
 feed({
   seq: 2, phase: "append", state: "running", total: 500, declared: 500,
   counts: {source: 500, unique: 500, added: 0, skipped: 0, duplicate: 0,
@@ -540,12 +441,6 @@ ok("nothing proven stays zero", el("bignum").textContent === "0",
 ok("nothing proven is not called done", !press().toLowerCase().includes("done"),
   "pill read " + press());
 
-/* ---------- 3. the older payload shape, with no `pending` field ----------
-   Arithmetic over the seven numbers would say 508-120-4 = 384 rows are waiting.
-   That remainder also holds rows never sent and rows the payload does not name,
-   so the only evidence is the rows: exactly the two states the server folds into
-   `pending` (pending, appending) may be counted - never matched, queued or
-   unverified - and no such row is an explicit 0. */
 run("clearLocal();");
 feed({
   run_id: "r2", seq: 3, phase: "append", state: "running", total: 508, declared: 508,
@@ -577,7 +472,6 @@ ok("a payload with no waiting row reads as an explicit zero",
   chip("pending") === "pending 0" && !el("breakdown").innerHTML.includes("pending"),
   "chip " + chip("pending") + " · counts " + el("breakdown").innerHTML);
 
-/* with no counts at all, the rows are the only ledger there is */
 run("clearLocal();");
 feed({
   seq: 5, phase: "append", state: "running", total: 3, declared: 3,
@@ -590,7 +484,6 @@ ok("no counts yet: the counter names them as awaiting verification",
   el("bignum").textContent === "1" && el("bignum").title.includes("2 awaiting verification"),
   "counter " + el("bignum").textContent + " · title " + el("bignum").title);
 
-/* ---------- 4. a terminal line never claims more than the read proved ---------- */
 run("clearLocal();");
 feed({
   run_id: "r3", seq: 5, phase: "done", state: "done", total: 10, declared: 10,
@@ -618,26 +511,6 @@ feed({
 ok("a fully verified run is green", press() === "Done" && el("statepill").dataset.t === "ok",
   "pill " + press() + " · tone " + el("statepill").dataset.t);
 
-/* ---------- 4b. the playlist read's own entry count, kept observational ----------
-   The observed run: the source read named 1,037 tracks, the read-back proved 312
-   copies, 725 stayed unverified, the append was refused, and the read that finished
-   reported 510 entries. Three numbers, three different questions: what the run set
-   out to write (the matched plan), what a read proved (added), and what a read saw on
-   the playlist (`playlist_count`).
-
-   The count is NOT a total. The backend sets `playlist_count` from whatever read
-   finished - a capped or short read included, which is exactly the shape that leaves
-   copies unverified - and /api/run serves no completeness flag of any kind (checked
-   against the payload keys: phase, state, attempt, next_attempt_at, reason, residual,
-   started_at, updated_at, age, spotify_id, title, cover_url, playlist_id, url, created,
-   existing, total, declared, summary, matched, sent, landed, attempted, refused,
-   skipped, missing, unverified, duplicate, pending, counts, order_ok, playlist_count,
-   rows, error, hint, kind - and `order_ok` is a claim about order, not completeness).
-   So the page may only report what the read observed, never "the playlist holds N":
-   that sentence would claim a total the payload cannot support. This block pins the
-   observational wording on both terminal lines, the counts row and the counter title,
-   pins that an incomplete read's count is worded the same way, and pins the 401 words to
-   the code the payload actually carries - one fact, no cause, no retry. */
 run("clearLocal();");
 const EMERGENCY = {
   run_id: "r401", seq: 30, phase: "done", state: "gaveup", attempt: 2,
@@ -677,10 +550,6 @@ ok("a payload with no status never claims a 401 or asks for a reconnect",
 ok("a payload with no status says so instead of guessing a cause",
   /no status/i.test(gaveLine()), "line: " + gaveLine());
 
-/* an incomplete read: the count is a floor, and the line must still not imply a total.
-   Here more copies are unverified than the read saw entries, which is only possible
-   when the read stopped early - the count cannot be a total, yet the wording may not
-   change, because nothing in the payload says which kind of read produced it. */
 feed({
   seq: 31, playlist_count: 510, tail_unverified: 725,
   counts: {source: 1037, unique: 1000, added: 312, skipped: 0, duplicate: 0,
@@ -692,21 +561,15 @@ ok("an incomplete read's count is worded as an observation, not a total",
 ok("an incomplete read is not silently promoted by a payload field it does not carry",
   !/complete|reached the end|whole playlist/i.test(gaveLine()), "line: " + gaveLine());
 
-/* the same refusal, this time with the status the page is allowed to repeat */
 feed({
   seq: 32, kind: "auth", hint: "YTM/Spotify login rejected it — cookie expired or wrong site.",
   error: "RuntimeError: append refused (HTTP 401)", reason: "append refused by YouTube Music",
 });
 ok("an emitted 401 is repeated as what it is", /YouTube Music returned HTTP 401/.test(gaveLine()),
   "line: " + gaveLine());
-/* A 401 does not say why. The page may not turn the hint's prose into the cause, because
-   the same status is what an expired session, another account and a plain refusal all
-   look like from here. */
 ok("an emitted 401 names no cause",
   !/cookie|session|login|expired|rejected|account/i.test(gaveLine()),
   "line: " + gaveLine());
-/* A write may already have landed, so the advice is to keep the evidence and look before
-   anything else writes: no reconnect, no "start again", no delete or reset. */
 ok("an emitted 401 keeps the playlist and the record and sends the user to check them",
   /keep the existing playlist and this run's record/i.test(gaveLine()) &&
   /check that playlist in YouTube Music/i.test(gaveLine()) &&
@@ -721,8 +584,6 @@ ok("an emitted 401 promises no resume the page cannot prove",
 ok("an emitted 401 still reports the entries the read saw",
   /510 entries seen in the playlist/.test(gaveLine()), "line: " + gaveLine());
 
-/* prose that sounds like a login problem is not a 401: the backend's own hint can name an
-   expired cookie, and the page may not print a status the payload never carried */
 feed({
   seq: 34, kind: "auth", hint: "YTM/Spotify login rejected it — cookie expired or wrong site.",
   error: "RuntimeError: append refused", reason: "append refused by YouTube Music",
@@ -731,13 +592,11 @@ ok("a cause-only payload never invents a 401",
   !/401|unauthori[sz]ed|reconnect|cookie|login/i.test(gaveLine()),
   "line: " + gaveLine());
 
-/* nothing measured is not the same as measured zero */
 feed({seq: 33, playlist_count: 0, tail_unverified: 0, kind: "", hint: "", error: ""});
 ok("an unmeasured entry count is never printed as zero",
   !/entries seen|playlist holds/.test(gaveLine() + el("breakdown").innerHTML),
   "line: " + gaveLine() + " · counts: " + el("breakdown").innerHTML);
 
-/* a new transfer starts from nothing: the gave-up run's entry count is not its own */
 run("clearLocal();");
 feed(EMERGENCY, true);
 run("S.ytState='connected';$('srcurl').value='https://open.spotify.com/playlist/PLNEXT';");
@@ -752,7 +611,6 @@ ok("a new transfer does not inherit the previous read's entry count",
 transferReply = null;
 run("unpoll();");
 
-/* a done run that the read never confirmed has the same obligation */
 run("clearLocal();");
 feed({
   run_id: "r5", seq: 34, phase: "done", state: "done", total: 10, declared: 10,
@@ -767,7 +625,6 @@ ok("a done-with-unverified line reports the entries the read saw as well",
 ok("a done-with-unverified line never says the plan is on the playlist",
   !/10 on the playlist/.test(gaveLine()), "line: " + gaveLine());
 
-/* ---------- 5. the large-ledger memo, and its exact invalidation ---------- */
 run(["_sortCalls=0;",
   "(function(){var s=Array.prototype.sort;",
   "Array.prototype.sort=function(){_sortCalls++;return s.apply(this,arguments);};})();"].join(""));
@@ -844,16 +701,6 @@ feed({
 ok("a count that goes backwards resets the window instead of inventing a rate",
   el("phaseline").textContent.includes("—/min"), "line: " + el("phaseline").textContent);
 
-/* ---------- 7. the playlist preview: the page's one full-track read ----------
-   GET-free POST /api/spotify returns every track of the source playlist, so the
-   wait grows with the list: measured ~10.5 s at 1,102 tracks, and the partner
-   query pages 100 at a time with a pause between pages, so a 2,500-track list
-   lands at the 25 s the transfer's requests use. The old code gave the preview
-   that same 25 s and then dropped whatever came back - failure and timeout both
-   ended in `catch(e){}` - so a big playlist read as a link that never loaded.
-   These checks are about the two things that fixes: a preview that cannot
-   answer says so and points at the control that still works, and the read is
-   not repeated for a link the page already has. */
 const PREVIEW_A = "https://open.spotify.com/playlist/PLBIGLIST";
 const PREVIEW_B = "https://open.spotify.com/playlist/PLINFLIGHT";
 const PREVIEW_C = "https://open.spotify.com/playlist/PLBUDGET";
@@ -882,7 +729,6 @@ ok("a refused preview keeps the route to a transfer visible",
 ok("a refused preview does not leave the identity line claiming no link was pasted",
   !el("pname").textContent.includes("no playlist yet"), "pname: " + el("pname").textContent);
 
-/* a link whose read simply ran out of time - what a 2,500-track list does */
 setUrl(PREVIEW_B);
 spotifyReply = () => {
   const e = new Error("The user aborted a request.");
@@ -895,7 +741,6 @@ ok("a preview that ran out of time says so instead of failing silently",
   /no answer/.test(el("phaseline").textContent),
   "line: " + el("phaseline").textContent);
 
-/* the preview must not be given the transfer's 25 s budget: that is the bug */
 const previewTimers = [];
 const realSetTimeout = ctx.setTimeout;
 ctx.setTimeout = (fn, ms) => { previewTimers.push(ms); return realSetTimeout(fn, ms); };
@@ -912,7 +757,6 @@ ok("the preview waits longer than the transfer's 25 s for a big list",
 ok("the budgeted preview still paints what it read",
   el("pname").textContent === "Budget List — 2500/2500", "pname: " + el("pname").textContent);
 
-/* a link the page already read is not read again on every debounce */
 setUrl(PREVIEW_A);
 spotifyReply = () => jsonResponse(previewPayload("Big List", 2500));
 spotifyHits = 0;
@@ -924,7 +768,6 @@ await readPreview();
 ok("re-reading a remembered link sends nothing", spotifyHits === 1,
   "hits " + spotifyHits + " for one link");
 
-/* a link already in flight is one request, not two */
 setUrl(PREVIEW_D);
 const inflight = deferred();
 spotifyReply = () => inflight.p;
@@ -940,7 +783,6 @@ await Promise.all([first, second]);
 run("render();");
 ok("the same link in flight is one request", spotifyHits === 1, "requests " + spotifyHits);
 
-/* the answer must not land on a screen a live run owns */
 setUrl(PREVIEW_D + "X");
 const late = deferred();
 spotifyReply = () => late.p;
@@ -963,16 +805,6 @@ spotifyReply = null;
 run("clearLocal();");
 spotifyReply = null;
 
-/* ---------- 8. an interrupted record the server will not resume ----------
-   /api/run's `interrupted` payload carries `resumable` and `blocked` (backend
-   _latest_incomplete): a record from before RECORD_VERSION cannot say which copies it
-   already wrote, so the backend fails closed instead of re-adding them. The page used
-   to print one pin for every interrupted run - "press Ctrl+Enter to resume the same
-   playlist" - which for that record is an offer the server refuses. These checks pin
-   the blocked pin: it never offers that resume, it repeats the reason the payload
-   carries, it names the one route that needs no guess (check the linked playlist by
-   hand), and it recommends neither deleting the playlist nor resetting the run, both
-   of which destroy the evidence the check needs. */
 const PIN = () => el("phaseline").textContent;
 const PINTITLE = () => el("phaseline").title;
 const BLOCKED = "this record was written by an older version and cannot be resumed "
@@ -1006,45 +838,28 @@ ok("a blocked record leaves the source link it was started from",
   el("srcurl").value === "https://open.spotify.com/playlist/SPOTBLOCK",
   "source: " + el("srcurl").value);
 
-/* a reason with no resumable flag is a block too: the page must not read the refusal
-   away just because one field is missing */
 showInc(INC({blocked: BLOCKED}));
 ok("a blocked reason with no resumable flag is still treated as blocked",
   /cannot be resumed/.test(PIN()) && !/Ctrl\+Enter/.test(PIN()), "pin: " + PIN());
 
-/* refused, but told no reason: refuse without inventing one */
 showInc(INC({resumable: false}));
 ok("a blocked record with no reason refuses to invent a cause",
   /cannot be resumed/.test(PIN()) && !/older version/i.test(PIN() + " " + PINTITLE()),
   "pin: " + PIN() + " · title: " + PINTITLE());
 
-/* the resume it can honour is still offered, because the payload says it can */
 showInc(INC({resumable: true, blocked: ""}));
 ok("a resumable record still offers the resume it can honour",
   /press Ctrl\+Enter to resume the same playlist/.test(PIN()) && !/cannot be resumed/.test(PIN()),
   "pin: " + PIN());
 
-/* a payload with neither field predates the block: it keeps the older page's offer,
-   and it never claims a refusal it was not told about */
 showInc(INC({}));
 ok("a payload with no resumable field keeps the older offer and claims no refusal",
   /Ctrl\+Enter/.test(PIN()) && !/cannot be resumed|blocked/i.test(PIN()), "pin: " + PIN());
 
-/* ---------- 9. the running version ----------
-   /health answers {ok, version} straight from backend.py's APP_VERSION, so the
-   label must be that answer and nothing else: a copy of the number in the page
-   would report the version the page was written against, which is the defect this
-   pins. The stub serves a version no shipped file contains, so a hardcoded number
-   cannot pass by accident. Every way the read can fail - no answer, a non-2xx, a
-   body with no version - must leave an honest note instead of a plausible-looking
-   number, and the label is chrome (one dim token beside the brand), never a second
-   status beside the pill. */
 const verEl = el("appver");
 const backendSrc = fs.readFileSync(path.join(ROOT, "backend.py"), "utf8");
 const appVersion = (/^APP_VERSION\s*=\s*["']([^"']+)["']/m.exec(backendSrc) || [])[1] || "";
 const unread = (t) => /unread/i.test(t) && !/^v?\d/.test(t);
-/* A page that never shipped the read fails these checks instead of throwing:
-   the missing function is the same fact as a label that never painted. */
 const readVersionNow = async () => {
   if (run("typeof readVersion") !== "function") return false;
   await run("readVersion()");
@@ -1097,14 +912,6 @@ await readVersionNow();
 ok("the label returns to the served version when a later read answers",
   verEl.textContent === "v9.9.9-test", "label: " + JSON.stringify(verEl.textContent));
 
-/* ---------- 10. the sheets are the modals they declare ----------
-   Each sheet is role="dialog" aria-modal="true", a promise that the page behind the
-   overlay is inert. Two things were missing: a sheet opened from "More options" left
-   focus on the button under the overlay, and nothing kept Tab inside the card, so
-   the keyboard walked into the ledger the sheet covers. Closing also left focus on a
-   control that is now display:none, which drops it to the body. These cases drive the
-   page's own handlers; the seeded cards carry the shipped order (field, then footer
-   buttons), and the stub tracks focus the way a browser does. */
 const pasteSheetEl = run("pasteSheet");
 const moreSheetEl = run("moreSheet");
 const active = () => doc.activeElement;
@@ -1124,8 +931,6 @@ el("morebtn").focus();
 run("openSheet(moreSheet);");
 ok("opening a sheet moves focus into its card",
   active() === el("watchdir"), "focus: " + named());
-/* aria-modal is only honest when the page behind it is inert, and a backdrop image is
-   not inert: this is the native flag doing the work. */
 ok("opening a sheet makes the page behind it inert",
   inertOf("topbar") === true && inertOf("deck") === true && inertOf("actionbar") === true &&
   inertOf("cmdpal") === true && inertOf("pastesheet") === true && inertOf("moresheet") === false,
@@ -1152,7 +957,6 @@ ok("closing gives the page back: no inert flag survives it",
   inertOf("deck") === false && inertOf("topbar") === false && inertOf("cmdpal") === false,
   JSON.stringify([inertOf("topbar"), inertOf("deck"), inertOf("cmdpal")]));
 
-/* the palette is the same custom overlay, so it gets the same treatment */
 el("clearbtn").focus();
 run("openPal();");
 ok("opening the palette inerts the page behind it",
@@ -1175,18 +979,12 @@ ok("the paste sheet opens on its field", active() === el("pasteinput"), "focus: 
 el("pastesave").focus();
 ok("a Tab at the sheet's last control wraps back to its field",
   tab(pasteSheetEl, false) === true && active() === el("pasteinput"), "focus: " + named());
-/* a saved cookie hides the control that opened Paste, so the restore cannot land
-   there: the card's own primary control takes it instead of the body */
 el("pastecookie").hidden = true;
 run("closeSheets();");
 ok("a hidden opener hands focus to the card's own control, not the body",
   active() === el("pickcookie") && !active().hidden, "focus: " + named());
 el("pastecookie").hidden = false;
 
-/* ---------- 11. one main landmark ----------
-   The page shipped a banner and a contentinfo but no main, so a screen reader had
-   no way to jump past the top bar to the deck. The ledger is the main content, and
-   exactly one element may claim it. */
 const mains = (html.match(/<main\b/g) || []).length;
 ok("the page has exactly one main landmark", mains === 1 && /<\/main>/.test(html),
   "main elements: " + mains);
@@ -1202,16 +1000,8 @@ ok("the top bar and the action bar keep their landmarks",
 ok("no progressbar role is invented: the run's progress is several phases",
   !/role=["']progressbar["']/.test(html), "a progressbar role is in the markup");
 
-/* ---------- 12. Clear and New transfer report what the server did ----------
-   /api/reset clears the run and the created-playlist record in two steps and answers
-   with the status that says how far it got: 200 both, 409 nothing, 500 the run but not
-   the record. The page used to clear the ledger before the request and swallow the
-   answer, so a 500 left a clean idle screen over a record that still resumes, and a
-   lost reply looked exactly like a success. These cases drive the real doClear with
-   each answer, and prove the screen claims only what the server said. */
 const settle = async () => { await new Promise((r) => setTimeout(r, 0)); await new Promise((r) => setTimeout(r, 0)); };
 const feedDone = () => {
-  /* a fresh screen: the ledger, the link, any lock and any in-flight flags are gone */
   run("S.lock=null;S.startBusy=false;S.startUnknown=null;S.resetBusy=false;clearLocal();");
   feed({
     run_id: "rdone", seq: 40, phase: "done", state: "done", total: 6, declared: 6,
@@ -1224,12 +1014,6 @@ const feedDone = () => {
 };
 const resetPin = () => el("phaseline").textContent;
 const resetTitle = () => el("phaseline").title;
-/* The structured verdict /api/reset sends when it cleared the run but not the record.
-   The page keys on `reset_partial`, never on the human sentence, so the text below is
-   deliberately unlike anything the old matcher looked for: a page that still parsed prose
-   would fall through to "not established" and the partial cases here would fail. The real
-   contract (status + field, through the real handler on a throwaway port) is asserted in
-   tests/test_http_guard.py. */
 const PARTIAL_BODY = {ok: false, reset_partial: true,
   error: "the playlist record was left behind (wording the page must not read)"};
 const REFUSED_BODY = {ok: false, error: "a transfer is already running"};
@@ -1238,7 +1022,6 @@ ok("the verdict fixture carries the field and no sentence the page could parse",
   PARTIAL_BODY.reset_partial === true && !/^the run was cleared/.test(PARTIAL_BODY.error),
   JSON.stringify(PARTIAL_BODY));
 
-/* a confirmed reset: the one case where the screen may go blank */
 feedDone();
 resetReply = () => http(200, {ok: true});
 resets.length = 0;
@@ -1252,8 +1035,6 @@ ok("a confirmed reset leaves no failure sentence behind",
 ok("the reset names the playlist whose record it clears",
   resets.length === 1 && resets[0].spotify_id === "SPOTKEEP", JSON.stringify(resets.slice(-1)));
 
-/* 500: the run IS cleared on the server and the record was NOT - the partial case the
-   page used to hide behind a fresh-looking idle screen */
 feedDone();
 resetReply = () => http(500, PARTIAL_BODY);
 runReply = () => jsonResponse({ok: true, seq: 41, interrupted: {
@@ -1284,10 +1065,6 @@ ok("a 500 reset restores the source link the record still binds",
   el("srcurl").value === "https://open.spotify.com/playlist/SPOTKEEP",
   "link: " + JSON.stringify(el("srcurl").value));
 
-/* An answered error that is NOT the backend's two-step verdict establishes neither half:
-   the refusal sentence under another status, or the verdict sentence under a status that
-   is not its own, says nothing about which step ran. The page may report the run it can
-   no longer see and nothing more. */
 feedDone();
 resetReply = () => http(403, REFUSED_BODY);
 runReply = () => jsonResponse({ok: true, seq: 43});
@@ -1304,8 +1081,6 @@ ok("an answer outside the verdict is quoted, not adopted",
   /only the backend's own two-step verdict/.test(resetTitle()),
   "title: " + resetTitle());
 
-/* the same 500 status carrying the refusal sentence is still not the verdict: the page
-   needs both the status and the backend's own claim, never one without the other */
 feedDone();
 resetReply = () => http(500, REFUSED_BODY);
 runReply = () => jsonResponse({ok: true, seq: 44});
@@ -1315,7 +1090,6 @@ ok("a 500 whose body is not the verdict does not become one",
   /does not establish/.test(resetPin()) && resetTitle().includes(REFUSED_BODY.error),
   "line: " + resetPin() + " · title: " + resetTitle());
 
-/* an explicit false is not the verdict either: the field has to say it happened */
 feedDone();
 resetReply = () => http(500, {ok: false, reset_partial: false, error: "the record is still there"});
 runReply = () => jsonResponse({ok: true, seq: 46});
@@ -1324,9 +1098,6 @@ ok("a 500 with reset_partial:false is not a partial reset",
   !/not its playlist record/.test(resetPin()) && /does not establish/.test(resetPin()),
   "line: " + resetPin());
 
-/* an older backend sends no field: the page must fall back, never read the prose. The
-   sentence here is word for word the one the old matcher looked for, and it must still
-   NOT be treated as the verdict. */
 feedDone();
 resetReply = () => http(500, {ok: false,
   error: "the run was cleared, but the playlist record could not be cleared - it is unchanged"});
@@ -1336,7 +1107,6 @@ ok("a 500 with no field falls back even when its sentence reads like the verdict
   /does not establish/.test(resetPin()) && !/reset incomplete/.test(resetPin()),
   "line: " + resetPin());
 
-/* the refusal branch owns the answer: a field on it cannot turn it into a partial reset */
 feedDone();
 resetReply = () => http(409, {ok: false, reset_partial: true, error: REFUSED_BODY.error});
 runReply = () => jsonResponse({ok: true, seq: 48});
@@ -1347,8 +1117,6 @@ ok("a 409 stays a refusal even if it carries the field",
   /nothing was cleared/.test(resetPin()) && !/reset incomplete/.test(resetPin()),
   "line: " + resetPin());
 
-/* Even the verdict sentence cannot make the page clear a run the server still reports:
-   the read outranks the answer, and the record's fate stays unclaimed. */
 feedDone();
 resetReply = () => http(500, PARTIAL_BODY);
 runReply = () => jsonResponse({ok: true, seq: 45, run_id: "rdone"});
@@ -1364,8 +1132,6 @@ ok("that answer claims the run survived and nothing about the record",
   !/record (is|was) (cleared|kept|unchanged)/i.test(resetPin()),
   "line: " + resetPin());
 
-/* no answer at all: the run and the record may both be half-done, and nothing may be
-   claimed - in either direction */
 feedDone();
 resetReply = () => Promise.reject(new TypeError("Failed to fetch"));
 runReply = () => Promise.reject(new TypeError("Failed to fetch"));
@@ -1376,9 +1142,6 @@ ok("a reset with no answer does not empty the screen",
 ok("a reset with no answer is called unconfirmed, never done",
   /not confirmed/.test(resetPin()) && /unknown/.test(resetPin()),
   "line: " + resetPin());
-/* A reset is local: it clears this PC's run and record and never calls YouTube Music.
-   So the doubt may name only the local half - saying the playlist may have been cleared
-   would be a claim the request cannot even make. */
 ok("a reset with no answer keeps the doubt on this PC's run and record",
   /local run and playlist record were cleared is unknown/.test(resetPin()) &&
   /never touches the playlist/.test(resetPin()) &&
@@ -1391,10 +1154,6 @@ ok("a reset with no answer sends the user to the playlist, not to a retry",
   /unknown/i.test(resetPin()) &&
   /check the playlist in YouTube Music by hand/i.test(resetPin()),
   "line: " + resetPin());
-/* A lost reply may have cleared the record that is the only account of which copies
-   were written. Repeating the reset, or starting another transfer of a link whose
-   record is in an unknown state, is how a recovery record and a playlist get
-   destroyed - so the pin may not offer either. */
 ok("a reset with no answer never invites the destructive action again",
   !/(?:press|click) Clear|Clear again|Start to re-attach|re-attached|press Ctrl\+Enter/i
     .test(resetPin()) && /do not (?:retry|start)/i.test(resetPin()),
@@ -1405,7 +1164,6 @@ ok("a reset with no answer keeps the reason it failed for the title",
 ok("the playlist chip survives a reset the page could not confirm",
   run("S.url").includes("PLKEEP"), "url: " + run("S.url"));
 
-/* 409: nothing was cleared, so the page must clear nothing either */
 feedDone();
 resetReply = () => http(409, REFUSED_BODY);
 runReply = () => jsonResponse({ok: true, seq: 42});
@@ -1419,7 +1177,6 @@ ok("a refused reset says nothing was cleared and names the run that owns the ser
   /nothing was cleared/.test(resetPin()) && /already running|re-attached/.test(resetPin()),
   "line: " + resetPin());
 
-/* New transfer is the same request, so it must take the same path */
 feedDone();
 resetReply = () => http(200, {ok: true});
 runReply = () => jsonResponse({ok: true, seq: 0});
@@ -1429,14 +1186,6 @@ ok("New transfer goes through the same reset and clears on a confirmed answer",
   run("S.rows.size") === 0 && el("srcurl").value === "" && el("bignum").textContent === "0",
   "rows " + run("S.rows.size") + " · link " + JSON.stringify(el("srcurl").value));
 
-/* ---------- 12b. an unresolved reset locks the session ----------
-   A reset the page could not confirm leaves a record nothing on this page can see: /api/run
-   serves only an INCOMPLETE record, so "no run and no record" is not proof the record is
-   gone, and a complete one still names the playlist a new transfer would top up. The guard is
-   deliberately blunt - after ANY unresolved reset, nothing is reset and nothing is started,
-   for any source - because an empty-id reset clears every record and a per-source guard let a
-   second failure replace the first. Nothing unlocks itself, nothing claims the record is gone,
-   and the copy says the guard is in memory only: a reload clears it without settling anything. */
 const isLocked = () => run("!!S.lock");
 
 feedDone();
@@ -1449,8 +1198,6 @@ ok("the session-only consequence is on the first failure screen, not only after 
   /this guard lasts this session/i.test(resetPin()) &&
   /a reload clears this guard/i.test(resetPin()),
   "line: " + resetPin());
-/* the status line is one ellipsised line, so the warning it cannot hold lives in its own
-   region: full sentences, wrapping, focusable and announced */
 ok("the lock warning is its own announced, focusable region in the shipped markup",
   /<div id="lockwarn" role="alert" tabindex="0" hidden><\/div>/.test(html),
   "markup: " + (html.match(/<div id="lockwarn"[^>]*>/) || [""])[0]);
@@ -1486,7 +1233,6 @@ ok("the refusal claims no unlock and never says the record is gone",
   !/record (is|was) (gone|restored|cleared)|no record|unlock|ignore/i.test(resetPin()) &&
   /not proof that the record is gone/.test(resetTitle()),
   "line: " + resetPin() + " · title: " + resetTitle());
-/* the honest limit, in the page's own words and in its storage */
 ok("the lock says it lasts this session only and warns that a reload clears it",
   /this session/.test(resetPin()) &&
   /in memory for this session only/i.test(resetTitle()) &&
@@ -1498,8 +1244,6 @@ ok("nothing about the lock is persisted, so no reload can claim it back",
   !stored.some((k) => /lock|hold|reset|playlist|spotkin/i.test(k)),
   "localStorage keys: " + stored.join(", "));
 
-/* the poll owns the status line and clears S.pin on a terminal payload: the warning may not be
-   painted from it */
 runReply = () => jsonResponse({ok: true, seq: 60, phase: "done", state: "done",
   total: 6, declared: 6, playlist_count: 6,
   counts: {source: 6, unique: 6, added: 4, skipped: 0, duplicate: 0, unverified: 2, refused: 0}});
@@ -1511,7 +1255,6 @@ ok("a poll that clears the status line cannot hide the lock warning",
   " · band: " + JSON.stringify(el("lockwarn").textContent));
 run("unpoll();");
 
-/* every route to the two functions is the same guard: a shortcut is not a way past it */
 const byKeys = {req: requests.length, res: resets.length};
 doc.fire("keydown", {key: "Enter", ctrlKey: true, preventDefault() {}, stopPropagation() {}});
 await settle();
@@ -1531,8 +1274,6 @@ ok("the palette's start and new are not a way past the lock",
   resets.length === byKeys.res,
   "requests: " + requests.slice(byKeys.req).join(", ") + " · resets " + (resets.length - byKeys.res));
 
-/* a different, identified link is refused too: after one unresolved reset no source can be
-   shown safe, so the lock is not per-source */
 run("$('srcurl').value='https://open.spotify.com/playlist/SPOTOTHER';paintSrcX();render();");
 resetReply = () => http(200, {ok: true});
 const otherAt = resets.length;
@@ -1544,8 +1285,6 @@ await run("startTransfer()");
 ok("and it cannot be started either",
   !requests.slice(otherAt).some((u) => u.startsWith("/api/transfer")), "line: " + resetPin());
 
-/* the empty-link case: a reset there would clear every record, so it is the sharpest form of
-   the same guard */
 run("$('srcurl').value='';paintSrcX();render();");
 const emptyAt = resets.length;
 await run("doClear()");
@@ -1553,8 +1292,6 @@ ok("an unscoped reset is refused while the session is locked",
   resets.length === emptyAt && /reset unresolved/.test(resetPin()),
   "line: " + resetPin());
 
-/* an unresolved reset with NO identifiable source locks every source, which is the case a
-   per-source guard could not express: the request itself could have touched any record */
 feedDone();
 run("$('srcurl').value='';paintSrcX();render();");
 resetReply = () => http(500, PARTIAL_BODY);
@@ -1572,7 +1309,6 @@ ok("an unknown-id lock refuses an identified source too",
   /reset unresolved/.test(resetPin()),
   "resets " + (resets.length - unknownAt) + " · line: " + resetPin());
 
-/* a lost reply reaches the same lock */
 feedDone();
 resetReply = () => Promise.reject(new TypeError("Failed to fetch"));
 runReply = () => Promise.reject(new TypeError("Failed to fetch"));
@@ -1585,7 +1321,6 @@ ok("the lost-reply screen says the guard is session-only in its own words",
   /a reload clears this guard/i.test(resetPin()),
   "line: " + resetPin());
 
-/* a confirmed reset proves the record gone, so nothing is locked and work goes on */
 feedDone();
 resetReply = () => http(200, {ok: true});
 runReply = () => jsonResponse({ok: true, seq: 0});
@@ -1605,16 +1340,8 @@ ok("a confirmed reset does not block the next transfer",
   requests.slice(afterOk).some((u) => u.startsWith("/api/transfer")),
   "requests: " + requests.slice(afterOk).join(", "));
 transferReply = null;
-/* the run this started is left live on screen, so stop the poll and the facts tick:
-   nothing after this block drives the page again */
 run("unpoll();tickStop();");
 
-/* ---------- 12c. one reset at a time, initiation to terminal decision ----------
-   /api/reset writes twice on the server (the run, then the record), so a second reset or a
-   start racing the first could erase the record whose outcome the first has not reported -
-   and a success landing on top of a failure would wipe the lock that failure earned. So the
-   page marks itself busy before its first await and refuses everything else until its own
-   answer decides. These cases hold that answer open to prove the window is closed. */
 feedDone();
 resetReply = () => inflightReset.p;
 runReply = () => jsonResponse({ok: true, seq: 52});
@@ -1644,13 +1371,11 @@ ok("no shortcut or palette command races the reset",
   resets.length === raceAt.res &&
   !requests.slice(raceAt.req).some((u) => u.startsWith("/api/transfer")),
   "resets " + (resets.length - raceAt.res) + " · requests: " + requests.slice(raceAt.req).join(", "));
-/* the held answer decides, and only then is the page free again */
 inflightReset.res(http(500, PARTIAL_BODY));
 await inFlight;
 ok("the reset's own answer decides, then the page shows the lock and clears busy",
   isLocked() && run("S.resetBusy") === false,
   "lock " + isLocked() + " · busy " + run("S.resetBusy"));
-/* and no success may erase a lock that failure earned */
 resetReply = () => http(200, {ok: true});
 const lockAt = resets.length;
 await run("doClear()");
@@ -1659,14 +1384,6 @@ ok("a success cannot clear an unresolved lock",
   "resets " + (resets.length - lockAt) + " · lock " + isLocked());
 run("unpoll();tickStop();");
 
-/* ---------- 12d. a transfer request in flight owns the page ----------
-   startTransfer marks the phase live before its POST, so a detach could set "aborted" and let
-   a reset run while the request was still unanswered - the run may be created after the reset,
-   and the reply would then paint over a screen that was already cleared. The in-flight flag is
-   set before the POST and held until a definitive answer. A lost reply leaves the outcome
-   unknown for the session: no /api/run read settles it - a delayed request can arrive after
-   any read, and a run for the same playlist may predate it - so detach, reset and start stay
-   refused while the server's payloads are still displayed. */
 feedDone();
 run("S.ytState='connected';$('srcurl').value='https://open.spotify.com/playlist/SPOTSTART';"
   + "paintSrcX();render();");
@@ -1696,7 +1413,6 @@ ok("the answer decides: the run is attached and the flag clears",
   "run " + JSON.stringify(run("S.runId")) + " · busy " + run("S.startBusy"));
 run("unpoll();tickStop();");
 
-/* the reply that never arrives: the run may exist, so nothing may pretend otherwise */
 feedDone();
 run("S.ytState='connected';$('srcurl').value='https://open.spotify.com/playlist/SPOTLOST';"
   + "paintSrcX();render();");
@@ -1720,9 +1436,6 @@ await run("doClear()");
 ok("a reset is refused while that outcome is unknown",
   resets.length === lostAt.res && /never answered/.test(resetPin()),
   "resets " + (resets.length - lostAt.res) + " · line: " + resetPin());
-/* No read settles it. Not an idle one - the request can still arrive after it - and not one
-   that shows a run for the same playlist, which may predate the request. The page may show
-   that run; it may not re-open a reset or a start. */
 runReply = () => jsonResponse({ok: true, seq: 62});
 await run("pollOnce()");
 ok("a read that reports no run does not clear the doubt",
@@ -1733,7 +1446,6 @@ await run("doClear()");
 ok("a no-run read does not let a reset through",
   resets.length === idleReadAt, "resets " + (resets.length - idleReadAt));
 
-/* the deferred acceptance: the server takes the request after our read said nothing */
 runReply = () => jsonResponse({ok: true, seq: 63, run_id: "rlate", phase: "append",
   state: "running", total: 6, declared: 6, spotify_id: "SPOTLOST", title: "Late List",
   counts: {source: 6, unique: 6, added: 1, skipped: 0, duplicate: 0, unverified: 0,
@@ -1758,12 +1470,6 @@ ok("the unanswered-transfer warning stays up through every read",
   "band: " + JSON.stringify(el("lockwarn").textContent));
 run("unpoll();tickStop();");
 
-/* ---------- 12e. a response belongs to the screen that asked for it ----------
-   unpoll() clears the interval, not a pollOnce already awaiting its answer. Without a
-   generation, an earlier run's payload lands on a newer screen: it would overwrite the new
-   run's rows and counts, or - on a done payload - halt the new run's polling. The generation
-   moves when the screen is replaced (start, detach, reset) and not on an ordinary poll, so a
-   re-attach and overlapping polls inside one run still apply. */
 feedDone();
 const staleDone = deferred();
 runReply = () => staleDone.p;
@@ -1782,7 +1488,6 @@ ok("the new run's own answer paints the new screen",
   run("S.runId") === "rB" && run("S.rows.size") === 1 && el("bignum").textContent === "1",
   "run " + JSON.stringify(run("S.runId")) + " · rows " + run("S.rows.size") +
   " · counter " + el("bignum").textContent);
-/* the earlier run's response arrives late */
 staleDone.res(jsonResponse({ok: true, seq: 9, run_id: "rA", phase: "done", state: "done",
   total: 99, declared: 99, playlist_count: 99,
   counts: {source: 99, unique: 99, added: 99, skipped: 0, duplicate: 0, unverified: 0, refused: 0},
@@ -1800,7 +1505,6 @@ ok("a stale done response cannot halt the new run's polling",
   " · state " + run("S.state"));
 run("unpoll();tickStop();");
 
-/* detach retires the poll in flight: its live payload may not repaint or restart */
 feedDone();
 const staleDetach = deferred();
 runReply = () => staleDetach.p;
@@ -1822,7 +1526,6 @@ ok("the detached screen is not repainted and polling is not restarted",
   "phase " + run("S.phase") + " · timer " + (run("S.timer") ? "set" : "cleared") +
   " · counter " + el("bignum").textContent);
 
-/* a reset retires it too: the run it cleared may not paint over the idle page */
 feedDone();
 const staleReset = deferred();
 runReply = () => staleReset.p;
@@ -1839,7 +1542,6 @@ ok("a cleared screen is not repainted by the run it cleared",
   "rows " + run("S.rows.size") + " · counter " + el("bignum").textContent +
   " · phase " + run("S.phase"));
 
-/* the same generation still applies: an ordinary poll and a re-attach are not retired */
 feedDone();
 runReply = () => jsonResponse({ok: true, seq: 12, run_id: "rSame", phase: "append",
   state: "running", total: 2, declared: 2,
@@ -1855,8 +1557,6 @@ ok("overlapping polls inside one run are not retired",
   "run " + JSON.stringify(run("S.runId")) + " · rows " + run("S.rows.size"));
 run("unpoll();tickStop();");
 
-/* a retry's read is part of its request's continuation, not a fresh look at a screen it did
-   not start on: a detach during the request retires it */
 feedDone();
 run("S.phase='verify';S.state='standby';S.total=6;S.declared=6;"
   + "S.counts={source:6,unique:6,added:6,skipped:0,duplicate:0,unverified:0,refused:0,pending:0};"
@@ -1883,7 +1583,6 @@ ok("the retry's answer does not poll or re-attach the detached run",
 ok("the retry control is left usable, without repainting the detached screen",
   el("retrybtn").disabled === false, "disabled " + el("retrybtn").disabled);
 
-/* and with no detach it still re-reads the run */
 feedDone();
 run("S.phase='verify';S.state='standby';setPhase('verify');render();");
 retryReply = () => jsonResponse({ok: true});
@@ -1901,7 +1600,6 @@ ok("the page read its settings, its cookie record and its version on load",
   requests.some((u) => u.startsWith("/api/cookies")) &&
   requests.includes("/health"),
   "requests: " + requests.join(", "));
-/* Same origin only: /health is the server's own route beside the /api/ surface. */
 ok("no third-party request is made",
   requests.every((u) => u.startsWith("/api/") || u === "/health"),
   "requests: " + requests.join(", "));

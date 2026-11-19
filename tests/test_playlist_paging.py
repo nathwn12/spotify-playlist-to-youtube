@@ -1,18 +1,4 @@
 #!/usr/bin/env python3
-"""Continuation paging: both token shapes YTM serves must walk the same pages.
-
-yt_playlist_entries is the only source of truth for what a playlist holds, so a
-read that stops at page 1 reports every later track as absent. InnerTube puts
-the next-page token in one of two places, depending on the reply: the legacy
-`continuations[].nextContinuationData.continuation` field, or the live
-`continuationItemRenderer -> continuationEndpoint -> continuationCommand ->
-token` item that ends the shelf, with later pages served under
-`continuationContents`. Both shapes must walk the page sequence to the end.
-
-No network: urlopen is replaced by a fake that serves three pages.
-
-Run: python -X utf8 tests/test_playlist_paging.py   (exit 0 only when every check passes)
-"""
 import json
 import os
 import sys
@@ -28,9 +14,6 @@ import backend  # noqa: E402
 PLID = "PLpagingTest001"
 COOKIE = "SID=test-only; HSID=test-only; SAPISID=test-only-value"
 
-# Three pages, and "AAAAAAAAAAA" held twice on purpose: a playlist may
-# legitimately carry the same track twice, so a read may never dedupe by
-# videoId - only a page token may be rejected as a repeat.
 PAGES = [["AAAAAAAAAAA", "BBBBBBBBBBB", "CCCCCCCCCCC"],
          ["DDDDDDDDDDD", "AAAAAAAAAAA"],
          ["EEEEEEEEEEE", "FFFFFFFFFFF"]]
@@ -57,15 +40,12 @@ def rows(ids):
 
 
 def live_token(token):
-    """The live WEB_REMIX shape: a trailing continuation item, not a continuations[] field."""
     return {"continuationItemRenderer": {"continuationEndpoint": {
         "continuationCommand": {"token": token,
                                 "request": "CONTINUATION_REQUEST_TYPE_BROWSE"}}}}
 
 
 class Paged:
-    """Serves PAGES one at a time in one of the two shapes YTM uses, and records
-    every token and every page index it was asked for."""
 
     def __init__(self, shape):
         self.shape = shape
@@ -95,8 +75,6 @@ class Paged:
                 return {"contents": {"musicPlaylistShelfRenderer": inner}}
             return {"continuationContents": {"musicPlaylistShelfContinuation": inner}}
         if self.shape == "live-append":
-            # What a real WEB_REMIX playlist continuation returns: no shelf node at
-            # all - the rows and the next token arrive in appendContinuationItemsAction.
             if nxt:
                 contents = contents + [live_token(nxt)]
             if self.pages[-1] == 0:
@@ -111,8 +89,6 @@ class Paged:
 
 
 class Stuck:
-    """Answers every page with the same continuation token: without a guard the
-    pager would request pages forever."""
 
     def __init__(self):
         self.calls = 0
@@ -126,7 +102,6 @@ class Stuck:
 
 
 class Shelfless:
-    """A reply with no playlist shelf at all."""
 
     def __call__(self, req, timeout=None):
         return Resp(json.dumps({"alerts": [{"text": "that playlist does not exist"}]}))
@@ -140,7 +115,6 @@ def shelf(contents, continuations=None):
 
 
 class OneReply:
-    """Answers every browse with one recorded reply and counts the calls."""
 
     def __init__(self, body):
         self.body = body
@@ -164,9 +138,7 @@ class Paging(unittest.TestCase):
             read = backend.yt_playlist_read(PLID, COOKIE)
         return upstream, read
 
-    # --- a shape we cannot read is unread, never end-of-list -----------------
     def test_an_unrecognised_row_renderer_is_unread_not_the_end_of_the_list(self):
-        """A row renderer nobody knows may be a track: the read proves nothing."""
         _, read = self.read_reply(shelf([
             rows(["AAAAAAAAAAA"])[0],
             {"musicResponsiveListItemRendererV2": {"videoId": "BBBBBBBBBBB"}}]))
@@ -174,8 +146,6 @@ class Paging(unittest.TestCase):
         self.assertIn("renderer", read["why"])
 
     def test_a_row_without_a_parsable_video_id_is_unread_not_skipped(self):
-        """A recognised row whose videoId cannot be parsed is a track we cannot
-        name: scoring it absent is how a caller re-adds what the list holds."""
         _, read = self.read_reply(shelf([
             rows(["AAAAAAAAAAA"])[0],
             {"musicResponsiveListItemRenderer": {"flexColumns": []}}]))
@@ -183,8 +153,6 @@ class Paging(unittest.TestCase):
         self.assertIn("videoId", read["why"])
 
     def test_an_unknown_continuation_representation_is_not_the_end_of_list(self):
-        """A continuation we cannot read says more rows follow; it cannot say the
-        page we hold is the whole playlist."""
         upstream, read = self.read_reply(shelf(
             rows(PAGES[0]), [{"nextContinuationData": {"cursor": "opaque"}}]))
         self.assertFalse(read["complete"], read)
@@ -192,7 +160,6 @@ class Paging(unittest.TestCase):
         self.assertEqual(upstream.calls, 1, "the read asked for a page it cannot address")
 
     def test_a_row_marker_that_is_not_a_page_token_is_not_end_of_list(self):
-        """A continuation item with no readable token is an unknown representation."""
         item = {"continuationItemRenderer": {"continuationEndpoint": {
             "continuationCommand": {"request": "CONTINUATION_REQUEST_TYPE_BROWSE"}}}}
         _, read = self.read_reply(shelf(rows(PAGES[0]) + [item]))
@@ -219,16 +186,12 @@ class Paging(unittest.TestCase):
         self.assertEqual(upstream.pages, [0, 1, 2])
 
     def test_live_append_continuation_items_shape_walks_the_same_pages(self):
-        """The shape live YouTube Music actually serves: proven against
-        PLI-3Je28SDV8 (150 entries), whose continuation reply holds no shelf node."""
         upstream, entries = self.read("live-append")
         self.assertEqual(entries, EXPECTED)
         self.assertEqual(upstream.tokens, TOKENS)
         self.assertEqual(upstream.pages, [0, 1, 2])
 
     def test_a_reply_without_a_shelf_is_not_an_empty_playlist(self):
-        """A reply that carries no playlist shelf (a refusal, a page shape change)
-        proves nothing: it must read as unread, never as a playlist holding 0."""
         upstream = Shelfless()
         with mock.patch("urllib.request.urlopen", upstream):
             entries = backend.yt_playlist_entries(PLID, COOKIE)

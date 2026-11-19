@@ -1,17 +1,4 @@
 #!/usr/bin/env python3
-"""Offline acceptance gate: replay the recorded playlist data through backend.py.
-
-Each fixture row is the real Spotify source row and the real InnerTube search
-responses seen for it. Nothing here reaches the network: urlopen is replaced
-with a lookup keyed by the search query.
-
-Nothing here touches the owner's state either: every path backend derives from
-APPDATA, and the Desktop/Downloads cookie scan behind home_dir(), is redirected
-into a scratch root created before backend is imported (see _isolate_state).
-
-Exit 0 only when every row resolves exactly as recorded and the four versions
-of one title resolve to four distinct videoIds with zero repeats.
-"""
 import atexit
 import json
 import os
@@ -27,14 +14,6 @@ sys.path.insert(0, HERE)
 
 
 def _isolate_state():
-    """Confine every owner-visible state path to one scratch root.
-
-    backend builds STATE from APPDATA at import time and hangs LOGF, created.json,
-    settings.json and the three cookie files off it, so importing it before this
-    runs is what appended to the live app's %APPDATA%\\sp2yt server.log. The root
-    is created under the caller's temp dir (scripts\acceptance.cmd points TEMP into its
-    own scratch first, so a wrapped run nests inside it) and removed on exit.
-    """
     root = tempfile.mkdtemp(prefix="sp2yt-acceptance-")
     dirs = {name: os.path.join(root, name)
             for name in ("appdata", "localappdata", "userprofile", "temp")}
@@ -42,8 +21,6 @@ def _isolate_state():
         for p in dirs.values():
             os.makedirs(p, exist_ok=True)
     except OSError:
-        # atexit is registered after this returns, so a root left behind here
-        # would never be removed. Drop it before the failure propagates.
         shutil.rmtree(root, ignore_errors=True)
         raise
     os.environ["APPDATA"] = dirs["appdata"]
@@ -51,9 +28,6 @@ def _isolate_state():
     os.environ["USERPROFILE"] = dirs["userprofile"]
     os.environ["HOME"] = dirs["userprofile"]
     os.environ["TEMP"] = os.environ["TMP"] = dirs["temp"]
-    # gettempdir() caches on first use and the mkdtemp above already used it, so the
-    # scratch root would otherwise keep handing out the real %TEMP% and every
-    # per-test dir would leak there instead of being removed with the root.
     tempfile.tempdir = dirs["temp"]
     return root
 
@@ -62,7 +36,6 @@ STATE_ROOT = _isolate_state()
 
 
 def _drop_scratch():
-    """Remove this run's scratch root; False when it survived (a handle is open)."""
     shutil.rmtree(STATE_ROOT, ignore_errors=True)
     if os.path.exists(STATE_ROOT):
         print(f"FAIL cleanup: acceptance scratch survived at {STATE_ROOT}")
@@ -78,13 +51,6 @@ import backend  # noqa: E402
 
 
 def _state_escapes():
-    """State paths backend would write outside the scratch root.
-
-    This is the isolation assertion, not a comment about it: a regression that
-    leaves STATE on the owner's APPDATA - or one that lets backend fall back to
-    the repository when it cannot create STATE - fails this run instead of being
-    found later in a polluted server.log or a server.log inside the tree.
-    """
     root = os.path.normcase(os.path.abspath(STATE_ROOT)) + os.sep
     paths = {"STATE": backend.STATE, "LOGF": backend.LOGF,
              "CREATEDF": backend.CREATEDF, "SETTINGF": backend.SETTINGF,
@@ -106,8 +72,6 @@ class MissingResponse(BaseException):
 
 def done_counts(added=0, refused=0, skipped=0, unverified=0, duplicate=0,
                 source=None, unique=None):
-    """The seven counts _done_summary takes. `source`/`unique` default to the
-    sum, which is what a reconciling run reports; the split cases pass source."""
     total = added + refused + skipped + unverified + duplicate
     return {"source": total if source is None else source,
             "unique": total if unique is None else unique,
@@ -126,12 +90,6 @@ class FakeResponse:
 
 
 def test_clear():
-    """Clear empties the served state; a fresh start after clear serves nothing.
-
-    Drives the real HTTP routes (POST /api/reset, GET /api/run) against an
-    in-process server with temp STATE files, so the proof covers the handler,
-    not just the helpers. Settings survive (privacy latch is not transfer state).
-    """
     import tempfile
     import threading
     from http.server import ThreadingHTTPServer
@@ -205,13 +163,6 @@ def test_clear():
 
 
 def test_cover_wiring():
-    """cover_url rides the run payload; the page has a real <img> with fallback.
-
-    Seeds RUN with a cover, serves GET /api/run over HTTP, asserts the key is
-    present, then resets and asserts it is gone. Static part: index.html must
-    hold an <img id="pcover"> (not a gradient span), a setCover() that falls
-    back to the gradient, and a Clear path that empties the URL field.
-    """
     import tempfile
     import threading
     from http.server import ThreadingHTTPServer
@@ -265,12 +216,6 @@ def test_cover_wiring():
 
 
 def test_scoped_clear():
-    """Clear drops only the box's playlist key; other playlists keep theirs.
-
-    Seeds created.json with two incomplete records, resets with one
-    spotify_id, and asserts the other survives. An empty payload still
-    clears the whole file (the test_clear path).
-    """
     import tempfile
     import threading
     from http.server import ThreadingHTTPServer
@@ -327,9 +272,6 @@ def test_scoped_clear():
 
 
 def test_reconcile_present_but_refused():
-    """Recorded run r1: 25 refused rows whose videos were on the playlist.
-    Reconcile flips present-but-refused to landed; the done line then reads
-    landed == holds instead of 48 beside 73."""
     try:
         vids = ["VID%08d" % i for i in range(5)]
         entries = list(vids)  # read-back holds every requested copy
@@ -350,9 +292,6 @@ def test_reconcile_present_but_refused():
 
 
 def test_reconcile_absent_stays_refused():
-    """Genuinely absent at read-back stays refused (FAILED) or missing
-    (SUCCEEDED-but-absent); the done line prints the same holds count the
-    ledger consumed, with the split named."""
     try:
         vids = ["VID%08d" % i for i in range(5)]
         entries = vids[:3]  # last two copies never made the read-back
@@ -377,20 +316,6 @@ def test_reconcile_absent_stays_refused():
 
 
 def test_uncertain_writes_are_never_resent():
-    """A lost reply is never treated as a lost add, and never re-sent by guesswork.
-
-    Three halves, all of them pinned here:
-
-      (a) the add itself: a timeout reads as transport, never success, and nothing is
-          re-sent from inside it;
-      (b) the repair pass does not re-send it either. A complete read that does not
-          show the copy is not proof the copy stayed out - the read can be a snapshot
-          taken before the write - so the run ends give-up and names the copy as
-          unverified, for the user to check. That is the safe stop, not a retry;
-      (c) a 429 is different: the server declined the request, so the copy was never
-          written and retrying it is a first write. That one is retried after the
-          backoff the run chose.
-    """
     try:
         import time
 
@@ -438,17 +363,12 @@ def test_uncertain_writes_are_never_resent():
 
         try:
             urllib.request.urlopen = fake
-            # (a) the add: a timeout is a transport failure, never an add, and the
-            # unknown outcome is not sent blind from inside.
             st = backend.yt_add_one("PLX", vid, "SAPISID=x")
             if "SUCCEEDED" in (st or "").upper() or not backend.is_unsure_status(st):
                 return "FAIL retry: a timeout read as %r" % (st,)
             if len(sends) != 1:
                 return "FAIL retry: an unknown outcome was re-sent blind (sends=%d)" % len(sends)
 
-            # (b) the repair pass: a complete read cannot prove the copy stayed out, so
-            # the copy is frozen and named, never sent a second time. The run hands the
-            # unknown position in, exactly as the transfer worker does.
             mode["browse"] = "ok"
             out = backend._converge("PLX", "SAPISID=x", [vid], unsure=[0])
             if len(sends) != 1:
@@ -460,8 +380,6 @@ def test_uncertain_writes_are_never_resent():
             if held:
                 return "FAIL retry: an unknown write read as landed (%r)" % (held,)
 
-            # (c) a 429 is not proof the write was refused unapplied on this endpoint,
-            # so it takes the same path: it is named unknown and never re-sent.
             held.clear()
             sends.clear()
             mode["fail"] = "429"
@@ -483,8 +401,6 @@ def test_uncertain_writes_are_never_resent():
 
 
 def test_done_line_never_splits():
-    """The done line is incapable of printing N landed beside a different
-    holds count without naming the split in the same sentence."""
     try:
         bad = []
         for landed, n in [(48, 73), (73, 48), (0, 5), (5, 0)]:
@@ -515,14 +431,6 @@ def test_guess_summary():
 
 
 def test_running_motion():
-    """Running state visibly moves without faking progress.
-
-    Pill carries a moving dot + the same landedNow()/declared count the chips
-    use; rule sweeps only while the total is unknown and fills capped at the
-    known count; only the appending row pulses; one 1s footer tick cleared
-    when live ends; all motion is CSS keyframes silenced under
-    prefers-reduced-motion; no animation class survives a terminal phase.
-    """
     try:
         page = open(os.path.join(ROOT, "index.html"), encoding="utf-8").read()
         need = [
@@ -581,8 +489,6 @@ def main():
         print("0/0 fixtures")
         return 1
 
-    # A row may carry its own responses map: rows that share a source title
-    # issue the same query and still need different cards for their outcomes.
     served = {"map": responses}
 
     def fake_urlopen(req, timeout=None):
@@ -689,7 +595,6 @@ def main():
                 failed_ids.add(rid)
                 continue
 
-        # Four versions of one title must be four videos, not four copies of one.
         group = [r for r in rows if (r.get("source") or {}).get("title", "").startswith(
             "MONTAGEM RETINAL PLATINA - ")]
         if len(group) != 4:

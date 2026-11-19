@@ -1,20 +1,4 @@
 #!/usr/bin/env python3
-"""Offline checks for the advice watchdog prints.
-
-watchdog.get is stubbed, so nothing here binds a port or reads the audit log on
-disk. What is checked is the CLAIM, not the log: the heuristic matches text in a
-`fail` line, and that line names an exception - never which request threw it, and
-never whether the request was one of the transfer's own. So a 429, a timeout, a
-401 and a 403 all say the same two things: what cannot be known, and where to
-look before deciding anything.
-
-Three sentences were once printed from that same log text and none of them was
-knowable: "already retried at 4 workers" (no code path sets a worker count),
-"already retried once automatically" (an add's failure is never re-sent), and
-"cookie expired/wrong site ... re-run" (an expired session and a cookie without
-permission answer identically, and a failed add may have landed). Each is pinned
-below, so it cannot come back as prose.
-"""
 
 import contextlib
 import io
@@ -31,7 +15,6 @@ import watchdog  # noqa: E402
 
 
 def run(events, health=True):
-    """(exit code, printed text) for one audit window, against a stubbed server."""
 
     def fake_get(path, timeout=10):
         if path == "/health":
@@ -51,13 +34,11 @@ def run(events, health=True):
 
 
 def advice(text):
-    """The fix block, flattened: what a reader copies into their next action."""
     i = text.find("fix:")
     return "" if i < 0 else " ".join(text[i:].split())
 
 
 def close(ad):
-    """The closing advice every branch must end on, without its own opening."""
     i = ad.find("Check the run's status")
     return ad[i:] if i >= 0 else ""
 
@@ -77,7 +58,6 @@ def ok(name, cond, detail=""):
         fails.append(name)
 
 
-# Every failure shape the heuristic recognises, with tokens its own opening must carry.
 BRANCHES = {
     "429": (fail_line("HTTPError: HTTP Error 429: Too Many Requests"), ("429", "throttl")),
     "timeout": (fail_line("URLError: <urlopen error timed out>"), ("timed out", "connection")),
@@ -89,7 +69,6 @@ got = {}
 for name, (line, _tokens) in BRANCHES.items():
     got[name] = run([line])
 
-# 1 every branch is diagnosed from its fail line, and opens on its own subject
 for name, (_line, tokens) in BRANCHES.items():
     rc, text = got[name]
     ad = advice(text)
@@ -97,7 +76,6 @@ for name, (_line, tokens) in BRANCHES.items():
     ok("%s: advice names its own subject" % name, bool(ad) and any(t in ad.lower() for t in tokens), ad[:90])
     ok("%s: opens on a fix" % name, ad.startswith("fix:"), ad[:60])
 
-# 2 nothing asserts what the log cannot know, in ANY branch
 FORBIDDEN = [
     (r"\b\d+\s*workers?\b", "worker count no code path sets"),
     (r"already retried", "claim that a retry ran"),
@@ -118,7 +96,6 @@ for name in BRANCHES:
     for pattern, what in FORBIDDEN:
         ok("%s: no %s" % (name, what), not re.search(pattern, ad.lower()), ad)
 
-# 3 every branch sends the reader to the same two places, before deciding anything
 for name in BRANCHES:
     low = advice(got[name][1]).lower()
     ok("%s: check the run's status" % name, "run's status" in low, low[:90])
@@ -129,14 +106,12 @@ for name in BRANCHES:
     ok("%s: refuses Reset" % name, "do not reset" in low, low[:90])
     ok("%s: refuses deleting the playlist" % name, "delete the playlist" in low, low[:90])
 
-# 4 the closing advice is one block, so a fifth branch cannot drift alone
 closes = {name: close(advice(got[name][1])) for name in BRANCHES}
 first = closes["429"]
 ok("the closing advice is non-empty", bool(first), repr(first))
 for name, tail in closes.items():
     ok("%s: closing advice is the shared one" % name, tail == first, "%r vs %r" % (tail[:70], first[:70]))
 
-# 5 the auth branch stays conditional: both causes, no verdict, no cookie instruction
 auth = advice(got["401"][1]).lower()
 ok("auth: names an expired session", "expired" in auth, auth[:90])
 ok("auth: names a permission answer", "permission" in auth, auth[:90])
@@ -153,20 +128,17 @@ ok(
     "%r vs %r" % (advice(got["403"][1])[:60], advice(got["401"][1])[:60]),
 )
 
-# 6 the 429 and the timeout still say the log cannot name the request
 for name in ("429", "timeout"):
     ad = advice(got[name][1]).lower()
     ok("%s: says the log cannot name the request" % name, "cannot say which request" in ad, ad[:90])
     ok("%s: an add may have landed anyway" % name, "may have landed" in ad, ad[:90])
 
-# 7 the accepted batch shape is unchanged, so the advice above stays the subject
 ok(
     "search batch still defaults to 8 workers",
     "workers: int = 8" in open(os.path.join(ROOT, "backend.py"), encoding="utf-8").read(),
     "yt_search_batch's default changed; re-check what the advice should say",
 )
 
-# 8 the fall-through still answers, so an edit here cannot swallow it
 unknown_rc, unknown_text = run([fail_line("WeirdError: something new")])
 ok(
     "an unknown failure still says to paste the line",
@@ -174,7 +146,6 @@ ok(
     advice(unknown_text)[:80],
 )
 
-# 9 a clean window advises nothing at all
 clean_rc, clean_text = run(["12:00:01 create run=r1 ok playlist=PL1"])
 ok("a clean window prints no fix", clean_rc == 0 and "fix:" not in clean_text, clean_text[-80:])
 

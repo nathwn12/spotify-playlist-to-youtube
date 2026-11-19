@@ -1,27 +1,4 @@
 #!/usr/bin/env python3
-"""Large-playlist transfer: 100-song slices, each proved by a read-back.
-
-A 2,500-track transfer must not depend on one append queue that only reports when
-it is over. The write path sends the outstanding copies in slices of
-`backend.TRANSFER_SLICE` and reads the playlist back after every slice, so
-
-  * progress is verified progress: `counts.added` only ever counts a copy a
-    COMPLETE read proved present, and it grows slice by slice;
-  * a copy that was sent and not yet proved is `counts.pending`, never `added`
-    and never silently dropped from the progress arithmetic;
-  * order and multiplicity are the source's: 2,500 source rows (50 of them the
-    same song on a second edition) leave 2,500 entries, in source order;
-  * a read that stops before the end sends nothing further and claims nothing
-    about the tail;
-  * the network cost is bounded by the plan, never by retries: one read burst
-    per slice, one append per copy.
-
-No network: one fake answers the InnerTube shapes backend.py asks for and holds
-the playlist like a real one - paged behind a continuation, and refusing an id
-it already holds unless the action asked it to skip that check.
-
-Run: python -X utf8 tests/test_slices.py   (exit 0 only when every check passes)
-"""
 import json
 import os
 import re
@@ -51,7 +28,6 @@ SKIP = "DEDUPE_OPTION_SKIP"
 
 
 def vid(n: int) -> str:
-    """11-char InnerTube videoId for song n (1-based)."""
     return "S%010d" % n
 
 
@@ -61,14 +37,9 @@ def song_no(title: str):
 
 
 def source_tracks(n=2500, repeat_of=50):
-    """`n` source rows: unique songs, plus `repeat_of` rows that are the same
-    song on a second edition (a single next to the album) - same title, same
-    artist, so the matcher resolves them to the same videoId. Those are genuine
-    repeats and the transfer must keep both occurrences."""
     rows = []
     for i in range(1, n + 1):
         if i <= n // 2 + repeat_of and i > n // 2:
-            # the second-edition rows repeat songs 1..repeat_of
             song = i - n // 2
             album = "Single %03d" % song
         else:
@@ -81,8 +52,6 @@ def source_tracks(n=2500, repeat_of=50):
 
 
 def search_sections(song: int, album="Album A"):
-    """One confident card for song `song`. The subtitle carries the album text
-    the way a real InnerTube row does (artist * album * duration)."""
     return [{"musicShelfRenderer": {"contents": [{"musicResponsiveListItemRenderer": {
         "playlistItemData": {"videoId": vid(song)},
         "flexColumns": [
@@ -124,12 +93,6 @@ def json_resp(obj):
 
 
 class Upstream:
-    """The fake platform: InnerTube search, playlist create/append/browse.
-
-    `broken_from` is the 1-based index of the first read burst whose
-    continuation fails, so a run can be stopped mid-playlist. `watcher` sees a
-    compact snapshot of the run at every create, every read and every tenth
-    append - never at every call, so 2,500 rows stay cheap."""
 
     def __init__(self, tracks, broken_from=0, frozen=False):
         self.tracks = tracks
@@ -205,12 +168,8 @@ class Upstream:
         v = act.get("addedVideoId") or ""
         self.seq.append(("add", v))
         if self.frozen and self.snapshot is None:
-            # The playlist as it stood when the first append was accepted: every
-            # later read is token-complete and hides everything this run sent.
             self.snapshot = list(self.playlist)
         if v and v in self.playlist and act.get("dedupeOption") != SKIP:
-            # A real edit_playlist refuses an id the list already holds; only the
-            # skip option asks it to accept the second copy.
             return json_resp({"status": "STATUS_FAILED"})
         if v:
             self.playlist.append(v)
@@ -292,8 +251,6 @@ class Slices(unittest.TestCase):
         self.assertEqual(snap["phase"], "done", snap.get("error"))
         expected = [vid(song_no(r["title"])) for r in rows]
         self.assertEqual(upstream.creates, 1, "the plan must create once")
-        # 50 duplicate occurrences are the same song on a second edition: they
-        # are kept as their own copies, in the source's order, not collapsed.
         self.assertEqual(upstream.playlist, expected,
                          "the playlist is not the source plan, in order")
         self.assertEqual(len(upstream.playlist), 2500)
@@ -319,15 +276,11 @@ class Slices(unittest.TestCase):
         self.assertEqual(len(upstream.appends), to_send,
                          "an append per copy, no re-sends and no extra call")
         slices = -(-to_send // 100)
-        # one read burst after the create, one per slice, one for the final
-        # convergence pass - and nothing per append.
         self.assertLessEqual(upstream.reads, 1 + slices + 2,
                              "the run made %d read bursts for %d slices"
                              % (upstream.reads, slices))
         self.assertGreaterEqual(upstream.reads, 1 + slices,
                                 "a slice was sent without its own read-back")
-        # every append asked the server to keep a second copy, because every
-        # occurrence in the source is intended: no setting decides this.
         for act in upstream.actions:
             self.assertEqual(act.get("dedupeOption"), SKIP, act)
 
@@ -343,7 +296,6 @@ class Slices(unittest.TestCase):
         self.assertGreaterEqual(len(set(added)), 20,
                                 "progress moved in %d steps over 2,500 rows" % len(set(added)))
         for s in self.snaps:
-            # counts always carry the pending term, even at zero.
             self.assertIn("pending", s["keys"], s)
             self.assertEqual(s["added"], s["rows_landed"],
                              "counts.added disagrees with the landed rows")
@@ -351,11 +303,8 @@ class Slices(unittest.TestCase):
                                  "a copy was counted added before it was on the playlist")
             self.assertEqual(s["pending"], s["rows_pending"],
                              "counts.pending disagrees with the in-flight rows")
-        # the progress really was observed mid-flight, not only at the end
         self.assertLess(min(added), 500, "no early progress was ever served")
         self.assertGreater(max(added), 2000, "no late progress was ever served")
-        # a copy that was sent and not proved yet is pending, and pending is
-        # counted as attempted work, never as verified.
         pending_snaps = [s for s in self.snaps if s["pending"]]
         self.assertTrue(pending_snaps, "no in-flight copy was ever reported pending")
 
@@ -364,7 +313,6 @@ class Slices(unittest.TestCase):
         upstream = Upstream(rows, broken_from=2)   # read 1 = the create's
         snap = self.transfer(upstream, rows)
 
-        # The create's read proved 50 inline copies, so one slice went out.
         self.assertEqual(len(upstream.appends), 100,
                          "a copy was sent after a read that could not reach the end")
         self.assertEqual(len(upstream.playlist), 150)
@@ -381,31 +329,20 @@ class Slices(unittest.TestCase):
         self.assertIn("unverified", snap["summary"].lower())
         self.assertNotIn("200 missing", snap["summary"])
         self.assertNotIn("missing 200", snap["summary"])
-        # every copy appended exactly once: an unread tail is never re-added
         self.assertEqual(sorted(upstream.appends), sorted(set(upstream.appends)),
                          "a copy was appended twice off an incomplete read")
         self.assertEqual(snap["state"], "gaveup")
-        # A read that never reaches the end is not a finished run: the budget is
-        # spent on reads that could, and every wait is one the run chose itself.
         self.assertEqual(len(self.waits), backend.RUN_RETRY_MAX)
         self.assertEqual(self.waits, sorted(self.waits))
         self.assertEqual(self.waits, list(dict.fromkeys(self.waits)),
                          "the backoff did not grow between attempts")
 
 
-    # --- 5: a read that does not show the slice stops the slice ------------
     def test_a_stale_read_that_hides_the_slice_stops_the_run(self):
-        """A token-complete read can be a stale snapshot: the playlist fills, the
-        read still serves the state from before the appends. It satisfies a floor
-        ("at least what we had") while proving nothing about the 100 copies just
-        sent, so the next slice must not go out on it - and the convergence pass
-        must not re-send the plan against it."""
         rows = source_tracks(300, 0)
         upstream = Upstream(rows, frozen=True)
         snap = self.transfer(upstream, rows)
 
-        # The create read was live; every read after the first append is stale.
-        # One slice went out, and the run stopped when the read did not show it.
         self.assertEqual(len(upstream.appends), 100,
                          "a slice was sent on a read that never showed the last one")
         self.assertEqual(len(upstream.playlist), 150)
@@ -414,28 +351,18 @@ class Slices(unittest.TestCase):
         self.assertEqual(snap["state"], "gaveup")
         self.assertEqual(len(self.waits), backend.RUN_RETRY_MAX)
 
-    # --- 6: only a read that reached the end publishes verified progress ---
     def test_a_partial_read_never_publishes_verified_progress(self):
         rows = source_tracks(300, 0)
         upstream = Upstream(rows, broken_from=2)
         snap = self.transfer(upstream, rows)
         seed = backend.CREATE_INLINE_MAX
-        # Every mid-run snapshot: the seed read is the last completed read, so the
-        # verified number cannot have moved past it. A partial read proves its own
-        # pages, but it is the final ledger that accounts for them, once, in the
-        # open - never as a live "added" the run cannot yet stand behind.
         for s in self.snaps:
             self.assertLessEqual(s["added"], seed,
                                  "a partial read published verified progress: %r" % (s,))
         self.assertEqual(snap["landed"], 100, snap["counts"])
 
 
-    # --- 7: the repair is sliced exactly like the first pass -----------------
     def test_the_repair_is_sent_in_slices_proved_by_their_own_read(self):
-        """A repair is 100-copy slices too. Sending every absent copy in one batch is
-        not the same mechanism as the first pass: no read stands between the batches,
-        so a stale reply cannot stop the rest, and a single accepted-but-dropped copy
-        is only discovered after the whole plan went out."""
         n = 250
         vids = [vid(i) for i in range(1, n + 1)]
         upstream = Upstream([])          # the playlist holds none of them

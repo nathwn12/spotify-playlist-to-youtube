@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-"""Offline checks for playlist cover inheritance (yt_set_playlist_cover).
-
-No network: urllib.request.urlopen is replaced by a router that records every
-request and answers from this script. The cookie is a made-up test value.
-"""
 import json
 import os
 import sys
@@ -26,7 +21,6 @@ PLID = "PLtestplaylist"
 
 
 class Headers:
-    """Case-insensitive .get, like http.client.HTTPMessage."""
 
     def __init__(self, d=None):
         self._d = {str(k).lower(): v for k, v in (d or {}).items()}
@@ -55,7 +49,6 @@ class Resp:
 
 
 def hget(headers, name):
-    """Request headers are stored capitalised by urllib; compare case-insensitively."""
     low = str(name).lower()
     for k, v in (headers or {}).items():
         if str(k).lower() == low:
@@ -64,7 +57,6 @@ def hget(headers, name):
 
 
 class Router:
-    """Replaces urlopen. Routes by URL, records (url, headers, data, timeout)."""
 
     def __init__(self, download=None, handshake=None, upload=None, edit=None):
         self.calls = []
@@ -108,7 +100,6 @@ class CoverTests(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", router):
             return backend.yt_set_playlist_cover(PLID, cover_url, YT_COOKIE)
 
-    # 1
     def test_empty_cover_url_is_a_skip_with_no_request(self):
         router = ok_router()
         out = self.run_cover(router, "")
@@ -116,7 +107,6 @@ class CoverTests(unittest.TestCase):
         self.assertEqual(out["why"], "no cover")
         self.assertEqual(router.calls, [])
 
-    # 2
     def test_non_image_bytes_never_reach_the_handshake(self):
         r = ok_router(download=Resp(200, b"<html>not an image</html>"))
         out = self.run_cover(r)
@@ -124,7 +114,6 @@ class CoverTests(unittest.TestCase):
         self.assertEqual(out["why"], "no image")
         self.assertEqual(len(r.calls), 1, r.urls())
 
-    # 3
     def test_happy_path_uploads_the_bytes_and_sets_the_thumbnail(self):
         r = ok_router()
         out = self.run_cover(r)
@@ -156,7 +145,6 @@ class CoverTests(unittest.TestCase):
         self.assertEqual(thumb["imageKey"]["type"], "PLAYLIST_IMAGE_TYPE_CUSTOM_THUMBNAIL")
         self.assertEqual(thumb["playlistScottyEncryptedBlobId"], "blob123")
 
-    # 4
     def test_handshake_without_an_upload_url_is_a_skip(self):
         r = ok_router(handshake=Resp(200, b""))
         out = self.run_cover(r)
@@ -164,7 +152,6 @@ class CoverTests(unittest.TestCase):
         self.assertEqual(out["why"], "upload")
         self.assertEqual(len(r.calls), 2, r.urls())
 
-    # 5
     def test_a_403_on_the_handshake_is_never_an_exception(self):
         err = urllib.error.HTTPError(
             "https://music.youtube.com/playlist_image_upload/playlist_custom_thumbnail",
@@ -173,7 +160,6 @@ class CoverTests(unittest.TestCase):
         self.assertFalse(out["ok"])
         self.assertEqual(out["why"], "upload")
 
-    # 6
     def test_a_failing_edit_is_a_skip(self):
         r = ok_router(edit=RuntimeError("boom"))
         out = self.run_cover(r)
@@ -181,7 +167,6 @@ class CoverTests(unittest.TestCase):
         self.assertEqual(out["why"], "attach")
         self.assertEqual(len(r.calls), 4, r.urls())
 
-    # 7
     def test_malformed_upload_json_is_a_skip(self):
         r = ok_router(upload=Resp(200, b"{not json"))
         out = self.run_cover(r)
@@ -189,7 +174,6 @@ class CoverTests(unittest.TestCase):
         self.assertEqual(out["why"], "upload")
         self.assertEqual(len(r.calls), 3, r.urls())
 
-    # 8
     def test_an_edit_status_failed_is_a_skip(self):
         r = ok_router(edit=Resp(200, json.dumps({"status": "STATUS_FAILED"}).encode()))
         out = self.run_cover(r)

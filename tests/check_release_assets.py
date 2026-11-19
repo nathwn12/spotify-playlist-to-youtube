@@ -1,7 +1,3 @@
-"""Release asset gate: the two README screenshots are real PNGs at 824x825 - the client area of
-the shipped 840x864 window - neither is the 0.2.0 shot, and the docs no longer describe the
-advanced drawer 0.2.0 removed.
-Stdlib only, no network. Exit 0 green, 1 red. Prints both dimensions on success."""
 import os
 import struct
 import subprocess
@@ -16,7 +12,6 @@ PNG_SIG = b"\x89PNG\r\n\x1a\n"
 
 
 def png_size(path: str):
-    """(width, height) from IHDR, after proving the signature, the first chunk and the IEND tail."""
     with open(path, "rb") as f:
         head = f.read(33)
         f.seek(0, os.SEEK_END)
@@ -33,10 +28,6 @@ def png_size(path: str):
 
 
 def tagged_len(rel: str):
-    """(byte length of the same path at TAG, None) or (None, why it is unreachable).
-
-    An unreachable tag is reported, never assumed equal: a shallow clone must stay green,
-    but it must not print a comparison it did not make."""
     try:
         r = subprocess.run(["git", "show", f"{TAG}:{rel}"], cwd=HERE, capture_output=True)
     except OSError as e:
