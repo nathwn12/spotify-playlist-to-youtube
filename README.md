@@ -27,7 +27,7 @@ cd spotify-playlist-to-youtube
 git checkout v0.5.2
 ```
 
-## Use
+## Use it
 
 Two steps: the first runs once, the second runs every transfer.
 
@@ -46,7 +46,7 @@ Keys:
 - `j` / `k` — scroll the ledger.
 - `Ctrl+Shift+N` — new transfer.
 
-## Configure
+## Configure it
 
 | Setting | Where | Default | Notes |
 | --- | --- | --- | --- |
@@ -65,12 +65,36 @@ The cookie is never logged; audit lines record lengths and flags only.
 - Python 3.12+ for the source route, standard library only.
 - The exe is not code-signed, so the first launch trips SmartScreen. Choose More info, then Run anyway.
 
+## Development
+
+```bat
+scripts\acceptance.cmd
+python3 -m ruff check .
+```
+
+The gate replays the recorded fixtures and every offline check, then prints `acceptance: all gates green`. The build lane runs the same gate before it compiles the portable exe.
+
+```
+sp2yt/
+├── backend.py, app.py, watchdog.py
+├── index.html    the page
+├── scripts/      dev, build and gate
+├── tests/        fixtures and checks
+├── docs/         protocol
+└── assets/       images
+```
+
+## Status
+
+**Unverified** - as-is, use at your own risk.
+
 ## Links
 
 - [Issues](https://github.com/nathwn12/spotify-playlist-to-youtube/issues) — report a break with the command you ran and what you saw.
 - [Releases](https://github.com/nathwn12/spotify-playlist-to-youtube/releases) — the portable `sp2yt.exe`.
 - [Protocol](docs/PROTOCOL.md) — what the app sends, what it refuses and what it cannot prove.
 - [Change invariants](AGENTS.md) — what a code change must preserve.
-- [MIT](LICENSE)
 
-<p align="center">Built by nathwn12</p>
+<p align="center"><sub>Built by nathwn12</sub></p>
+
+- [MIT](LICENSE)
