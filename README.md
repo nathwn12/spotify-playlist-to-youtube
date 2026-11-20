@@ -90,11 +90,10 @@ sp2yt/
 
 ## Links
 
-- [Issues](https://github.com/nathwn12/spotify-playlist-to-youtube/issues) — report a break with the command you ran and what you saw.
-- [Releases](https://github.com/nathwn12/spotify-playlist-to-youtube/releases) — the portable `sp2yt.exe`.
-- [Protocol](docs/PROTOCOL.md) — what the app sends, what it refuses and what it cannot prove.
-- [Change invariants](AGENTS.md) — what a code change must preserve.
+- [Issues](https://github.com/nathwn12/spotify-playlist-to-youtube/issues)
+- [Releases](https://github.com/nathwn12/spotify-playlist-to-youtube/releases)
+- [Protocol](docs/PROTOCOL.md)
+- [Change invariants](AGENTS.md)
+- [MIT](LICENSE)
 
 <p align="center"><sub>Built by nathwn12</sub></p>
-
-- [MIT](LICENSE)
