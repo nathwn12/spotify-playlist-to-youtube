@@ -9,6 +9,10 @@
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT">
 </p>
 
+<p align="center">
+  <img src="assets/app.png" width="460" alt="The sp2yt window showing a Spotify playlist matched to YouTube Music with a per-track ledger" />
+</p>
+
 ## Why
 
 sp2yt moves a public Spotify playlist into YouTube Music with no API key and no sign-in. It ships as one portable executable built from standard-library Python. Each track gets a ledger row with its outcome and reason, and the landed count is read back from YouTube Music rather than assumed. The YouTube Music cookie is held DPAPI-encrypted and is never logged. Running the same playlist again resumes instead of adding everything twice.
