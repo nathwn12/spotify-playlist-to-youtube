@@ -5,9 +5,8 @@
 <p align="center"><strong>Copy a public Spotify playlist into YouTube Music without an API key.</strong></p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/nathwn12/spotify-playlist-to-youtube" alt="License" /></a>
-  <img src="https://img.shields.io/github/languages/top/nathwn12/spotify-playlist-to-youtube" alt="Language" />
-  <img src="https://img.shields.io/badge/platform-windows--64bit-2b3137?logo=windows&logoColor=white" alt="Platform" />
+  <img src="https://img.shields.io/badge/platform-windows%20x64-blue" alt="platform">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT">
 </p>
 
 ## Why
