@@ -1,0 +1,13 @@
+---
+project: spotify-playlist-to-youtube
+one_line: Copy a public Spotify playlist into YouTube Music without an API key.
+stack: [Python]
+status: draft
+since: 2026-11
+capabilities: []
+limits: []
+updated: 2026-11-22
+draft: true
+---
+
+sp2yt moves a public Spotify playlist into YouTube Music with no API key and no sign-in. It ships as one portable executable built from standard-library Python. Each track gets a ledger row with its outcome and reason, and the landed count is read back from YouTube Music rather than assumed. The YouTube Music cookie is held DPAPI-encrypted and is never logged. Running the same playlist again resumes instead of adding everything twice.
