@@ -16,5 +16,3 @@ sp2yt-app.exe
 .venv/
 venv/
 .stack/
-.seed/
-.opencode/skills/*-seed/
