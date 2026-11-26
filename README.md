@@ -28,8 +28,10 @@ Pin an exact version:
 ```bat
 git clone https://github.com/nathwn12/spotify-playlist-to-youtube
 cd spotify-playlist-to-youtube
-git checkout v0.5.2
+git checkout <release-tag>
 ```
+
+Use the `v`-prefixed release tag for the version you want. The current version is `APP_VERSION` in `backend.py` (the same value served by `GET /health`); released versions are the dated headings in [CHANGELOG.md](CHANGELOG.md).
 
 ## Use it
 
